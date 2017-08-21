@@ -294,7 +294,6 @@ static const sqlite3_api_routines sqlite3Apis = {
   sqlite3_create_function_v2,
   sqlite3_db_config,
   sqlite3_db_mutex,
-  sqlite3_db_status,
   sqlite3_extended_errcode,
   sqlite3_log,
   sqlite3_soft_heap_limit64,

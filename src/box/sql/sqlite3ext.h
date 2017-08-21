@@ -187,7 +187,6 @@ struct sqlite3_api_routines {
                             void(*xDestroy)(void*));
   int (*db_config)(sqlite3*,int,...);
   sqlite3_mutex *(*db_mutex)(sqlite3*);
-  int (*db_status)(sqlite3*,int,int*,int*,int);
   int (*extended_errcode)(sqlite3*);
   void (*log)(int,const char*,...);
   sqlite3_int64 (*soft_heap_limit64)(sqlite3_int64);

@@ -48,6 +48,7 @@ int sqlite3_exec(
   while( rc==SQLITE_OK && zSql[0] ){
     int nCol;
     char **azVals = 0;
+    char *zTable = 0;
 
     pStmt = 0;
     rc = sqlite3_prepare_v2(db, zSql, -1, &pStmt, &zLeftover);
@@ -73,7 +74,7 @@ int sqlite3_exec(
           (SQLITE_DONE==rc && !callbackIsInit
                            && db->flags&SQLITE_NullCallback)) ){
         if( !callbackIsInit ){
-          azCols = sqlite3DbMallocZero(db, 2*nCol*sizeof(const char*) + 1);
+          azCols = sqlite3DbMallocZero(db, 2*nCol*sizeof(const char*) + 2);
           if( azCols==0 ){
             goto exec_out;
           }
@@ -94,8 +95,9 @@ int sqlite3_exec(
               goto exec_out;
             }
           }
+          azVals[i] = (char *)sqlite3_column_table_name(pStmt, 0);
         }
-        if( xCallback(pArg, nCol, azVals, azCols) ){
+        if( xCallback(pArg, nCol + 1, azVals, azCols) ){
           /* EVIDENCE-OF: R-38229-40159 If the callback function to
           ** sqlite3_exec() returns non-zero, then sqlite3_exec() will
           ** return SQLITE_ABORT. */

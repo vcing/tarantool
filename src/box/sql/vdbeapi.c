@@ -1075,7 +1075,6 @@ const char *sqlite3_column_decltype(sqlite3_stmt *pStmt, int N){
 }
 #endif /* SQLITE_OMIT_DECLTYPE */
 
-#ifdef SQLITE_ENABLE_COLUMN_METADATA
 /*
 ** Return the name of the database from which a result column derives.
 ** NULL is returned if the result column is an expression or constant or
@@ -1105,8 +1104,6 @@ const char *sqlite3_column_origin_name(sqlite3_stmt *pStmt, int N){
   return columnName(
       pStmt, N, (const void*(*)(Mem*))sqlite3_value_text, COLNAME_COLUMN);
 }
-*/
-#endif /* SQLITE_ENABLE_COLUMN_METADATA */
 
 
 /******************************* sqlite3_bind_  ***************************

@@ -965,46 +965,6 @@ sqlite3Pragma(
 		break;
 	}
 
-	case PragTyp_INDEX_INFO:{
-		if (zRight) {
-			Index *pIdx;
-			Table *pTab;
-			pIdx = sqlite3FindIndex(db, zRight);
-			if (pIdx) {
-				int i;
-				int mx;
-				if (pPragma->iArg) {
-					/* PRAGMA index_xinfo (newer
-					 * version with more rows and
-					 * columns) */
-					mx = pIdx->nColumn;
-					pParse->nMem = 6;
-				} else {
-					/* PRAGMA index_info (legacy
-					 * version) */
-					mx = pIdx->nKeyCol;
-					pParse->nMem = 3;
-				}
-				pTab = pIdx->pTable;
-				sqlite3CodeVerifySchema(pParse);
-				assert(pParse->nMem <= pPragma->nPragCName);
-				for (i = 0; i < mx; i++) {
-					i16 cnum = pIdx->aiColumn[i];
-					sqlite3VdbeMultiLoad(v, 1, "iis", i, cnum,
-							     cnum < 0 ? 0 : pTab->aCol[cnum].zName);
-					if (pPragma->iArg) {
-						sqlite3VdbeMultiLoad(v, 4, "isi",
-						  		    pIdx->aSortOrder[i],
-								    pIdx->azColl[i],
-						   		    i < pIdx->nKeyCol);
-					}
-					sqlite3VdbeAddOp2(v, OP_ResultRow, 1, pParse->nMem);
-				}
-			}
-		}
-		break;
-	}
-
 	case PragTyp_INDEX_LIST:{
 		if (zRight) {
 			Index *pIdx;

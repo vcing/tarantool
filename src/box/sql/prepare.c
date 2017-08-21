@@ -47,6 +47,7 @@ static void corruptSchema(
 **     argv[0] = name of thing being created
 **     argv[1] = root page number for table or index. 0 for trigger or view.
 **     argv[2] = SQL text for the CREATE statement.
+**     argv[3] = referred table for index
 **
 */
 int sqlite3InitCallback(void *pInit, int argc, char **argv, char **NotUsed){
@@ -54,7 +55,7 @@ int sqlite3InitCallback(void *pInit, int argc, char **argv, char **NotUsed){
   sqlite3 *db = pData->db;
   int iDb = pData->iDb;
 
-  assert( argc==3 );
+  assert( argc==3 || argc==4 );
   UNUSED_PARAMETER2(NotUsed, argc);
   assert( sqlite3_mutex_held(db->mutex) );
   DbClearProperty(db, DB_Empty);
@@ -112,7 +113,7 @@ int sqlite3InitCallback(void *pInit, int argc, char **argv, char **NotUsed){
     ** to do here is record the root page number for that index.
     */
     Index *pIndex;
-    pIndex = sqlite3FindIndex(db, argv[0]);
+    pIndex = sqlite3FindIndex(db, argv[0], argv[3]);
     if( pIndex==0 ){
       /* This can occur if there exists an index on a TEMP table which
       ** has the same name as another index on a permanent index.  Since

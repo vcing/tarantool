@@ -20,31 +20,30 @@
 #define PragTyp_FOREIGN_KEY_CHECK             12
 #define PragTyp_FOREIGN_KEY_LIST              13
 #define PragTyp_INCREMENTAL_VACUUM            14
-#define PragTyp_INDEX_INFO                    15
-#define PragTyp_INDEX_LIST                    16
-#define PragTyp_INTEGRITY_CHECK               17
-#define PragTyp_JOURNAL_MODE                  18
-#define PragTyp_JOURNAL_SIZE_LIMIT            19
-#define PragTyp_LOCK_PROXY_FILE               20
-#define PragTyp_LOCKING_MODE                  21
-#define PragTyp_PAGE_COUNT                    22
-#define PragTyp_MMAP_SIZE                     23
-#define PragTyp_PAGE_SIZE                     24
-#define PragTyp_SECURE_DELETE                 25
-#define PragTyp_SHRINK_MEMORY                 26
-#define PragTyp_SOFT_HEAP_LIMIT               27
-#define PragTyp_STATS                         28
-#define PragTyp_SYNCHRONOUS                   29
-#define PragTyp_TABLE_INFO                    30
-#define PragTyp_THREADS                       31
-#define PragTyp_WAL_AUTOCHECKPOINT            32
-#define PragTyp_WAL_CHECKPOINT                33
-#define PragTyp_ACTIVATE_EXTENSIONS           34
-#define PragTyp_HEXKEY                        35
-#define PragTyp_KEY                           36
-#define PragTyp_REKEY                         37
-#define PragTyp_LOCK_STATUS                   38
-#define PragTyp_PARSER_TRACE                  39
+#define PragTyp_INDEX_LIST                    15
+#define PragTyp_INTEGRITY_CHECK               16
+#define PragTyp_JOURNAL_MODE                  17
+#define PragTyp_JOURNAL_SIZE_LIMIT            18
+#define PragTyp_LOCK_PROXY_FILE               19
+#define PragTyp_LOCKING_MODE                  20
+#define PragTyp_PAGE_COUNT                    21
+#define PragTyp_MMAP_SIZE                     22
+#define PragTyp_PAGE_SIZE                     23
+#define PragTyp_SECURE_DELETE                 24
+#define PragTyp_SHRINK_MEMORY                 25
+#define PragTyp_SOFT_HEAP_LIMIT               26
+#define PragTyp_STATS                         27
+#define PragTyp_SYNCHRONOUS                   28
+#define PragTyp_TABLE_INFO                    29
+#define PragTyp_THREADS                       30
+#define PragTyp_WAL_AUTOCHECKPOINT            31
+#define PragTyp_WAL_CHECKPOINT                32
+#define PragTyp_ACTIVATE_EXTENSIONS           33
+#define PragTyp_HEXKEY                        34
+#define PragTyp_KEY                           35
+#define PragTyp_REKEY                         36
+#define PragTyp_LOCK_STATUS                   37
+#define PragTyp_PARSER_TRACE                  38
 
 /* Property flags associated with various pragma. */
 #define PragFlg_NeedSchema 0x01 /* Force schema load before running */
@@ -72,43 +71,34 @@ static const char *const pragCName[] = {
   /*   8 */ "index",      
   /*   9 */ "width",      
   /*  10 */ "height",     
-  /*  11 */ "seqno",       /* Used by: index_info */
-  /*  12 */ "cid",        
-  /*  13 */ "name",       
-  /*  14 */ "seqno",       /* Used by: index_xinfo */
-  /*  15 */ "cid",        
-  /*  16 */ "name",       
-  /*  17 */ "desc",       
-  /*  18 */ "coll",       
-  /*  19 */ "key",        
-  /*  20 */ "seq",         /* Used by: index_list */
-  /*  21 */ "name",       
-  /*  22 */ "unique",     
-  /*  23 */ "origin",     
-  /*  24 */ "partial",    
-  /*  25 */ "seq",         /* Used by: database_list */
-  /*  26 */ "name",       
-  /*  27 */ "file",       
-  /*  28 */ "seq",         /* Used by: collation_list */
-  /*  29 */ "name",       
-  /*  30 */ "id",          /* Used by: foreign_key_list */
-  /*  31 */ "seq",        
-  /*  32 */ "table",      
-  /*  33 */ "from",       
-  /*  34 */ "to",         
-  /*  35 */ "on_update",  
-  /*  36 */ "on_delete",  
-  /*  37 */ "match",      
-  /*  38 */ "table",       /* Used by: foreign_key_check */
-  /*  39 */ "rowid",      
-  /*  40 */ "parent",     
-  /*  41 */ "fkid",       
-  /*  42 */ "busy",        /* Used by: wal_checkpoint */
-  /*  43 */ "log",        
-  /*  44 */ "checkpointed",
-  /*  45 */ "timeout",     /* Used by: busy_timeout */
-  /*  46 */ "database",    /* Used by: lock_status */
-  /*  47 */ "status",     
+  /*  11 */ "seq",         /* Used by: index_list */
+  /*  12 */ "name",       
+  /*  13 */ "unique",     
+  /*  14 */ "origin",     
+  /*  15 */ "partial",    
+  /*  16 */ "seq",         /* Used by: database_list */
+  /*  17 */ "name",       
+  /*  18 */ "file",       
+  /*  19 */ "seq",         /* Used by: collation_list */
+  /*  20 */ "name",       
+  /*  21 */ "id",          /* Used by: foreign_key_list */
+  /*  22 */ "seq",        
+  /*  23 */ "table",      
+  /*  24 */ "from",       
+  /*  25 */ "to",         
+  /*  26 */ "on_update",  
+  /*  27 */ "on_delete",  
+  /*  28 */ "match",      
+  /*  29 */ "table",       /* Used by: foreign_key_check */
+  /*  30 */ "rowid",      
+  /*  31 */ "parent",     
+  /*  32 */ "fkid",       
+  /*  33 */ "busy",        /* Used by: wal_checkpoint */
+  /*  34 */ "log",        
+  /*  35 */ "checkpointed",
+  /*  36 */ "timeout",     /* Used by: busy_timeout */
+  /*  37 */ "database",    /* Used by: lock_status */
+  /*  38 */ "status",     
 };
 
 /* Definitions of all built-in pragmas */
@@ -154,7 +144,7 @@ static const PragmaName aPragmaName[] = {
  {/* zName:     */ "busy_timeout",
   /* ePragTyp:  */ PragTyp_BUSY_TIMEOUT,
   /* ePragFlg:  */ PragFlg_Result0,
-  /* ColNames:  */ 45, 1,
+  /* ColNames:  */ 36, 1,
   /* iArg:      */ 0 },
 #if !defined(SQLITE_OMIT_PAGER_PRAGMAS)
  {/* zName:     */ "cache_size",
@@ -184,7 +174,7 @@ static const PragmaName aPragmaName[] = {
  {/* zName:     */ "collation_list",
   /* ePragTyp:  */ PragTyp_COLLATION_LIST,
   /* ePragFlg:  */ PragFlg_Result0,
-  /* ColNames:  */ 28, 2,
+  /* ColNames:  */ 19, 2,
   /* iArg:      */ 0 },
 #endif
 #if !defined(SQLITE_OMIT_COMPILEOPTION_DIAGS)
@@ -219,7 +209,7 @@ static const PragmaName aPragmaName[] = {
  {/* zName:     */ "database_list",
   /* ePragTyp:  */ PragTyp_DATABASE_LIST,
   /* ePragFlg:  */ PragFlg_NeedSchema|PragFlg_Result0,
-  /* ColNames:  */ 25, 3,
+  /* ColNames:  */ 16, 3,
   /* iArg:      */ 0 },
 #endif
 #if !defined(SQLITE_OMIT_PAGER_PRAGMAS) && !defined(SQLITE_OMIT_DEPRECATED)
@@ -256,14 +246,14 @@ static const PragmaName aPragmaName[] = {
  {/* zName:     */ "foreign_key_check",
   /* ePragTyp:  */ PragTyp_FOREIGN_KEY_CHECK,
   /* ePragFlg:  */ PragFlg_NeedSchema,
-  /* ColNames:  */ 38, 4,
+  /* ColNames:  */ 29, 4,
   /* iArg:      */ 0 },
 #endif
 #if !defined(SQLITE_OMIT_FOREIGN_KEY)
  {/* zName:     */ "foreign_key_list",
   /* ePragTyp:  */ PragTyp_FOREIGN_KEY_LIST,
   /* ePragFlg:  */ PragFlg_NeedSchema|PragFlg_Result1|PragFlg_SchemaOpt,
-  /* ColNames:  */ 30, 8,
+  /* ColNames:  */ 21, 8,
   /* iArg:      */ 0 },
 #endif
 #if !defined(SQLITE_OMIT_FLAG_PRAGMAS)
@@ -323,21 +313,11 @@ static const PragmaName aPragmaName[] = {
   /* iArg:      */ 0 },
 #endif
 #if !defined(SQLITE_OMIT_SCHEMA_PRAGMAS)
- {/* zName:     */ "index_info",
-  /* ePragTyp:  */ PragTyp_INDEX_INFO,
-  /* ePragFlg:  */ PragFlg_NeedSchema|PragFlg_Result1|PragFlg_SchemaOpt,
-  /* ColNames:  */ 11, 3,
-  /* iArg:      */ 0 },
  {/* zName:     */ "index_list",
   /* ePragTyp:  */ PragTyp_INDEX_LIST,
   /* ePragFlg:  */ PragFlg_NeedSchema|PragFlg_Result1|PragFlg_SchemaOpt,
-  /* ColNames:  */ 20, 5,
+  /* ColNames:  */ 11, 5,
   /* iArg:      */ 0 },
- {/* zName:     */ "index_xinfo",
-  /* ePragTyp:  */ PragTyp_INDEX_INFO,
-  /* ePragFlg:  */ PragFlg_NeedSchema|PragFlg_Result1|PragFlg_SchemaOpt,
-  /* ColNames:  */ 14, 6,
-  /* iArg:      */ 1 },
 #endif
 #if !defined(SQLITE_OMIT_INTEGRITY_CHECK)
  {/* zName:     */ "integrity_check",
@@ -383,7 +363,7 @@ static const PragmaName aPragmaName[] = {
  {/* zName:     */ "lock_status",
   /* ePragTyp:  */ PragTyp_LOCK_STATUS,
   /* ePragFlg:  */ PragFlg_Result0,
-  /* ColNames:  */ 46, 2,
+  /* ColNames:  */ 37, 2,
   /* iArg:      */ 0 },
 #endif
 #if !defined(SQLITE_OMIT_PAGER_PRAGMAS)
@@ -571,7 +551,7 @@ static const PragmaName aPragmaName[] = {
  {/* zName:     */ "wal_checkpoint",
   /* ePragTyp:  */ PragTyp_WAL_CHECKPOINT,
   /* ePragFlg:  */ PragFlg_NeedSchema,
-  /* ColNames:  */ 42, 3,
+  /* ColNames:  */ 33, 3,
   /* iArg:      */ 0 },
 #endif
 #if !defined(SQLITE_OMIT_FLAG_PRAGMAS)
@@ -582,4 +562,4 @@ static const PragmaName aPragmaName[] = {
   /* iArg:      */ SQLITE_WriteSchema|SQLITE_RecoveryMode },
 #endif
 };
-/* Number of pragmas: 57 on by default, 70 total. */
+/* Number of pragmas: 55 on by default, 68 total. */

@@ -216,20 +216,6 @@ set pragma_def {
   COLS: table index width height
   IF:   !defined(SQLITE_OMIT_SCHEMA_PRAGMAS)
 
-  NAME: index_info
-  TYPE: INDEX_INFO
-  ARG:  0
-  FLAG: NeedSchema Result1 SchemaOpt
-  COLS: seqno cid name
-  IF:   !defined(SQLITE_OMIT_SCHEMA_PRAGMAS)
-
-  NAME: index_xinfo
-  TYPE: INDEX_INFO
-  ARG:  1
-  FLAG: NeedSchema Result1 SchemaOpt
-  COLS: seqno cid name desc coll key
-  IF:   !defined(SQLITE_OMIT_SCHEMA_PRAGMAS)
-
   NAME: index_list
   FLAG: NeedSchema Result1 SchemaOpt
   COLS: seq name unique origin partial

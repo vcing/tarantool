@@ -5366,8 +5366,8 @@ case OP_ParseSchema: {
     initData.iDb = pOp->p1;
     initData.pzErrMsg = &p->zErrMsg;
     zSql = sqlite3MPrintf(db,
-       "SELECT name, rootpage, sql FROM '%q'.%s WHERE %s ORDER BY rowid",
-       db->mdb.zDbSName, zMaster, pOp->p4.z);
+       "SELECT name, rootpage, sql FROM %s WHERE %s ORDER BY rowid",
+       zMaster, pOp->p4.z);
     if( zSql==0 ){
       rc = SQLITE_NOMEM_BKPT;
     }else{
@@ -5539,16 +5539,17 @@ case OP_DropTable: {
   break;
 }
 
-/* Opcode: DropIndex P1 * * P4 *
+/* Opcode: DropIndex P1 * P3 P4 
 **
 ** Remove the internal (in-memory) data structures that describe
-** the index named P4 in database P1.  This is called after an index
-** is dropped from disk (using the Destroy opcode)
-** in order to keep the internal representation of the
-** schema consistent with what is on disk.
+** the index named P4 for table P3 in database P1.
+** This is called after an index is dropped from disk
+** (using the Destroy opcode) in order to keep
+** the internal representation of the schema consistent with what
+** is on disk.
 */
 case OP_DropIndex: {
-  sqlite3UnlinkAndDeleteIndex(db, pOp->p4.z);
+  sqlite3UnlinkAndDeleteIndex(db, pOp->p4.z, pOp->p3);
   break;
 }
 
