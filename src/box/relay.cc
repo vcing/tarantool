@@ -33,6 +33,8 @@
 #include "trivia/config.h"
 #include "trivia/util.h"
 #include "cbus.h"
+#include "fiber.h"
+#include "fiber_cond.h"
 #include "cfg.h"
 #include "errinj.h"
 #include "fiber.h"
@@ -342,8 +344,6 @@ relay_subscribe_f(va_list ap)
 	struct recovery *r = relay->r;
 
 	coio_enable();
-	cbus_endpoint_create(&relay->endpoint, cord_name(cord()),
-			     fiber_schedule_cb, fiber());
 	cbus_pair("tx", cord_name(cord()), &relay->tx_pipe, &relay->relay_pipe,
 		  NULL, NULL, cbus_process);
 	/* Setup garbage collection trigger. */

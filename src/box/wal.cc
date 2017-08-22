@@ -689,16 +689,16 @@ wal_thread_f(va_list ap)
 	/** Initialize eio in this thread */
 	coio_enable();
 
-	struct cbus_endpoint endpoint;
-	cbus_endpoint_create(&endpoint, "wal", fiber_schedule_cb, fiber());
 	/*
 	 * Create a pipe to TX thread. Use a high priority
 	 * endpoint, to ensure that WAL messages are delivered
 	 * even when tx fiber pool is used up by net messages.
 	 */
-	cpipe_create(&wal_thread.tx_pipe, "tx_prio");
+	cpipe_create(&wal_thread.tx_pipe, "tx");
 
-	cbus_loop(&endpoint);
+	while (!fiber_is_cancelled()) {
+		fiber_yield();
+	}
 
 	struct wal_writer *writer = &wal_writer_singleton;
 

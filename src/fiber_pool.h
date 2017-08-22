@@ -32,6 +32,7 @@
  */
 #include "trivia/config.h"
 #include "fiber.h"
+#include "fiber_cond.h"
 #include "cbus.h"
 #include "small/rlist.h"
 #include "salad/stailq.h"

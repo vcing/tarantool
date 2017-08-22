@@ -521,6 +521,7 @@ fiber_schedule_wakeup(ev_loop *loop, ev_async *watcher, int revents)
 	(void) watcher;
 	(void) revents;
 	struct cord *cord = cord();
+	cbus_process(&cord->endpoint);
 	fiber_schedule_list(&cord->ready);
 }
 
@@ -895,7 +896,10 @@ cord_create(struct cord *cord, const char *name)
 
 	ev_idle_init(&cord->idle_event, fiber_schedule_idle);
 	cord_set_name(name);
+	if (cord->loop != NULL) {
+		cbus_endpoint_create(&cord->endpoint, cord->name, fiber_schedule_wakeup, cord);
 
+	}
 #if ENABLE_ASAN
 	/* Record stack extents */
 	tt_pthread_attr_getstack(cord->id, &cord->sched.stack,
@@ -910,8 +914,10 @@ void
 cord_destroy(struct cord *cord)
 {
 	slab_cache_set_thread(&cord->slabc);
-	if (cord->loop)
+	if (cord->loop) {
+//		cbus_endpoint_destroy(&cord->endpoint);
 		ev_loop_destroy(cord->loop);
+	}
 	/* Only clean up if initialized. */
 	if (cord->fiber_registry) {
 		fiber_destroy_all(cord);

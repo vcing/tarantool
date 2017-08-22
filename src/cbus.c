@@ -32,13 +32,13 @@
 
 #include <limits.h>
 #include "fiber.h"
-
+#include "fiber_cond.h"
 /**
  * Cord interconnect.
  */
 struct cbus {
 	/** cbus statistics */
-	struct rmean *stats;
+//	struct rmean *stats;
 	/** A mutex to protect bus join. */
 	pthread_mutex_t mutex;
 	/** Condition for synchronized start of the bus. */
@@ -123,7 +123,6 @@ cbus_endpoint_poison_f(struct cmsg *msg)
 	assert(endpoint->n_pipes > 0);
 	--endpoint->n_pipes;
 	tt_pthread_mutex_unlock(&cbus.mutex);
-	fiber_cond_signal(&endpoint->cond);
 	free(msg);
 }
 
@@ -151,7 +150,7 @@ cpipe_destroy(struct cpipe *pipe)
 	/* Add the pipe shutdown message as the last one. */
 	stailq_add_tail_entry(&endpoint->output, poison, msg.fifo);
 	/* Count statistics */
-	rmean_collect(cbus.stats, CBUS_STAT_EVENTS, 1);
+//	rmean_collect(cbus.stats, CBUS_STAT_EVENTS, 1);
 	/*
 	 * Keep the lock for the duration of ev_async_send():
 	 * this will avoid a race condition between
@@ -167,9 +166,9 @@ cpipe_destroy(struct cpipe *pipe)
 static void
 cbus_create(struct cbus *bus)
 {
-	bus->stats = rmean_new(cbus_stat_strings, CBUS_STAT_LAST);
-	if (bus->stats == NULL)
-		panic_syserror("cbus_create");
+//	bus->stats = rmean_new(cbus_stat_strings, CBUS_STAT_LAST);
+//	if (bus->stats == NULL)
+//		panic_syserror("cbus_create");
 
 	/* Initialize queue lock mutex. */
 	(void) tt_pthread_mutex_init(&bus->mutex, NULL);
@@ -184,7 +183,7 @@ cbus_destroy(struct cbus *bus)
 {
 	(void) tt_pthread_mutex_destroy(&bus->mutex);
 	(void) tt_pthread_cond_destroy(&bus->cond);
-	rmean_delete(bus->stats);
+//	rmean_delete(bus->stats);
 }
 
 /**
@@ -194,7 +193,7 @@ cbus_destroy(struct cbus *bus)
  */
 int
 cbus_endpoint_create(struct cbus_endpoint *endpoint, const char *name,
-		     void (*fetch_cb)(ev_loop *, struct ev_watcher *, int),
+		     void (*fetch_cb)(ev_loop *, struct ev_async *, int),
 		     void *fetch_data)
 {
 	tt_pthread_mutex_lock(&cbus.mutex);
@@ -203,14 +202,12 @@ cbus_endpoint_create(struct cbus_endpoint *endpoint, const char *name,
 		return 1;
 	}
 
-	snprintf(endpoint->name, sizeof(endpoint->name), "%s", name);
+	endpoint->name = name;
 	endpoint->consumer = loop();
 	endpoint->n_pipes = 0;
-	fiber_cond_create(&endpoint->cond);
 	tt_pthread_mutex_init(&endpoint->mutex, NULL);
 	stailq_create(&endpoint->output);
-	ev_async_init(&endpoint->async,
-		      (void (*)(ev_loop *, struct ev_async *, int)) fetch_cb);
+	ev_async_init(&endpoint->async, fetch_cb);
 	endpoint->async.data = fetch_data;
 	ev_async_start(endpoint->consumer, &endpoint->async);
 
@@ -244,7 +241,7 @@ cbus_endpoint_destroy(struct cbus_endpoint *endpoint,
 			process_cb(endpoint);
 		if (endpoint->n_pipes == 0 && stailq_empty(&endpoint->output))
 			break;
-		 fiber_cond_wait(&endpoint->cond);
+	//	 fiber_cond_wait(&endpoint->cond);
 	}
 
 	/*
@@ -255,7 +252,7 @@ cbus_endpoint_destroy(struct cbus_endpoint *endpoint,
 	tt_pthread_mutex_unlock(&endpoint->mutex);
 	tt_pthread_mutex_destroy(&endpoint->mutex);
 	ev_async_stop(endpoint->consumer, &endpoint->async);
-	fiber_cond_destroy(&endpoint->cond);
+	//fiber_cond_destroy(&endpoint->cond);
 	TRASH(endpoint);
 	return 0;
 }
@@ -282,7 +279,7 @@ cpipe_flush_cb(ev_loop *loop, struct ev_async *watcher, int events)
 	pipe->n_input = 0;
 	if (output_was_empty) {
 		/* Count statistics */
-		rmean_collect(cbus.stats, CBUS_STAT_EVENTS, 1);
+//		rmean_collect(cbus.stats, CBUS_STAT_EVENTS, 1);
 
 		ev_async_send(endpoint->consumer, &endpoint->async);
 	}

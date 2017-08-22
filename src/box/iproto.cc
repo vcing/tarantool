@@ -1251,14 +1251,14 @@ net_cord_f(va_list /* ap */)
 			  "rmean", "struct rmean");
 	}
 
-	struct cbus_endpoint endpoint;
 	/* Create "net" endpoint. */
-	cbus_endpoint_create(&endpoint, "net", fiber_schedule_cb, fiber());
+//	cbus_endpoint_create(&endpoint, "net", fiber_schedule_cb, fiber());
 	/* Create a pipe to "tx" thread. */
 	cpipe_create(&tx_pipe, "tx");
 	cpipe_set_max_input(&tx_pipe, IPROTO_MSG_MAX/2);
 	/* Process incomming messages. */
-	cbus_loop(&endpoint);
+	while (!fiber_is_cancelled())
+		fiber_yield();
 
 	cpipe_destroy(&tx_pipe);
 	/*
@@ -1284,7 +1284,7 @@ iproto_init()
 		panic("failed to initialize iproto thread");
 
 	/* Create a pipe to "net" thread. */
-	cpipe_create(&net_pipe, "net");
+	cpipe_create(&net_pipe, "iproto");
 	cpipe_set_max_input(&net_pipe, IPROTO_MSG_MAX/2);
 }
 

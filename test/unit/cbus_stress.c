@@ -314,13 +314,16 @@ thread_func(va_list ap)
 
 	cpipe_create(&t->main_pipe, "main");
 
-	struct cbus_endpoint endpoint;
+/*	struct cbus_endpoint endpoint;
 	cbus_endpoint_create(&endpoint, t->name,
-			     fiber_schedule_cb, fiber());
+			     ()fiber_schedule_cb, fiber());
 
 	cbus_loop(&endpoint);
 
 	cbus_endpoint_destroy(&endpoint, cbus_process);
+*/
+	while (!fiber_is_cancelled())
+		fiber_yield();
 	cpipe_destroy(&t->main_pipe);
 	return 0;
 }
@@ -331,7 +334,8 @@ main_func(va_list ap)
 	(void)ap;
 
 	struct cbus_endpoint endpoint;
-	cbus_endpoint_create(&endpoint, "main", fiber_schedule_cb, fiber());
+	cbus_endpoint_create(&endpoint, "main",
+			     (void (*)(ev_loop *, struct ev_async *, int))fiber_schedule_cb, fiber());
 
 	threads = calloc(thread_count, sizeof(*threads));
 	assert(threads != NULL);

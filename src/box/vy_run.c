@@ -109,13 +109,10 @@ static int
 vy_run_reader_f(va_list ap)
 {
 	struct vy_run_reader *reader = va_arg(ap, struct vy_run_reader *);
-	struct cbus_endpoint endpoint;
 
 	cpipe_create(&reader->tx_pipe, "tx_prio");
-	cbus_endpoint_create(&endpoint, cord_name(cord()),
-			     fiber_schedule_cb, fiber());
-	cbus_loop(&endpoint);
-	cbus_endpoint_destroy(&endpoint, cbus_process);
+	while (!fiber_is_cancelled())
+		fiber_yield();
 	cpipe_destroy(&reader->tx_pipe);
 	return 0;
 }

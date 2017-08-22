@@ -111,6 +111,7 @@ target_link_libraries(core
 
 add_library(stat STATIC rmean.c latency.c histogram.c)
 target_link_libraries(stat core)
+target_link_libraries(core stat)
 
 if (ENABLE_BACKTRACE AND NOT TARGET_OS_DARWIN)
 	target_link_libraries(core gcc_s ${UNWIND_LIBRARIES})

@@ -149,7 +149,8 @@ fiber_pool_create(struct fiber_pool *pool, const char *name, int max_pool_size,
 	stailq_create(&pool->output);
 	fiber_cond_create(&pool->worker_cond);
 	/* Join fiber pool to cbus */
-	cbus_endpoint_create(&pool->endpoint, name, fiber_pool_cb, pool);
+	cbus_endpoint_create(&pool->endpoint, name,
+			     (void (*)(ev_loop *, struct ev_async *, int))fiber_pool_cb, pool);
 }
 
 void

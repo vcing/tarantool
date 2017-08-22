@@ -30,11 +30,12 @@
  * THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  */
-#include "fiber.h"
-#include "fiber_cond.h"
+#include "tt_pthread.h"
 #include "rmean.h"
 #include "small/rlist.h"
 #include "salad/stailq.h"
+
+#include "diag.h"
 
 #if defined(__cplusplus)
 extern "C" {
@@ -178,7 +179,7 @@ cpipe_set_max_input(struct cpipe *pipe, int max_input)
 static inline void
 cpipe_flush_input(struct cpipe *pipe)
 {
-	assert(loop() == pipe->producer);
+//	assert(loop() == pipe->producer);
 
 	/** Flush may be called with no input. */
 	if (pipe->n_input > 0) {
@@ -209,7 +210,7 @@ cpipe_flush_input(struct cpipe *pipe)
 static inline void
 cpipe_push_input(struct cpipe *pipe, struct cmsg *msg)
 {
-	assert(loop() == pipe->producer);
+//	assert(loop() == pipe->producer);
 
 	stailq_add_tail_entry(&pipe->input, msg, fifo);
 	pipe->n_input++;
@@ -243,7 +244,7 @@ struct cbus_endpoint {
 	 * Endpoint name, used to identify the endpoint when
 	 * establishing a route.
 	 */
-	char name[FIBER_NAME_MAX];
+	const char *name;
 	/** Member of cbus->endpoints */
 	struct rlist in_cbus;
 	/** The lock around the pipe. */
@@ -256,8 +257,6 @@ struct cbus_endpoint {
 	ev_async async;
 	/** Count of connected pipes */
 	uint32_t n_pipes;
-	/** Condition for endpoint destroy */
-	struct fiber_cond cond;
 };
 
 /**
@@ -288,7 +287,7 @@ cbus_free();
  */
 int
 cbus_endpoint_create(struct cbus_endpoint *endpoint, const char *name,
-		     void (*fetch_cb)(ev_loop *, struct ev_watcher *, int), void *fetch_data);
+		     void (*fetch_cb)(ev_loop *, struct ev_async *, int), void *fetch_data);
 
 /**
  * One round for message fetch and deliver */

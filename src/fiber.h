@@ -45,6 +45,7 @@
 #include "salad/stailq.h"
 
 #include <third_party/coro/coro.h>
+#include "cbus.h"
 
 #if defined(__cplusplus)
 extern "C" {
@@ -433,6 +434,8 @@ struct cord {
 	struct slab_cache slabc;
 	/** The "main" fiber of this cord, the scheduler. */
 	struct fiber sched;
+	/** The cord endpoint. */
+	struct cbus_endpoint endpoint;
 	char name[FIBER_NAME_MAX];
 };
 

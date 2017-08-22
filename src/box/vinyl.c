@@ -48,6 +48,7 @@
 
 #include "coio_task.h"
 #include "cbus.h"
+#include "fiber.h"
 #include "histogram.h"
 
 #include "tuple_update.h"
@@ -4241,7 +4242,7 @@ vy_join_f(va_list ap)
 
 	struct cbus_endpoint endpoint;
 	cbus_endpoint_create(&endpoint, cord_name(cord()),
-			     fiber_schedule_cb, fiber());
+			     (void(*)(ev_loop *, struct ev_async *, int))fiber_schedule_cb, fiber());
 
 	cbus_loop(&endpoint);
 

@@ -597,13 +597,13 @@ main(int argc, char **argv)
 	exception_init();
 	box_error_init();
 
+	cbus_init();
 	fiber_init(fiber_cxx_invoke);
 	/* Init iobuf library with default readahead */
 	iobuf_init();
 	coio_init();
 	coio_enable();
 	signal_init();
-	cbus_init();
 	tarantool_lua_init(tarantool_bin, main_argc, main_argv);
 
 	try {
