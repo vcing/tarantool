@@ -41,6 +41,8 @@ box.cfg
 36	wal_max_size:268435456
 37	wal_mode:write
 38	worker_pool_threads:4
+39	xlog_compression_level:3
+40	xlog_compression_threshold:2048
 --
 -- Test insert from detached fiber
 --

@@ -232,6 +232,16 @@ struct xlog_meta {
 
 /* }}} */
 
+/** Zstd compression level. */
+extern int xlog_compression_level;
+/**
+ * Compress output buffer before dumping it to
+ * disk if it is at least this big. On smaller
+ * sizes compression takes up CPU but doesn't
+ * yield seizable gains.
+ */
+extern int64_t xlog_compression_threshold;
+
 /**
  * A single log file - a snapshot, a vylog or a write ahead log.
  */

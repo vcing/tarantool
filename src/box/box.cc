@@ -407,6 +407,28 @@ box_check_replication_timeout(void)
 	return timeout;
 }
 
+static int
+box_check_xlog_compression_level(void)
+{
+	int level = cfg_geti("xlog_compression_level");
+	if (level < 0 || level > 21) {
+		tnt_raise(ClientError, ER_CFG, "xlog_compression_level",
+			  "the value must be between 0 and 21");
+	}
+	return level;
+}
+
+static int64_t
+box_check_xlog_compression_threshold(void)
+{
+	int threshold = cfg_geti("xlog_compression_threshold");
+	if (threshold < 0) {
+		tnt_raise(ClientError, ER_CFG, "xlog_compression_threshold",
+			  "the value must not be less than 0");
+	}
+	return threshold;
+}
+
 static enum wal_mode
 box_check_wal_mode(const char *mode_name)
 {
@@ -567,6 +589,20 @@ box_set_replication_timeout(void)
 {
 	double timeout = box_check_replication_timeout();
 	replication_cfg_timeout = relay_timeout = applier_timeout = timeout;
+}
+
+void
+box_set_xlog_compression_level(void)
+{
+	int level = box_check_xlog_compression_level();
+	xlog_compression_level = level;
+}
+
+void
+box_set_xlog_compression_threshold(void)
+{
+	uint64_t threshold = box_check_xlog_compression_threshold();
+	xlog_compression_threshold = threshold;
 }
 
 void

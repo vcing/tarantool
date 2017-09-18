@@ -69,15 +69,10 @@ enum {
 	 * slab cache so must be a power of 2.
 	 */
 	XLOG_TX_AUTOCOMMIT_THRESHOLD = 128 * 1024,
-	/**
-	 * Compress output buffer before dumping it to
-	 * disk if it is at least this big. On smaller
-	 * sizes compression takes up CPU but doesn't
-	 * yield seizable gains.
-	 * Maybe this should be a configuration option.
-	 */
-	XLOG_TX_COMPRESS_THRESHOLD = 2 * 1024,
 };
+
+int xlog_compression_level = 3;
+int64_t xlog_compression_threshold = 2 * 1024;
 
 /* {{{ struct xlog_meta */
 
@@ -958,8 +953,7 @@ xlog_tx_write_zstd(struct xlog *log)
 
 	uint32_t crc32c = 0;
 	struct iovec *iov;
-	/* 3 is compression level. */
-	ZSTD_compressBegin(log->zctx, 3);
+	ZSTD_compressBegin(log->zctx, xlog_compression_level);
 	size_t offset = XLOG_FIXHEADER_SIZE;
 	for (iov = log->obuf.iov; iov->iov_len; ++iov) {
 		/* Estimate max output buffer size. */
@@ -1055,7 +1049,8 @@ xlog_tx_write(struct xlog *log)
 		return 0;
 	ssize_t written;
 
-	if (obuf_size(&log->obuf) >= XLOG_TX_COMPRESS_THRESHOLD) {
+	if (xlog_compression_threshold > 0 &&
+	    (int64_t)obuf_size(&log->obuf) >= xlog_compression_threshold) {
 		written = xlog_tx_write_zstd(log);
 	} else {
 		written = xlog_tx_write_plain(log);

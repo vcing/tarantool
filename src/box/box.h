@@ -154,6 +154,8 @@ void box_set_memtx_max_tuple_size(void);
 void box_set_vinyl_max_tuple_size(void);
 void box_set_vinyl_timeout(void);
 void box_set_replication_timeout(void);
+void box_set_xlog_compression_level(void);
+void box_set_xlog_compression_threshold(void);
 
 extern "C" {
 #endif /* defined(__cplusplus) */

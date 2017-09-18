@@ -53,6 +53,8 @@ local default_cfg = {
     checkpoint_count    = 2,
     worker_pool_threads = 4,
     replication_timeout = 1,
+    xlog_compression_level = 3,
+    xlog_compression_threshold = 2048,
 }
 
 -- types of available options
@@ -103,6 +105,8 @@ local template_cfg = {
     hot_standby         = 'boolean',
     worker_pool_threads = 'number',
     replication_timeout = 'number',
+    xlog_compression_level = 'number',
+    xlog_compression_threshold = 'number',
 }
 
 local function normalize_uri(port)
@@ -168,6 +172,8 @@ local dynamic_cfg = {
     end,
     force_recovery          = function() end,
     replication_timeout     = private.cfg_set_replication_timeout,
+    xlog_compression_level  = private.cfg_set_xlog_compression_level,
+    xlog_compression_threshold = private.cfg_set_xlog_compression_threshold,
 }
 
 local dynamic_cfg_skip_at_load = {

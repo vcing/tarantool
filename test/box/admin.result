@@ -94,6 +94,10 @@ cfg_filter(box.cfg)
     - write
   - - worker_pool_threads
     - 4
+  - - xlog_compression_level
+    - 3
+  - - xlog_compression_threshold
+    - 2048
 ...
 space:insert{1, 'tuple'}
 ---
