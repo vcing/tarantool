@@ -32,6 +32,7 @@
  */
 
 #include <small/rlist.h>
+#include <stdbool.h>
 
 /**
  * @file
@@ -100,6 +101,11 @@ struct vy_point_iterator {
 	 * resultant statement until own destruction.
 	 */
 	struct tuple *curr_stmt;
+	/**
+	 * True, if a curr_stmt returned from get() must be
+	 * cached.
+	 */
+	bool need_cache_stmt;
 };
 
 /**

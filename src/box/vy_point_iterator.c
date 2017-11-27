@@ -374,12 +374,7 @@ vy_point_iterator_apply_history(struct vy_point_iterator *itr,
 		vy_stmt_counter_acct_tuple(&itr->index->stat.get,
 					   itr->curr_stmt);
 	}
-	/**
-	 * Add a statement to the cache
-	 */
-	if ((**itr->p_read_view).vlsn == INT64_MAX) /* Do not store non-latest data */
-		vy_cache_add(&itr->index->cache, itr->curr_stmt, NULL,
-			     itr->key, ITER_EQ);
+	itr->need_cache_stmt = (**itr->p_read_view).vlsn == INT64_MAX;
 	return 0;
 }
 
@@ -391,6 +386,7 @@ vy_point_iterator_apply_history(struct vy_point_iterator *itr,
 int
 vy_point_iterator_get(struct vy_point_iterator *itr, struct tuple **result)
 {
+	itr->need_cache_stmt = false;
 	*result = NULL;
 	size_t region_svp = region_used(&fiber()->gc);
 	int rc = 0;

@@ -952,10 +952,11 @@ NODISCARD int
 vy_read_iterator_next(struct vy_read_iterator *itr, struct tuple **result)
 {
 	ev_tstamp start_time = ev_monotonic_now(loop());
+	itr->need_cache_last = false;
 
 	/* The key might be set to NULL during previous call, that means
 	 * that there's no more data */
-	if (itr->key == NULL) {
+	if (itr->search_started && itr->curr_range == NULL) {
 		*result = NULL;
 		return 0;
 	}
@@ -964,6 +965,8 @@ vy_read_iterator_next(struct vy_read_iterator *itr, struct tuple **result)
 	if ((itr->iterator_type == ITER_EQ || itr->iterator_type == ITER_REQ) &&
 	    tuple_field_count(itr->key) >= itr->index->cmp_def->part_count) {
 		struct vy_point_iterator one;
+		itr->search_started = true;
+		itr->iterator_type = ITER_EQ;
 		vy_point_iterator_open(&one, itr->run_env, itr->index,
 				       itr->tx, itr->read_view, itr->key);
 		int rc = vy_point_iterator_get(&one, result);
@@ -971,8 +974,9 @@ vy_read_iterator_next(struct vy_read_iterator *itr, struct tuple **result)
 			tuple_ref(*result);
 			itr->last_stmt = *result;
 		}
+		itr->curr_range = NULL;
+		itr->need_cache_last = one.need_cache_stmt;
 		vy_point_iterator_close(&one);
-		itr->key = NULL;
 		return rc;
 	}
 
@@ -1045,23 +1049,21 @@ vy_read_iterator_next(struct vy_read_iterator *itr, struct tuple **result)
 					      index->cmp_def) < 0);
 	}
 #endif
-
 	/**
 	 * Add a statement to the cache
 	 */
 	if ((**itr->read_view).vlsn == INT64_MAX) { /* Do not store non-latest data */
-		struct tuple *cache_prev = prev_key;
-		if (skipped_txw_delete) {
-			/*
-			 * If we skipped DELETE that was read from TX write
-			 * set, there is a chance that the database actually
-			 * has the deleted key and we must not consider
-			 * previous+current tuple as an unbroken chain.
-			 */
-			cache_prev = NULL;
+		itr->need_cache_last = true;
+		/*
+		 * If we skipped DELETE that was read from TX write
+		 * set, there is a chance that the database actually
+		 * has the deleted key and we must not consider
+		 * previous+current tuple as an unbroken chain.
+		 */
+		if (skipped_txw_delete && itr->last_cached_stmt != NULL) {
+			tuple_unref(itr->last_cached_stmt);
+			itr->last_cached_stmt = NULL;
 		}
-		vy_cache_add(&itr->index->cache, *result, cache_prev,
-			     itr->key, itr->iterator_type);
 	}
 clear:
 	if (prev_key != NULL)
@@ -1079,6 +1081,22 @@ clear:
 	return rc;
 }
 
+void
+vy_read_iterator_cache_last(struct vy_read_iterator *itr)
+{
+	if (itr->need_cache_last) {
+		vy_cache_add(&itr->index->cache, itr->last_stmt,
+			     itr->last_cached_stmt, itr->key,
+			     itr->iterator_type);
+		if (itr->last_cached_stmt != NULL)
+			tuple_unref(itr->last_cached_stmt);
+		itr->last_cached_stmt = itr->last_stmt;
+		if (itr->last_stmt != NULL)
+			tuple_ref(itr->last_stmt);
+		itr->need_cache_last = false;
+	}
+}
+
 /**
  * Close the iterator and free resources
  */
@@ -1087,6 +1105,8 @@ vy_read_iterator_close(struct vy_read_iterator *itr)
 {
 	if (itr->last_stmt != NULL)
 		tuple_unref(itr->last_stmt);
+	if (itr->last_cached_stmt != NULL)
+		tuple_unref(itr->last_cached_stmt);
 	vy_read_iterator_cleanup(itr);
 	free(itr->src);
 	TRASH(itr);

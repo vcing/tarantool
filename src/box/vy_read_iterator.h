@@ -124,6 +124,16 @@ struct vy_read_iterator {
 	 * front_id from the previous iteration.
 	 */
 	uint32_t prev_front_id;
+	/**
+	 * True, if a last_stmt can be cached. It can not be
+	 * cached, for example, if it is not the newest read view.
+	 */
+	bool need_cache_last;
+	/**
+	 * Previously cached statement. It produces a cache chain
+	 * with the next statement to be cached.
+	 */
+	struct tuple *last_cached_stmt;
 };
 
 /**
@@ -154,6 +164,13 @@ vy_read_iterator_open(struct vy_read_iterator *itr, struct vy_run_env *run_env,
  */
 NODISCARD int
 vy_read_iterator_next(struct vy_read_iterator *itr, struct tuple **result);
+
+/**
+ * Cache last returned statement in a chain with a previously
+ * cached statement.
+ */
+void
+vy_read_iterator_cache_last(struct vy_read_iterator *itr);
 
 /**
  * Close the iterator and free resources.
