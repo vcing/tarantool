@@ -170,8 +170,10 @@ vy_read_iterator_range_is_done(struct vy_read_iterator *itr)
 static inline int
 vy_read_iterator_cmp_with_current(struct vy_read_iterator *itr,
 				  const struct tuple *stmt,
-				  bool *move_source_front)
+				  bool *move_source_front,
+				  bool *move_previous_src_front)
 {
+	*move_previous_src_front = false;
 	struct tuple *curr = itr->curr_stmt;
 	if (stmt == NULL && curr != NULL) {
 		*move_source_front = false;
@@ -192,14 +194,21 @@ vy_read_iterator_cmp_with_current(struct vy_read_iterator *itr,
 		return cmp;
 	int64_t lsn_stmt = vy_stmt_lsn(stmt);
 	int64_t lsn_curr = vy_stmt_lsn(curr);
-	if (lsn_stmt != lsn_curr)
-		return 0;
 	int8_t type_stmt = vy_stmt_type(stmt);
 	int8_t type_curr = vy_stmt_type(curr);
-	if (type_stmt == IPROTO_DELETE && type_curr == IPROTO_REPLACE)
+	if (lsn_stmt == lsn_curr) {
+		if (type_stmt == IPROTO_REPLACE && type_curr == IPROTO_DELETE) {
+			*move_previous_src_front = true;
+			return 1;
+		}
+		if (type_stmt == IPROTO_DELETE && type_curr == IPROTO_REPLACE) {
+			*move_previous_src_front = true;
+			return -1;
+		}
+	}
+	if (type_stmt == IPROTO_REPLACE && type_curr == IPROTO_DELETE &&
+	    lsn_stmt > lsn_curr)
 		return -1;
-	if (type_stmt == IPROTO_REPLACE && type_curr == IPROTO_DELETE)
-		return 1;
 	return 0;
 }
 
@@ -241,6 +250,7 @@ vy_read_iterator_evaluate_src(struct vy_read_iterator *itr,
 	int cmp;
 	uint32_t src_id = src - itr->src;
 	bool move_front = false;
+	bool move_previous_src_front = false;
 
 	if (vy_read_iterator_is_exact_match(itr, src->stmt)) {
 		/*
@@ -251,14 +261,17 @@ vy_read_iterator_evaluate_src(struct vy_read_iterator *itr,
 		 * scanned this source at all.
 		 */
 		assert(vy_read_iterator_cmp_with_current(itr, src->stmt,
-							 &move_front) < 0);
+						 &move_front,
+						 &move_previous_src_front) < 0);
 		assert(move_front == true);
 		cmp = -1;
 		*stop = true;
 	} else {
 		cmp = vy_read_iterator_cmp_with_current(itr, src->stmt,
-							&move_front);
+						      &move_front,
+						      &move_previous_src_front);
 	}
+	int prev_src = itr->curr_src;
 	if (cmp < 0) {
 		assert(src->stmt != NULL);
 		tuple_ref(src->stmt);
@@ -268,6 +281,8 @@ vy_read_iterator_evaluate_src(struct vy_read_iterator *itr,
 		itr->curr_src = src_id;
 		itr->front_id++;
 	}
+	if (move_previous_src_front)
+		itr->src[prev_src].front_id = itr->front_id;
 	if (move_front)
 		src->front_id = itr->front_id;
 	if (*stop || src_id >= itr->skipped_src)
@@ -411,6 +426,7 @@ vy_read_iterator_restore_mem(struct vy_read_iterator *itr)
 	int cmp;
 	struct vy_read_src *src = &itr->src[itr->mem_src];
 	bool move_front;
+	bool move_previous_src_front;
 
 	rc = vy_mem_iterator_restore(&src->mem_iterator,
 				     itr->last_stmt, &src->stmt);
@@ -419,7 +435,8 @@ vy_read_iterator_restore_mem(struct vy_read_iterator *itr)
 	if (rc == 0)
 		return 0; /* nothing changed */
 
-	cmp = vy_read_iterator_cmp_with_current(itr, src->stmt, &move_front);
+	cmp = vy_read_iterator_cmp_with_current(itr, src->stmt, &move_front,
+						&move_previous_src_front);
 	if (cmp > 0) {
 		/*
 		 * Memory trees are append-only so if the
@@ -510,7 +527,6 @@ restart:
 	vy_read_iterator_scan_cache(itr, &stop);
 	if (stop)
 		goto done;
-
 	for (i = itr->mem_src; i < itr->disk_src; i++) {
 		if (vy_read_iterator_scan_mem(itr, i, &stop) != 0)
 			return -1;
@@ -556,14 +572,6 @@ rescan_disk:
 		goto rescan_disk;
 	}
 done:
-	if (itr->last_stmt != NULL && itr->curr_stmt != NULL) {
-		bool move_front;
-		(void) move_front;
-		assert(vy_read_iterator_cmp_with_current(itr, itr->last_stmt,
-							 &move_front) < 0);
-		assert(move_front == true);
-	}
-
 	if (itr->need_check_eq && itr->curr_stmt != NULL &&
 	    vy_tuple_compare_with_key(itr->curr_stmt, itr->key,
 				      itr->index->cmp_def) != 0)
@@ -1118,7 +1126,7 @@ clear:
 void
 vy_read_iterator_cache_last(struct vy_read_iterator *itr)
 {
-	if (itr->need_cache_last) {
+	if (itr->need_cache_last && (**itr->read_view).vlsn == INT64_MAX) {
 		vy_cache_add(&itr->index->cache, itr->last_stmt,
 			     itr->last_cached_stmt, itr->key,
 			     itr->iterator_type);

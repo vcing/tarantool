@@ -1704,7 +1704,7 @@ vy_read_iterator_next_full(struct vy_read_iterator *itr, struct vy_env *env,
 					  &pk_tuple) != 0)
 			return -1;
 		if (pk_tuple == NULL)
-			goto dirty_tuple_is_found;
+			continue;
 		int64_t pk_lsn = vy_stmt_lsn(pk_tuple);
 		int64_t sk_lsn = vy_stmt_lsn(sk_tuple);
 		/*
@@ -1718,10 +1718,13 @@ vy_read_iterator_next_full(struct vy_read_iterator *itr, struct vy_env *env,
 		    (sk_lsn < MAX_LSN || vy_stmt_compare(pk_tuple, sk_tuple,
 							 cmp_def) != 0)) {
 			tuple_unref(pk_tuple);
-			goto dirty_tuple_is_found;
+			continue;
 		}
-		if (pk_lsn == sk_lsn)
+		if (pk_lsn == sk_lsn) {
+			assert(vy_stmt_compare(pk_tuple, sk_tuple,
+					       cmp_def) == 0);
 			break;
+		}
 		/*
 		 * Do not reread sk - it can be optimized
 		 * UPDATE.
@@ -1730,15 +1733,6 @@ vy_read_iterator_next_full(struct vy_read_iterator *itr, struct vy_env *env,
 			break;
 		assert(pk_lsn >= sk_lsn || sk_lsn >= MAX_LSN);
 		tuple_unref(pk_tuple);
-dirty_tuple_is_found:
-		/*
-		 * Dirty tuple is found - retry. It is possible
-		 * that the tuple is in the cache for example
-		 * after a previous select() call. If it now was
-		 * not found in the pk, that is the dirty tuple is
-		 * in the cache. Delete it.
-		 */
-		vy_cache_on_write(&itr->index->cache, sk_tuple, NULL);
 	} while (true);
 	vy_read_iterator_cache_last(itr);
 	*ret = pk_tuple;
