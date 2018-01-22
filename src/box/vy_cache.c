@@ -325,6 +325,7 @@ vy_cache_add(struct vy_cache *cache, struct tuple *stmt,
 	     struct tuple *prev_stmt, const struct tuple *key,
 	     enum iterator_type order)
 {
+	return;
 	/* Delete some entries if quota overused */
 	vy_cache_gc(cache->env);
 
@@ -488,6 +489,7 @@ vy_cache_add(struct vy_cache *cache, struct tuple *stmt,
 struct tuple *
 vy_cache_get(struct vy_cache *cache, const struct tuple *key)
 {
+	return NULL;
 	struct vy_cache_entry **entry =
 		vy_cache_tree_find(&cache->cache_tree, key);
 	if (entry == NULL)
@@ -499,6 +501,7 @@ void
 vy_cache_on_write(struct vy_cache *cache, const struct tuple *stmt,
 		  struct tuple **deleted)
 {
+	return;
 	vy_cache_gc(cache->env);
 	bool exact = false;
 	struct vy_cache_tree_iterator itr;
@@ -676,6 +679,7 @@ vy_cache_iterator_next(struct vy_cache_iterator *itr,
 {
 	*ret = NULL;
 	*stop = false;
+	return;
 
 	/* disable cache for errinj test - let it try to read from disk */
 	ERROR_INJECT(ERRINJ_VY_READ_PAGE,
@@ -718,6 +722,7 @@ vy_cache_iterator_skip(struct vy_cache_iterator *itr,
 {
 	*ret = NULL;
 	*stop = false;
+	return;
 
 	/* disable cache for errinj test - let it try to read from disk */
 	ERROR_INJECT(ERRINJ_VY_READ_PAGE,
@@ -787,6 +792,9 @@ vy_cache_iterator_restore(struct vy_cache_iterator *itr,
 			  const struct tuple *last_stmt,
 			  struct tuple **ret, bool *stop)
 {
+	*ret = NULL;
+	*stop = false;
+	return 0;
 	/* disable cache for errinj test - let it try to read from disk */
 	if ((errinj(ERRINJ_VY_READ_PAGE, ERRINJ_BOOL) != NULL &&
 	     errinj(ERRINJ_VY_READ_PAGE, ERRINJ_BOOL)->bparam) ||
