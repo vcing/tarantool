@@ -481,7 +481,7 @@ sq:reset() -- error
 box.session.su('admin')
 
 -- A user cannot alter sequences created by other users.
-box.schema.user.grant('user', 'read', 'universe')
+box.schema.user.grant('user', 'create,read', 'universe')
 box.session.su('user')
 sq:alter{step = 2} -- error
 sq:drop() -- error

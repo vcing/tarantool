@@ -68,11 +68,16 @@ access_check_ddl(const char *name, uint32_t owner_uid,
 {
 	struct credentials *cr = effective_user();
 	user_access_t has_access = cr->universal_access;
-
 	struct space *space = space_by_id(system_space_id);
 	if (space != NULL) {
 		has_access |= space->access[cr->auth_token].effective;
 	}
+	/*
+	 * Add access granted to entity.
+	 */
+	struct access *ent_access = get_entity_access(type);
+	if (ent_access != NULL)
+		has_access |= ent_access[cr->auth_token].effective;
 	/*
 	 * If a user has write access on the universe,
 	 * grant it CREATE, DROP, ALTER access automatically.
@@ -1646,9 +1651,8 @@ on_replace_dd_index(struct trigger * /* trigger */, void *event)
 	uint32_t iid = tuple_field_u32_xc(old_tuple ? old_tuple : new_tuple,
 					  BOX_INDEX_FIELD_ID);
 	struct space *old_space = space_cache_find_xc(id);
-	enum priv_type priv_type = new_tuple ? PRIV_C : PRIV_D;
-	if (old_tuple && new_tuple)
-		priv_type = PRIV_A;
+	/* User must have either Alter privilege to create index. */
+	enum priv_type priv_type = new_tuple ? PRIV_A : PRIV_D;
 	access_check_ddl(old_space->def->name, old_space->def->uid, SC_SPACE,
 			 priv_type, BOX_SPACE_ID);
 	struct index *old_index = space_index(old_space, iid);
@@ -2572,78 +2576,75 @@ priv_def_check(struct priv_def *priv, enum priv_type priv_type)
 	}
 	const char *name = schema_find_name(priv->object_type, priv->object_id);
 
-	switch (priv->object_type) {
-	case SC_UNIVERSE:
-	{
+	if (priv->object_id == 0) {
+		/* Granting to high level entities is allowed only to admin */
 		if (grantor->def->uid != ADMIN) {
-			priv_check_not_owner(grantor, priv, name, priv_type);
-		}
-		break;
-	}
-	case SC_SPACE:
-	{
-		struct space *space = space_cache_find_xc(
-			priv->object_id);
-		if (space->def->uid != grantor->def->uid &&
-		    grantor->def->uid != ADMIN) {
 			priv_check_not_owner(grantor, priv, name,
 					     priv_type);
 		}
-		break;
-	}
-	case SC_FUNCTION:
-	{
-		struct func *func = func_cache_find(priv->object_id);
-		if (func->def->uid != grantor->def->uid &&
-		    grantor->def->uid != ADMIN) {
-			priv_check_not_owner(grantor, priv, name,
-					     priv_type);
+	} else {
+		switch (priv->object_type) {
+		case SC_SPACE: {
+			struct space *space = space_cache_find_xc(
+				priv->object_id);
+			if (space->def->uid != grantor->def->uid &&
+			    grantor->def->uid != ADMIN) {
+				priv_check_not_owner(grantor, priv, name,
+						     priv_type);
+			}
+			break;
 		}
-		break;
-	}
-	case SC_SEQUENCE:
-	{
-		struct sequence *seq = sequence_cache_find(
-			priv->object_id);
-		if (seq->def->uid != grantor->def->uid &&
-		    grantor->def->uid != ADMIN) {
-			priv_check_not_owner(grantor, priv, name,
-					     priv_type);
+		case SC_FUNCTION: {
+			struct func *func = func_cache_find(priv->object_id);
+			if (func->def->uid != grantor->def->uid &&
+			    grantor->def->uid != ADMIN) {
+				priv_check_not_owner(grantor, priv, name,
+						     priv_type);
+			}
+			break;
 		}
-		break;
-	}
-	case SC_ROLE:
-	{
-		struct user *role = user_by_id(priv->object_id);
-		if (role == NULL || role->def->type != SC_ROLE) {
-			tnt_raise(ClientError, ER_NO_SUCH_ROLE,
-				  role ? role->def->name :
-				  int2str(priv->object_id));
+		case SC_SEQUENCE: {
+			struct sequence *seq = sequence_cache_find(
+				priv->object_id);
+			if (seq->def->uid != grantor->def->uid &&
+			    grantor->def->uid != ADMIN) {
+				priv_check_not_owner(grantor, priv, name,
+						     priv_type);
+			}
+			break;
 		}
-		/*
-		 * Only the creator or owner of grantee of the role
-		 * or user with appropriate privileges can grant or revoke it.
-		 * If role is 'PUBLIC' it is allowed to grant for anyone,
-		 * Revoke 'PUBLIC' is allowed only to users who has drop access.
-		 * The latter case is require for dropping users.
-		 */
-		if (role->def->owner != grantor->def->uid &&
-		    grantor->def->uid != grantee->def->owner &&
-			!((role->def->uid == PUBLIC) &&
-			  (((cr->universal_access & PRIV_D)
-			    || priv_type == PRIV_GRANT)
-			   && priv->access == PRIV_X))) {
+		case SC_ROLE: {
+			struct user *role = user_by_id(priv->object_id);
+			if (role == NULL || role->def->type != SC_ROLE) {
+				tnt_raise(ClientError, ER_NO_SUCH_ROLE,
+					  role ? role->def->name :
+					  int2str(priv->object_id));
+			}
+			/*
+			 * Only the creator or owner of grantee of the role
+			 * or user with appropriate privileges can grant or revoke it.
+			 * If role is 'PUBLIC' it is allowed to grant for anyone,
+			 * Revoke 'PUBLIC' is allowed only to users who has drop access.
+			 * The latter case is require for dropping users.
+			 */
+			if (role->def->owner != grantor->def->uid &&
+			    grantor->def->uid != grantee->def->owner &&
+			    !((role->def->uid == PUBLIC) &&
+			      (((cr->universal_access & PRIV_D)
+				|| priv_type == PRIV_GRANT)
+			       && priv->access == PRIV_X))) {
 				tnt_raise(AccessDeniedError,
 					  priv_name(priv_type),
 					  schema_object_name(SC_ROLE),
 					  name,
 					  grantor->def->name);
+			}
+			/* Not necessary to do during revoke, but who cares. */
+			role_check(grantee, role);
 		}
-		/* Not necessary to do during revoke, but who cares. */
-		role_check(grantee, role);
-	}
-	default:
-		break;
+		default:
+			break;
+		}
 	}
 	if (priv->access == 0) {
 		tnt_raise(ClientError, ER_GRANT,
@@ -2786,7 +2787,9 @@ on_replace_dd_schema(struct trigger * /* trigger */, void *event)
 					      BOX_SCHEMA_FIELD_KEY);
 	credentials *cr = effective_user();
 	if (strncmp(key, "max_id", 6) == 0) {
-		if (!(cr->universal_access & (PRIV_W | PRIV_C)))
+		uint32_t access = cr->universal_access |
+			get_entity_access(SC_SPACE)[cr->auth_token].effective;
+		if (!(access & (PRIV_W | PRIV_C)))
 			goto error;
 	} else {
 		uint32_t access = cr->universal_access;

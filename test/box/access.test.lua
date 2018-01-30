@@ -578,8 +578,119 @@ box.schema.user.revoke("guest", "read", "universe", "useless name", {if_exists =
 box.schema.user.revoke("guest", "read", "universe", 0, {if_exists = true})
 box.schema.user.revoke("guest", "read", "universe", nil, {if_exists = true})
 box.schema.user.revoke("guest", "read", "universe", {}, {if_exists = true})
+
 -- prerequisite gh-945
 box.schema.user.grant("guest", "alter", "function")
 box.schema.user.grant("guest", "execute", "sequence")
 box.schema.user.grant("guest", "read,execute", "sequence")
 box.schema.user.grant("guest", "read,write,execute", "role")
+
+-- Check entities DML
+box.schema.user.create("tester", { password  = '123' })
+s = box.schema.space.create("test")
+_ = s:create_index("primary", {parts={1, "unsigned"}})
+seq = box.schema.sequence.create("test")
+box.schema.func.create("func")
+c = (require 'net.box').connect(LISTEN.host, LISTEN.service, {user='tester', password = '123'})
+
+box.session.su("tester", s.select, s)
+box.session.su("tester", seq.set, seq, 1)
+c:call("func")
+box.schema.user.grant("tester", "read", "space")
+box.schema.user.grant("tester", "write", "sequence")
+box.schema.user.grant("tester", "execute", "function")
+box.session.su("tester", s.select, s)
+box.session.su("tester", seq.next, seq)
+c:call("func")
+
+box.session.su("tester", s.insert, s, {1})
+box.schema.user.grant("tester", "write", "space")
+box.session.su("tester", s.insert, s, {1})
+
+box.schema.user.drop("tester")
+s:drop()
+seq:drop()
+box.schema.func.drop("func")
+c:close()
+
+-- Entities DDL
+box.schema.user.create("tester", { password  = '123' })
+c = (require 'net.box').connect(LISTEN.host, LISTEN.service, {user='tester', password = '123'})
+
+-- failing create
+box.session.su("tester")
+_ = box.schema.space.create("test")
+_ = box.schema.sequence.create("test")
+_ = box.schema.user.create("test")
+_ = box.schema.func.create("func")
+
+box.session.su("admin")
+box.schema.user.grant("tester", "create", "space")
+
+box.session.su("tester")
+s = box.schema.space.create("test")
+_ = s:create_index("primary")
+s:insert{1}
+s:select{}
+s:drop()
+
+box.session.su("admin")
+box.schema.user.revoke("tester", "create", "space")
+box.schema.user.grant("tester", "alter", "space")
+s = box.schema.space.create("test")
+
+box.session.su("tester")
+i = s:create_index("primary") -- success
+s:insert{1} -- fail
+s:select{} -- fail
+s:drop() -- fail
+
+box.session.su("admin")
+box.schema.user.revoke("tester", "alter", "space")
+box.schema.user.grant("tester", "drop", "space")
+
+box.session.su("tester")
+i:drop() -- success
+s:create_index("primary") --fail
+s:insert{1} -- fail
+s:select{} -- fail
+s:drop() -- success
+
+box.session.su("admin")
+box.schema.user.revoke("tester", "drop", "space")
+box.schema.user.grant("tester", "create", "sequence")
+
+box.session.su("tester")
+seq = box.schema.sequence.create("test")
+seq:set(1)
+seq:drop()
+
+box.session.su("admin")
+box.schema.user.revoke("tester", "create", "sequence")
+box.schema.user.grant("tester", "drop", "sequence")
+seq = box.schema.sequence.create("test")
+
+box.session.su("tester")
+seq:set(1)
+seq:drop()
+
+box.session.su("admin")
+box.schema.user.revoke("tester", "drop", "sequence")
+box.schema.user.grant("tester", "create", "function")
+
+box.session.su("tester")
+box.schema.func.create("func")
+c:call('func')
+box.schema.func.drop("func")
+
+box.session.su("admin")
+box.schema.user.revoke("tester", "create", "function")
+box.schema.user.grant("tester", "drop", "function")
+box.schema.func.create("func")
+
+box.session.su("tester")
+box.schema.func.drop("func")
+box.schema.func.create("func") -- fail
+
+box.session.su("admin")
+box.schema.user.drop("tester")

@@ -188,7 +188,9 @@ static bool
 vspace_filter(struct space *source, struct tuple *tuple)
 {
 	struct credentials *cr = effective_user();
-	if (PRIV_WRDA & cr->universal_access)
+	uint32_t has_access = cr->universal_access |
+		get_entity_access(SC_SPACE)[cr->auth_token].effective;
+	if (PRIV_WRDA & has_access)
 		return true;
 	if (source->access[cr->auth_token].effective & PRIV_R)
 		return true;
@@ -199,7 +201,7 @@ vspace_filter(struct space *source, struct tuple *tuple)
 	if (space == NULL)
 		return false;
 	uint32_t effective = space->access[cr->auth_token].effective;
-	return ((PRIV_R | PRIV_W | PRIV_D | PRIV_A) & effective ||
+	return (PRIV_WRDA & effective ||
 		space->def->uid == cr->uid);
 }
 
@@ -253,7 +255,9 @@ static bool
 vfunc_filter(struct space *source, struct tuple *tuple)
 {
 	struct credentials *cr = effective_user();
-	if ((PRIV_WRDA | PRIV_X) & cr->universal_access)
+	uint32_t has_access = cr->universal_access |
+		get_entity_access(SC_FUNCTION)[cr->auth_token].effective;
+	if ((PRIV_WRDA | PRIV_X) & has_access)
 		return true;
 	if (PRIV_R & source->access[cr->auth_token].effective)
 		return true; /* read access to original space */
@@ -273,7 +277,9 @@ static bool
 vsequence_filter(struct space *source, struct tuple *tuple)
 {
 	struct credentials *cr = effective_user();
-	if (PRIV_WRDA & cr->universal_access)
+	uint32_t has_access = cr->universal_access |
+		get_entity_access(SC_SEQUENCE)[cr->auth_token].effective;
+	if (PRIV_WRDA & has_access)
 		return true;
 	if (PRIV_R & source->access[cr->auth_token].effective)
 		return true; /* read access to original space */

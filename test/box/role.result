@@ -695,8 +695,8 @@ box.schema.user.grant('grantee', 'public')
 - error: User 'grantee' already has role 'public'
 ...
 --
--- revoking role 'public' is another deal - the
--- superuser or creator of user can do that, and even that would be useless,
+-- revoking role 'public' is another deal:
+-- the superuser or creator of user can do that, and even that would be useless,
 -- since one can still re-grant it back to oneself.
 --
 box.schema.user.revoke('grantee', 'public')
