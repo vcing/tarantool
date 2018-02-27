@@ -3900,21 +3900,19 @@ sqlite3_column_name(sqlite3_stmt *, int N);
  * CAPI3REF: Source Of Data In A Query Result
  * METHOD: sqlite3_stmt
  *
- * ^These routines provide a means to determine the database, table, and
- * table column that is the origin of a particular result column in
- * [SELECT] statement.
- * ^The name of the database or table or column can be returned as
- * either a UTF-8 or UTF-16 string.  ^The _database_ routines return
- * the database name, the _table_ routines return the table name, and
- * the origin_ routines return the column name.
- * ^The returned string is valid until the [prepared statement] is destroyed
- * using [sqlite3_finalize()] or until the statement is automatically
+ * ^These routines provide a means to determine the table and
+ * table column that is the origin of a particular result column
+ * in [SELECT] statement.
+ * The _table_ routines return the table name, and the origin_
+ * routines return the column name. ^The returned string is valid
+ * until the [prepared statement] is destroyed using
+ * [sqlite3_finalize()] or until the statement is automatically
  * reprepared by the first call to [sqlite3_step()] for a particular run
  * or until the same information is requested
  * again in a different encoding.
  *
  * ^The names returned are the original un-aliased names of the
- * database, table, and column.
+ * table and column.
  *
  * ^The first argument to these interfaces is a [prepared statement].
  * ^These functions return information about the Nth result column returned by
@@ -3926,63 +3924,12 @@ sqlite3_column_name(sqlite3_stmt *, int N);
  * NULL.  ^These routine might also return NULL if a memory allocation error
  * occurs.  ^Otherwise, they return the name of the attached database, table,
  * or column that query result column was extracted from.
- *
- * ^As with all other SQLite APIs, those whose names end with "16" return
- * UTF-16 encoded strings and the other functions return UTF-8.
- *
- * ^These APIs are only available if the library was compiled with the
- * [SQLITE_ENABLE_COLUMN_METADATA] C-preprocessor symbol.
- *
- * If two or more threads call one or more of these routines against the same
- * prepared statement and column at the same time then the results are
- * undefined.
- *
- * If two or more threads call one or more
- * [sqlite3_column_database_name | column metadata interfaces]
- * for the same [prepared statement] and result column
- * at the same time then the results are undefined.
-*/
-SQLITE_API const char *
-sqlite3_column_database_name(sqlite3_stmt *,
-			     int);
+ */
 SQLITE_API const char *
 sqlite3_column_table_name(sqlite3_stmt *, int);
 
 SQLITE_API const char *
 sqlite3_column_origin_name(sqlite3_stmt *, int);
-
-/*
- * CAPI3REF: Declared Datatype Of A Query Result
- * METHOD: sqlite3_stmt
- *
- * ^(The first parameter is a [prepared statement].
- * If this statement is a [SELECT] statement and the Nth column of the
- * returned result set of that [SELECT] is a table column (not an
- * expression or subquery) then the declared type of the table
- * column is returned.)^  ^If the Nth column of the result set is an
- * expression or subquery, then a NULL pointer is returned.
- * ^The returned string is always UTF-8 encoded.
- *
- * ^(For example, given the database schema:
- *
- * CREATE TABLE t1(c1 VARIANT);
- *
- * and the following statement to be compiled:
- *
- * SELECT c1 + 1, c1 FROM t1;
- *
- * this routine would return the string "VARIANT" for the second result
- * column (i==1), and a NULL pointer for the first result column (i==0).)^
- *
- * ^SQLite uses dynamic run-time typing.  ^So just because a column
- * is declared to contain a particular type does not mean that the
- * data stored in that column is of the declared type.  SQLite is
- * strongly typed, but the typing is dynamic not static.  ^Type
- * is associated with individual values, not with the containers
- * used to hold those values.
-*/
-SQLITE_API const char *
-sqlite3_column_decltype(sqlite3_stmt *, int);
 
 /*
  * CAPI3REF: Evaluate An SQL Statement
@@ -5467,16 +5414,6 @@ sqlite3_table_column_metadata(sqlite3 * db,	/* Connection handle */
 			      int *pPrimaryKey,	/* OUTPUT: True if column part of PK */
 			      int *pAutoinc	/* OUTPUT: True if column is auto-increment */
 	);
-
-SQLITE_API int
-sqlite3_table_column_metadata(sqlite3 * db,
-			      const char *zTableName,
-			      const char *zColumnName,
-			      char const **pzDataType,
-			      char const **pzCollSeq,
-			      int *pNotNull,
-			      int *pPrimaryKey,
-			      int *pAutoinc);
 
 /*
  * CAPI3REF: A Handle To An Open BLOB

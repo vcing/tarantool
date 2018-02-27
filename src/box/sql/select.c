@@ -1588,29 +1588,16 @@ generateSortTail(Parse * pParse,	/* Parsing context */
  *   SELECT abc FROM (SELECT col AS abc FROM tbl);
  *
  * The declaration type for any expression other than a column is NULL.
- *
- * This routine has either 3 or 6 parameters depending on whether or not
- * the SQLITE_ENABLE_COLUMN_METADATA compile-time option is used.
  */
-#ifdef SQLITE_ENABLE_COLUMN_METADATA
-#define columnType(A,B,C,D,E,F) columnTypeImpl(A,B,D,E,F)
-#else				/* if !defined(SQLITE_ENABLE_COLUMN_METADATA) */
-#define columnType(A,B,C,D,E,F) columnTypeImpl(A,B,F)
-#endif
 static const char *
-columnTypeImpl(NameContext * pNC, Expr * pExpr,
-#ifdef SQLITE_ENABLE_COLUMN_METADATA
-	       const char **pzOrigTab, const char **pzOrigCol,
-#endif
-	       u8 * pEstWidth)
+columnType(NameContext *pNC, Expr *pExpr, const char **pzOrigTab,
+	   const char **pzOrigCol, u8 *pEstWidth)
 {
 	char const *zType = 0;
 	int j;
 	u8 estWidth = 1;
-#ifdef SQLITE_ENABLE_COLUMN_METADATA
 	char const *zOrigTab = 0;
 	char const *zOrigCol = 0;
-#endif
 
 	assert(pExpr != 0);
 	assert(pNC->pSrcList != 0);
@@ -1680,23 +1667,17 @@ columnTypeImpl(NameContext * pNC, Expr * pExpr,
 					sNC.pNext = pNC;
 					sNC.pParse = pNC->pParse;
 					zType =
-					    columnType(&sNC, p, 0,
-						       &zOrigTab, &zOrigCol,
-						       &estWidth);
+					    columnType(&sNC, p, &zOrigTab,
+						       &zOrigCol, &estWidth);
 				}
 			} else if (pTab->pSchema) {
 				/* A real table */
 				assert(!pS);
 				assert(iCol >= 0 && iCol < pTab->nCol);
-#ifdef SQLITE_ENABLE_COLUMN_METADATA
 				zOrigCol = pTab->aCol[iCol].zName;
 				zType = sqlite3ColumnType(&pTab->aCol[iCol], 0);
 				estWidth = pTab->aCol[iCol].szEst;
 				zOrigTab = pTab->zName;
-#else
-				zType = sqlite3ColumnType(&pTab->aCol[iCol], 0);
-				estWidth = pTab->aCol[iCol].szEst;
-#endif
 			}
 			break;
 		}
@@ -1714,20 +1695,18 @@ columnTypeImpl(NameContext * pNC, Expr * pExpr,
 			sNC.pNext = pNC;
 			sNC.pParse = pNC->pParse;
 			zType =
-			    columnType(&sNC, p, 0, &zOrigTab, &zOrigCol,
+			    columnType(&sNC, p, &zOrigTab, &zOrigCol,
 				       &estWidth);
 			break;
 		}
 #endif
 	}
 
-#ifdef SQLITE_ENABLE_COLUMN_METADATA
 	if (pzOrigTab) {
 		assert(pzOrigTab && pzOrigCol);
 		*pzOrigTab = zOrigTab;
 		*pzOrigCol = zOrigCol;
 	}
-#endif
 	if (pEstWidth)
 		*pEstWidth = estWidth;
 	return zType;
@@ -1742,7 +1721,6 @@ generateColumnTypes(Parse * pParse,	/* Parser context */
 		    SrcList * pTabList,	/* List of tables */
 		    ExprList * pEList)	/* Expressions defining the result set */
 {
-#ifndef SQLITE_OMIT_DECLTYPE
 	Vdbe *v = pParse->pVdbe;
 	int i;
 	NameContext sNC;
@@ -1751,29 +1729,15 @@ generateColumnTypes(Parse * pParse,	/* Parser context */
 	for (i = 0; i < pEList->nExpr; i++) {
 		Expr *p = pEList->a[i].pExpr;
 		const char *zType;
-#ifdef SQLITE_ENABLE_COLUMN_METADATA
-		const char *zOrigDb = 0;
 		const char *zOrigTab = 0;
 		const char *zOrigCol = 0;
-		zType = columnType(&sNC, p, &zOrigDb, &zOrigTab, &zOrigCol, 0);
+		zType = columnType(&sNC, p, &zOrigTab, &zOrigCol, 0);
 
-		/* The vdbe must make its own copy of the column-type and other
-		 * column specific strings, in case the schema is reset before this
-		 * virtual machine is deleted.
-		 */
-		sqlite3VdbeSetColName(v, i, COLNAME_DATABASE, zOrigDb,
-				      SQLITE_TRANSIENT);
 		sqlite3VdbeSetColName(v, i, COLNAME_TABLE, zOrigTab,
 				      SQLITE_TRANSIENT);
 		sqlite3VdbeSetColName(v, i, COLNAME_COLUMN, zOrigCol,
 				      SQLITE_TRANSIENT);
-#else
-		zType = columnType(&sNC, p, 0, 0, 0, 0);
-#endif
-		sqlite3VdbeSetColName(v, i, COLNAME_DECLTYPE, zType,
-				      SQLITE_TRANSIENT);
 	}
-#endif				/* !defined(SQLITE_OMIT_DECLTYPE) */
 }
 
 /*
@@ -2005,7 +1969,7 @@ sqlite3SelectAddColumnTypeAndCollation(Parse * pParse,		/* Parsing contexts */
 		const char *zType;
 		int n, m;
 		p = a[i].pExpr;
-		zType = columnType(&sNC, p, 0, 0, 0, &pCol->szEst);
+		zType = columnType(&sNC, p, 0, 0, &pCol->szEst);
 		szAll += pCol->szEst;
 		pCol->affinity = sqlite3ExprAffinity(p);
 		if (zType && (m = sqlite3Strlen30(zType)) > 0) {

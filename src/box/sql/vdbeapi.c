@@ -1134,26 +1134,23 @@ sqlite3_column_type(sqlite3_stmt * pStmt, int i)
 }
 
 /*
- * Convert the N-th element of pStmt->pColName[] into a string using
- * xFunc() then return that string.  If N is out of range, return 0.
+ * Get the N-th element of pStmt->pColName[]. If N is out of
+ * range, return NULL.
  *
  * There are up to 5 names for each column.  useType determines which
  * name is returned.  Here are the names:
  *
  *    0      The column name as it should be displayed for output
- *    1      The datatype name for the column
- *    2      The name of the database that the column derives from
- *    3      The name of the table that the column derives from
- *    4      The name of the table column that the result column derives from
+ *    1      The name of the table that the column derives from
+ *    2      The name of the table column that the result column derives from
  *
  * If the result is not a simple column reference (if it is an expression
- * or a constant) then useTypes 2, 3, and 4 return NULL.
+ * or a constant) then useTypes 3 and 4 return NULL.
  */
-static const void *
-columnName(sqlite3_stmt * pStmt,
-	   int N, const void *(*xFunc) (Mem *), int useType)
+static const char *
+columnName(sqlite3_stmt *pStmt, int N, int useType)
 {
-	const void *ret;
+	const char *ret;
 	Vdbe *p;
 	int n;
 	sqlite3 *db;
@@ -1172,7 +1169,7 @@ columnName(sqlite3_stmt * pStmt,
 		N += useType * n;
 		sqlite3_mutex_enter(db->mutex);
 		assert(db->mallocFailed == 0);
-		ret = xFunc(&p->aColName[N]);
+		ret = (const char *) sqlite3_value_text(&p->aColName[N]);
 		/* A malloc may have failed inside of the xFunc() call. If this
 		 * is the case, clear the mallocFailed flag and return NULL.
 		 */
@@ -1192,43 +1189,7 @@ columnName(sqlite3_stmt * pStmt,
 const char *
 sqlite3_column_name(sqlite3_stmt * pStmt, int N)
 {
-	return columnName(pStmt, N, (const void *(*)(Mem *))sqlite3_value_text,
-			  COLNAME_NAME);
-}
-
-/*
- * Constraint:  If you have ENABLE_COLUMN_METADATA then you must
- * not define OMIT_DECLTYPE.
- */
-#if defined(SQLITE_OMIT_DECLTYPE) && defined(SQLITE_ENABLE_COLUMN_METADATA)
-#error "Must not define both SQLITE_OMIT_DECLTYPE \
-         and SQLITE_ENABLE_COLUMN_METADATA"
-#endif
-
-#ifndef SQLITE_OMIT_DECLTYPE
-/*
- * Return the column declaration type (if applicable) of the 'i'th column
- * of the result set of SQL statement pStmt.
- */
-const char *
-sqlite3_column_decltype(sqlite3_stmt * pStmt, int N)
-{
-	return columnName(pStmt, N, (const void *(*)(Mem *))sqlite3_value_text,
-			  COLNAME_DECLTYPE);
-}
-#endif				/* SQLITE_OMIT_DECLTYPE */
-
-#ifdef SQLITE_ENABLE_COLUMN_METADATA
-/*
- * Return the name of the database from which a result column derives.
- * NULL is returned if the result column is an expression or constant or
- * anything else which is not an unambiguous reference to a database column.
- */
-const char *
-sqlite3_column_database_name(sqlite3_stmt * pStmt, int N)
-{
-	return columnName(pStmt, N, (const void *(*)(Mem *))sqlite3_value_text,
-			  COLNAME_DATABASE);
+	return columnName(pStmt, N, COLNAME_NAME);
 }
 
 /*
@@ -1239,8 +1200,7 @@ sqlite3_column_database_name(sqlite3_stmt * pStmt, int N)
 const char *
 sqlite3_column_table_name(sqlite3_stmt * pStmt, int N)
 {
-	return columnName(pStmt, N, (const void *(*)(Mem *))sqlite3_value_text,
-			  COLNAME_TABLE);
+	return columnName(pStmt, N, COLNAME_TABLE);
 }
 
 /*
@@ -1251,10 +1211,8 @@ sqlite3_column_table_name(sqlite3_stmt * pStmt, int N)
 const char *
 sqlite3_column_origin_name(sqlite3_stmt * pStmt, int N)
 {
-	return columnName(pStmt, N, (const void *(*)(Mem *))sqlite3_value_text,
-			  COLNAME_COLUMN);
+	return columnName(pStmt, N, COLNAME_COLUMN);
 }
-#endif				/* SQLITE_ENABLE_COLUMN_METADATA */
 
 /******************************* sqlite3_bind_  **************************
  *
