@@ -434,9 +434,9 @@ sqlite3Prepare(sqlite3 * db,	/* Database handle. */
 			mx = 8;
 		}
 		for (i = iFirst; i < mx; i++) {
-			sqlite3VdbeSetColName(sParse.pVdbe, i - iFirst,
-					      COLNAME_NAME, azColName[i],
-					      SQLITE_STATIC);
+			sqlite3VdbeSetColMeta(sParse.pVdbe, i - iFirst,
+					      azColName[i], SQLITE_STATIC, NULL,
+					      0);
 		}
 	}
 #endif

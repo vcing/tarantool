@@ -406,7 +406,8 @@ struct Vdbe {
 	Op *aOp;		/* Space to hold the virtual machine's program */
 	Mem *aMem;		/* The memory locations */
 	Mem **apArg;		/* Arguments to currently executing user function */
-	Mem *aColName;		/* Column names to return */
+	/* Column meta to return. */
+	struct sql_column_meta *columns;
 	Mem *pResultSet;	/* Pointer to an array of results */
 	char *zErrMsg;		/* Error message written here */
 	VdbeCursor **apCsr;	/* One element of this array for each open cursor */

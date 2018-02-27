@@ -38,6 +38,7 @@
 #include "box/schema.h"
 #include "box/tuple_format.h"
 #include "box/txn.h"
+#include "box/coll_cache.h"
 #include "msgpuck/msgpuck.h"
 #include "sqliteInt.h"
 #include "vdbeInt.h"
@@ -2370,51 +2371,91 @@ Cleanup(Vdbe * p)
  * be called on an SQL statement before sqlite3_step().
  */
 void
-sqlite3VdbeSetNumCols(Vdbe * p, int nResColumn)
+sqlite3VdbeSetNumCols(Vdbe *p, int n)
 {
-	int n;
 	sqlite3 *db = p->db;
-
-	releaseMemArray(p->aColName, p->nResColumn * COLNAME_N);
-	sqlite3DbFree(db, p->aColName);
-	n = nResColumn * COLNAME_N;
-	p->nResColumn = (u16) nResColumn;
-	p->aColName = (Mem *) sqlite3DbMallocRawNN(db, sizeof(Mem) * n);
-	if (p->aColName == 0)
-		return;
-	initMemArray(p->aColName, n, p->db, MEM_Null);
+	struct sql_column_meta *col = p->columns;
+	for (uint32_t i = 0; i < p->nResColumn; ++i, ++col) {
+		if (col->need_free_alias)
+			sqlite3DbFree(db, col->alias);
+		sqlite3DbFree(db, col->name);
+		col->alias = NULL;
+		col->name = NULL;
+	}
+	if (n == 0) {
+		sqlite3DbFree(db, p->columns);
+	} else {
+		uint32_t size = sizeof(p->columns[0]) * n;
+		struct sql_column_meta *new_meta = (struct sql_column_meta *)
+			sqlite3DbRealloc(db, p->columns, size);
+		if (new_meta == NULL)
+			return;
+		p->columns = new_meta;
+		memset(new_meta, 0, size);
+	}
+	p->nResColumn = (u16) n;
 }
 
-/*
- * Set the name of the idx'th column to be returned by the SQL statement.
- * zName must be a pointer to a nul terminated string.
- *
- * This call must be made after a call to sqlite3VdbeSetNumCols().
- *
- * The final parameter, xDel, must be one of SQLITE_DYNAMIC, SQLITE_STATIC
- * or SQLITE_TRANSIENT. If it is SQLITE_DYNAMIC, then the buffer pointed
- * to by zName will be freed by sqlite3DbFree() when the vdbe is destroyed.
+/**
+ * Store column meta in VDBE.
+ * @param p VDBE to store in.
+ * @param idx Column 0-based index.
+ * @param alias Alias visible to a user.
+ * @param destructor Type of an alias: it can be static memory,
+ *        memory that must be duplicated, and already duplicated.
+ * @param table Table containing a column, or NULL.
+ * @param fieldno Column number in a table.
  */
-int
-sqlite3VdbeSetColName(Vdbe * p,			/* Vdbe being configured */
-		      int idx,			/* Index of column zName applies to */
-		      int var,			/* One of the COLNAME_* constants */
-		      const char *zName,	/* Pointer to buffer containing name */
-		      void (*xDel) (void *))	/* Memory management strategy for zName */
+void
+sqlite3VdbeSetColMeta(Vdbe *p, int idx,
+		      const char *alias, void *destructor,
+		      const struct Table *table, uint32_t fieldno)
 {
-	int rc;
-	Mem *pColName;
 	assert(idx < p->nResColumn);
-	assert(var < COLNAME_N);
-	if (p->db->mallocFailed) {
-		assert(!zName || xDel != SQLITE_DYNAMIC);
-		return SQLITE_NOMEM_BKPT;
+	struct sql_column_meta *meta = &p->columns[idx];
+	if (table != NULL) {
+		assert(fieldno < (uint32_t) table->nCol);
+		const struct Column *column = &table->aCol[fieldno];
+		meta->name = sqlite3DbStrDup(p->db, column->zName);
+		meta->is_nullable = column->notNull == ON_CONFLICT_ACTION_NONE;
+		meta->is_primary_part =
+			(column->colFlags & COLFLAG_PRIMKEY) != 0;
+		meta->is_autoincrement =
+			meta->is_primary_part &&
+			(table->tabFlags & TF_Autoincrement) != 0;
+		if (column->zColl != NULL) {
+			struct coll *coll = coll_by_name(column->zColl,
+							 strlen(column->zColl));
+			/*
+			 * Collation can be not found, if its name
+			 * is BINARY.
+			 */
+			if (coll != NULL) {
+				meta->is_case_sensitive =
+					coll_is_case_sensitive(coll);
+			} else {
+				assert(strcasecmp(column->zColl,
+						  "binary") == 0);
+				meta->is_case_sensitive = true;
+			}
+		} else {
+			meta->is_case_sensitive = true;
+		}
+		if (strcmp(column->zName, alias) == 0) {
+			/*
+			 * If a column is selected with no alias,
+			 * then do not copy it twice. Store two
+			 * pointers to the same name.
+			 */
+			destructor = SQLITE_STATIC;
+			alias = meta->name;
+		}
 	}
-	assert(p->aColName != 0);
-	pColName = &(p->aColName[idx + var * p->nResColumn]);
-	rc = sqlite3VdbeMemSetStr(pColName, zName, -1, 1, xDel);
-	assert(rc != 0 || !zName || (pColName->flags & MEM_Term) != 0);
-	return rc;
+	if (destructor == SQLITE_TRANSIENT)
+		meta->alias = sqlite3DbStrDup(p->db, alias);
+	else
+		meta->alias = (char *) alias;
+	meta->need_free_alias = destructor != SQLITE_STATIC;
 }
 
 /*
@@ -2999,7 +3040,6 @@ sqlite3VdbeClearObject(sqlite3 * db, Vdbe * p)
 {
 	SubProgram *pSub, *pNext;
 	assert(p->db == 0 || p->db == db);
-	releaseMemArray(p->aColName, p->nResColumn * COLNAME_N);
 	for (pSub = p->pProgram; pSub; pSub = pNext) {
 		pNext = pSub->pNext;
 		vdbeFreeOpArray(db, pSub->aOp, pSub->nOp);
@@ -3011,7 +3051,7 @@ sqlite3VdbeClearObject(sqlite3 * db, Vdbe * p)
 		sqlite3DbFree(db, p->pFree);
 	}
 	vdbeFreeOpArray(db, p->aOp, p->nOp);
-	sqlite3DbFree(db, p->aColName);
+	sqlite3VdbeSetNumCols(p, 0);
 	sqlite3DbFree(db, p->zSql);
 #ifdef SQLITE_ENABLE_STMT_SCANSTATUS
 	{

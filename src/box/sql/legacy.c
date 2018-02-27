@@ -113,9 +113,6 @@ sqlite3_exec(sqlite3 * db,	/* The database on which the SQL executes */
 						    (char *)
 						    sqlite3_column_name(pStmt,
 									i);
-						/* sqlite3VdbeSetColName() installs column names as UTF8
-						 * strings so there is no way for sqlite3_column_name() to fail.
-						 */
 						assert(azCols[i] != 0);
 					}
 					callbackIsInit = 1;

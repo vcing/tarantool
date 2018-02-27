@@ -906,8 +906,8 @@ sqlite3Insert(Parse * pParse,	/* Parser context */
 	    && !pParse->pTriggerTab) {
 		sqlite3VdbeAddOp2(v, OP_ResultRow, regRowCount, 1);
 		sqlite3VdbeSetNumCols(v, 1);
-		sqlite3VdbeSetColName(v, 0, COLNAME_NAME, "rows inserted",
-				      SQLITE_STATIC);
+		sqlite3VdbeSetColMeta(v, 0, "rows inserted", SQLITE_STATIC,
+				      NULL, 0);
 	}
 
  insert_cleanup:

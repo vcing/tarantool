@@ -1359,6 +1359,50 @@ struct Column {
 	u8 colFlags;		/* Boolean properties.  See COLFLAG_ defines below */
 };
 
+/**
+ * Column meta information, generated on DML/SQL requests. On DDL
+ * operations no columns and no meta.
+ * On DML column meta is restricted by "rows inserted",
+ * "rows deleted" and other aggregated information that in general
+ * does not depend on a request type.
+ * On DQL (SELECT) each column has a meta. A result set column can
+ * be directly reflected to a column of a table, or be a result of
+ * an expression, or be a constant.
+ * If a column does not belong to a table, then meta stores only
+ * its alias (SELECT ... as <alias> ...). If a column belongs to
+ * a table, then before a request execution in a meta some info
+ * is aggregated.
+ * Meta can not simply store direct pointers to a Table or Column
+ * objects, since in a future we will add iterators, prepared
+ * statements and other things, that must survive after DDL.
+ * Moreover Vinyl engine can yield in DQL, and during a yield DDL
+ * is possible too.
+ */
+struct sql_column_meta {
+	/** Column name, visible to a user. */
+	char *alias;
+	/**
+	 * Alias can be reference to a static memory - do not free
+	 * it in such a case.
+	 */
+	bool need_free_alias;
+	/**
+	 * Original column name stored in a table, if a column
+	 * belongs to a table. Else NULL.
+	 */
+	char *name;
+	union {
+		/** Some meta, aggregated for a table column. */
+		struct PACKED {
+			bool is_nullable : 1;
+			bool is_primary_part : 1;
+			bool is_autoincrement : 1;
+			bool is_case_sensitive : 1;
+		};
+		uint8_t flags;
+	};
+};
+
 /* Allowed values for Column.colFlags:
  */
 #define COLFLAG_PRIMKEY  0x0001	/* Column is part of the primary key */

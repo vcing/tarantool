@@ -1569,35 +1569,36 @@ generateSortTail(Parse * pParse,	/* Parsing context */
 	sqlite3VdbeResolveLabel(v, addrBreak);
 }
 
-/*
- * Return a pointer to a string containing the 'declaration type' of the
- * expression pExpr. The string may be treated as static by the caller.
+/**
+ * Get a declaration type of an expression and its estimated size.
+ * The result string may be treated as static by the caller.
  *
- * Also try to estimate the size of the returned value and return that
- * result in *pEstWidth.
+ * The declaration type is the exact datatype definition extracted
+ * from the original CREATE TABLE statement if the expression is a
+ * column. Exactly when an expression is considered a column can
+ * be complex in the presence of subqueries. The result-set
+ * expression in all of the following SELECT statements is
+ * considered a column by this function. Only table columns has
+ * declaration type - for others NULL is returned.
+ * @param pNC Parser context with tables list.
+ * @param pExpr Expression to detect type.
+ * @param[out] table Table containing the found column. Can be
+ *             NULL.
+ * @param[out] fieldno Index of a column in a table. Can be NULL.
+ * @param[out] pEstWidth Estimated column value size. Can be NULL.
  *
- * The declaration type is the exact datatype definition extracted from the
- * original CREATE TABLE statement if the expression is a column.
- * Exactly when an expression is considered a column can be complex
- * in the presence of subqueries. The result-set expression in all
- * of the following SELECT statements is considered a column by this function.
- *
- *   SELECT col FROM tbl;
- *   SELECT (SELECT col FROM tbl;
- *   SELECT (SELECT col FROM tbl);
- *   SELECT abc FROM (SELECT col AS abc FROM tbl);
- *
- * The declaration type for any expression other than a column is NULL.
+ * @retval not NULL Table column declaration type.
+ * @retval     NULL An expression is not column.
  */
 static const char *
-columnType(NameContext *pNC, Expr *pExpr, const char **pzOrigTab,
-	   const char **pzOrigCol, u8 *pEstWidth)
+columnType(NameContext *pNC, Expr *pExpr, const struct Table **table,
+	   uint32_t *fieldno, u8 *pEstWidth)
 {
 	char const *zType = 0;
 	int j;
 	u8 estWidth = 1;
-	char const *zOrigTab = 0;
-	char const *zOrigCol = 0;
+	const struct Table *found_table = NULL;
+	uint32_t found_fieldno = 0;
 
 	assert(pExpr != 0);
 	assert(pNC->pSrcList != 0);
@@ -1667,17 +1668,18 @@ columnType(NameContext *pNC, Expr *pExpr, const char **pzOrigTab,
 					sNC.pNext = pNC;
 					sNC.pParse = pNC->pParse;
 					zType =
-					    columnType(&sNC, p, &zOrigTab,
-						       &zOrigCol, &estWidth);
+					    columnType(&sNC, p, &found_table,
+						       &found_fieldno,
+						       &estWidth);
 				}
 			} else if (pTab->pSchema) {
 				/* A real table */
 				assert(!pS);
 				assert(iCol >= 0 && iCol < pTab->nCol);
-				zOrigCol = pTab->aCol[iCol].zName;
+				found_fieldno = iCol;
 				zType = sqlite3ColumnType(&pTab->aCol[iCol], 0);
 				estWidth = pTab->aCol[iCol].szEst;
-				zOrigTab = pTab->zName;
+				found_table = pTab;
 			}
 			break;
 		}
@@ -1695,49 +1697,21 @@ columnType(NameContext *pNC, Expr *pExpr, const char **pzOrigTab,
 			sNC.pNext = pNC;
 			sNC.pParse = pNC->pParse;
 			zType =
-			    columnType(&sNC, p, &zOrigTab, &zOrigCol,
+			    columnType(&sNC, p, &found_table, &found_fieldno,
 				       &estWidth);
 			break;
 		}
 #endif
 	}
 
-	if (pzOrigTab) {
-		assert(pzOrigTab && pzOrigCol);
-		*pzOrigTab = zOrigTab;
-		*pzOrigCol = zOrigCol;
+	if (table != NULL) {
+		assert(fieldno != NULL);
+		*table = found_table;
+		*fieldno = found_fieldno;
 	}
 	if (pEstWidth)
 		*pEstWidth = estWidth;
 	return zType;
-}
-
-/*
- * Generate code that will tell the VDBE the declaration types of columns
- * in the result set.
- */
-static void
-generateColumnTypes(Parse * pParse,	/* Parser context */
-		    SrcList * pTabList,	/* List of tables */
-		    ExprList * pEList)	/* Expressions defining the result set */
-{
-	Vdbe *v = pParse->pVdbe;
-	int i;
-	NameContext sNC;
-	sNC.pSrcList = pTabList;
-	sNC.pParse = pParse;
-	for (i = 0; i < pEList->nExpr; i++) {
-		Expr *p = pEList->a[i].pExpr;
-		const char *zType;
-		const char *zOrigTab = 0;
-		const char *zOrigCol = 0;
-		zType = columnType(&sNC, p, &zOrigTab, &zOrigCol, 0);
-
-		sqlite3VdbeSetColName(v, i, COLNAME_TABLE, zOrigTab,
-				      SQLITE_TRANSIENT);
-		sqlite3VdbeSetColName(v, i, COLNAME_COLUMN, zOrigCol,
-				      SQLITE_TRANSIENT);
-	}
 }
 
 /*
@@ -1770,16 +1744,22 @@ generateColumnNames(Parse * pParse,	/* Parser context */
 	pParse->colNamesSet = 1;
 	fullNames = (user_session->sql_flags & SQLITE_FullColNames) != 0;
 	shortNames = (user_session->sql_flags & SQLITE_ShortColNames) != 0;
+	NameContext sNC;
+	sNC.pSrcList = pTabList;
+	sNC.pParse = pParse;
 	sqlite3VdbeSetNumCols(v, pEList->nExpr);
 	for (i = 0; i < pEList->nExpr; i++) {
-		Expr *p;
-		p = pEList->a[i].pExpr;
+		const struct Table *table;
+		uint32_t fieldno;
+		char *alias;
+		void *destructor;
+		Expr *p = pEList->a[i].pExpr;
 		if (NEVER(p == 0))
 			continue;
+		columnType(&sNC, p, &table, &fieldno, NULL);
 		if (pEList->a[i].zName) {
-			char *zName = pEList->a[i].zName;
-			sqlite3VdbeSetColName(v, i, COLNAME_NAME, zName,
-					      SQLITE_TRANSIENT);
+			alias = pEList->a[i].zName;
+			destructor = SQLITE_TRANSIENT;
 		} else if (p->op == TK_COLUMN || p->op == TK_AGG_COLUMN) {
 			Table *pTab;
 			char *zCol;
@@ -1795,31 +1775,26 @@ generateColumnNames(Parse * pParse,	/* Parser context */
 			assert(iCol >= 0 && iCol < pTab->nCol);
 			zCol = pTab->aCol[iCol].zName;
 			if (!shortNames && !fullNames) {
-				sqlite3VdbeSetColName(v, i, COLNAME_NAME,
-						      sqlite3DbStrDup(db,
-								      pEList->a[i].zSpan),
-						      SQLITE_DYNAMIC);
+				alias = sqlite3DbStrDup(db, pEList->a[i].zSpan);
+				destructor = SQLITE_DYNAMIC;
 			} else if (fullNames) {
-				char *zName = 0;
-				zName =
-				    sqlite3MPrintf(db, "%s.%s", pTab->zName,
-						   zCol);
-				sqlite3VdbeSetColName(v, i, COLNAME_NAME, zName,
-						      SQLITE_DYNAMIC);
+				alias = sqlite3MPrintf(db, "%s.%s", pTab->zName,
+						       zCol);
+				destructor = SQLITE_DYNAMIC;
 			} else {
-				sqlite3VdbeSetColName(v, i, COLNAME_NAME, zCol,
-						      SQLITE_TRANSIENT);
+				alias = zCol;
+				destructor = SQLITE_TRANSIENT;
 			}
 		} else {
-			const char *z = pEList->a[i].zSpan;
-			z = z == 0 ? sqlite3MPrintf(db, "column%d",
-						    i + 1) : sqlite3DbStrDup(db,
-									     z);
-			sqlite3VdbeSetColName(v, i, COLNAME_NAME, z,
-					      SQLITE_DYNAMIC);
+			alias = pEList->a[i].zSpan;
+			if (alias == NULL)
+				alias = sqlite3MPrintf(db, "column%d", i + 1);
+			else
+				alias = sqlite3DbStrDup(db, alias);
+			destructor = SQLITE_DYNAMIC;
 		}
+		sqlite3VdbeSetColMeta(v, i, alias, destructor, table, fieldno);
 	}
-	generateColumnTypes(pParse, pTabList, pEList);
 }
 
 /*

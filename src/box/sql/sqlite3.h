@@ -3926,10 +3926,17 @@ sqlite3_column_name(sqlite3_stmt *, int N);
  * or column that query result column was extracted from.
  */
 SQLITE_API const char *
-sqlite3_column_table_name(sqlite3_stmt *, int);
-
-SQLITE_API const char *
 sqlite3_column_origin_name(sqlite3_stmt *, int);
+
+/**
+ * Get column meta information.
+ * @param stmt Prepared statement.
+ * @param fieldno Field number of a column to get meta of.
+ * @return Column meta.
+ */
+struct sql_column_meta;
+const struct sql_column_meta *
+sqlite3_column_meta(sqlite3_stmt *stmt, int fieldno);
 
 /*
  * CAPI3REF: Evaluate An SQL Statement

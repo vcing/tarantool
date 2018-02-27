@@ -581,8 +581,8 @@ sqlite3DeleteFrom(Parse * pParse,	/* The parser context */
 	    !pParse->nested && !pParse->pTriggerTab) {
 		sqlite3VdbeAddOp2(v, OP_ResultRow, memCnt, 1);
 		sqlite3VdbeSetNumCols(v, 1);
-		sqlite3VdbeSetColName(v, 0, COLNAME_NAME, "rows deleted",
-				      SQLITE_STATIC);
+		sqlite3VdbeSetColMeta(v, 0, "rows deleted", SQLITE_STATIC, NULL,
+				      0);
 	}
 
  delete_from_cleanup:
