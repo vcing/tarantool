@@ -578,3 +578,8 @@ box.schema.user.revoke("guest", "read", "universe", "useless name", {if_exists =
 box.schema.user.revoke("guest", "read", "universe", 0, {if_exists = true})
 box.schema.user.revoke("guest", "read", "universe", nil, {if_exists = true})
 box.schema.user.revoke("guest", "read", "universe", {}, {if_exists = true})
+-- prerequisite gh-945
+box.schema.user.grant("guest", "alter", "function")
+box.schema.user.grant("guest", "execute", "sequence")
+box.schema.user.grant("guest", "read,execute", "sequence")
+box.schema.user.grant("guest", "read,write,execute", "role")
