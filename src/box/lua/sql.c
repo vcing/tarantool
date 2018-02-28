@@ -2,6 +2,7 @@
 #include "box/sql.h"
 
 #include "box/sql/sqlite3.h"
+#include "box/sql/sqliteInt.h"
 #include "box/info.h"
 #include "lua/utils.h"
 #include "info.h"
@@ -132,8 +133,10 @@ lua_push_column_names(struct lua_State *L, struct prep_stmt_list *l)
 	int n = l->column_count;
 	lua_createtable(L, n, 0);
 	for (int i = 0; i < n; i++) {
-		const char *name = sqlite3_column_name(stmt, i);
-		lua_pushstring(L, name == NULL ? "" : name);
+		const struct sql_column_meta *meta =
+			sqlite3_column_meta(stmt, i);
+		assert(meta->alias != NULL);
+		lua_pushstring(L, meta->alias);
 		lua_rawseti(L, -2, i+1);
 	}
 }

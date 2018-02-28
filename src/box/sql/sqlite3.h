@@ -377,7 +377,7 @@ typedef int (*sqlite3_callback) (void *, int, char **, char **);
  * sqlite3_exec() callback is a NULL pointer.  ^The 4th argument to the
  * sqlite3_exec() callback is an array of pointers to strings where each
  * entry represents the name of corresponding result column as obtained
- * from [sqlite3_column_name()].
+ * from [sqlite3_column_meta()].
  *
  * ^If the 2nd parameter to sqlite3_exec() is a NULL pointer, a pointer
  * to an empty string, or a pointer that contains only whitespace and/or
@@ -3866,68 +3866,6 @@ sqlite3_clear_bindings(sqlite3_stmt *);
 SQLITE_API int
 sqlite3_column_count(sqlite3_stmt * pStmt);
 
-/*
- * CAPI3REF: Column Names In A Result Set
- * METHOD: sqlite3_stmt
- *
- * ^These routines return the name assigned to a particular column
- * in the result set of a [SELECT] statement.  ^The sqlite3_column_name()
- * interface returns a pointer to a zero-terminated UTF-8 string
- * and sqlite3_column_name16() returns a pointer to a zero-terminated
- * UTF-16 string.  ^The first parameter is the [prepared statement]
- * that implements the [SELECT] statement. ^The second parameter is the
- * column number.  ^The leftmost column is number 0.
- *
- * ^The returned string pointer is valid until either the [prepared statement]
- * is destroyed by [sqlite3_finalize()] or until the statement is automatically
- * reprepared by the first call to [sqlite3_step()] for a particular run
- * or until the next call to
- * sqlite3_column_name() or sqlite3_column_name16() on the same column.
- *
- * ^If sqlite3_malloc() fails during the processing of either routine
- * (for example during a conversion from UTF-8 to UTF-16) then a
- * NULL pointer is returned.
- *
- * ^The name of a result column is the value of the "AS" clause for
- * that column, if there is an AS clause.  If there is no AS clause
- * then the name of the column is unspecified and may change from
- * one release of SQLite to the next.
-*/
-SQLITE_API const char *
-sqlite3_column_name(sqlite3_stmt *, int N);
-
-/*
- * CAPI3REF: Source Of Data In A Query Result
- * METHOD: sqlite3_stmt
- *
- * ^These routines provide a means to determine the table and
- * table column that is the origin of a particular result column
- * in [SELECT] statement.
- * The _table_ routines return the table name, and the origin_
- * routines return the column name. ^The returned string is valid
- * until the [prepared statement] is destroyed using
- * [sqlite3_finalize()] or until the statement is automatically
- * reprepared by the first call to [sqlite3_step()] for a particular run
- * or until the same information is requested
- * again in a different encoding.
- *
- * ^The names returned are the original un-aliased names of the
- * table and column.
- *
- * ^The first argument to these interfaces is a [prepared statement].
- * ^These functions return information about the Nth result column returned by
- * the statement, where N is the second function argument.
- * ^The left-most column is column 0 for these routines.
- *
- * ^If the Nth column returned by the statement is an expression or
- * subquery and is not a column value, then all of these functions return
- * NULL.  ^These routine might also return NULL if a memory allocation error
- * occurs.  ^Otherwise, they return the name of the attached database, table,
- * or column that query result column was extracted from.
- */
-SQLITE_API const char *
-sqlite3_column_origin_name(sqlite3_stmt *, int);
-
 /**
  * Get column meta information.
  * @param stmt Prepared statement.
@@ -5358,69 +5296,6 @@ sqlite3_soft_heap_limit64(sqlite3_int64 N);
 */
 SQLITE_API SQLITE_DEPRECATED
 void sqlite3_soft_heap_limit(int N);
-
-/*
- * CAPI3REF: Extract Metadata About A Column Of A Table
- * METHOD: sqlite3
- *
- * ^(The sqlite3_table_column_metadata(X,D,T,C,....) routine returns
- * information about column C of table T in database D
- * on [database connection] X.)^  ^The sqlite3_table_column_metadata()
- * interface returns SQLITE_OK and fills in the non-NULL pointers in
- * the final five arguments with appropriate values if the specified
- * column exists.  ^The sqlite3_table_column_metadata() interface returns
- * SQLITE_ERROR and if the specified column does not exist.
- * ^If the column-name parameter to sqlite3_table_column_metadata() is a
- * NULL pointer, then this routine simply checks for the existence of the
- * table and returns SQLITE_OK if the table exists and SQLITE_ERROR if it
- * does not.
- *
- * ^The column is identified by the second, third and fourth parameters to
- * this function. ^(The second parameter is either the name of the database
- * (i.e. "main", "temp", or an attached database) containing the specified
- * table or NULL.)^ ^If it is NULL, then all attached databases are searched
- * for the table using the same algorithm used by the database engine to
- * resolve unqualified table references.
- *
- * ^The third and fourth parameters to this function are the table and column
- * name of the desired column, respectively.
- *
- * ^Metadata is returned by writing to the memory locations passed as the 5th
- * and subsequent parameters to this function. ^Any of these arguments may be
- * NULL, in which case the corresponding element of metadata is omitted.
- *
- * ^(<blockquote>
- * <table border="1">
- * <tr><th> Parameter <th> Output<br>Type <th>  Description
- *
- * <tr><td> 5th <td> const char* <td> Data type
- * <tr><td> 6th <td> const char* <td> Name of default collation sequence
- * <tr><td> 7th <td> int         <td> True if column has a NOT NULL constraint
- * <tr><td> 8th <td> int         <td> True if column is part of the PRIMARY KEY
- * <tr><td> 9th <td> int         <td> True if column is [AUTOINCREMENT]
- * </table>
- * </blockquote>)^
- *
- * ^The memory pointed to by the character pointers returned for the
- * declaration type and collation sequence is valid until the next
- * call to any SQLite API function.
- *
- * ^If the specified table is actually a view, an [error code] is returned.
- *
- * ^This function causes all database schemas to be read from disk and
- * parsed, if that has not already been done, and returns an error if
- * any errors are encountered while loading the schema.
-*/
-SQLITE_API int
-sqlite3_table_column_metadata(sqlite3 * db,	/* Connection handle */
-			      const char *zTableName,	/* Table name */
-			      const char *zColumnName,	/* Column name */
-			      char const **pzDataType,	/* OUTPUT: Declared data type */
-			      char const **pzCollSeq,	/* OUTPUT: Collation sequence name */
-			      int *pNotNull,	/* OUTPUT: True if NOT NULL constraint exists */
-			      int *pPrimaryKey,	/* OUTPUT: True if column part of PK */
-			      int *pAutoinc	/* OUTPUT: True if column is auto-increment */
-	);
 
 /*
  * CAPI3REF: A Handle To An Open BLOB

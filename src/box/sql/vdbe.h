@@ -155,15 +155,6 @@ typedef struct VdbeOpList VdbeOpList;
 #define P5_ConstraintFK      4
 
 /*
- * The Vdbe.aColName array contains 3n Mem structures, where n is the
- * number of columns of data returned by the statement.
- */
-#define COLNAME_NAME     0
-#define COLNAME_TABLE    1
-#define COLNAME_COLUMN   2
-#define COLNAME_N        3	/* Number of COLNAME_xxx symbols */
-
-/*
  * The following macro converts a relative address in the p2 field
  * of a VdbeOp structure into a negative number so that
  * sqlite3VdbeAddOpList() knows that the address is relative.  Calling

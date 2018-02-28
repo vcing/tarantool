@@ -1133,68 +1133,6 @@ sqlite3_column_type(sqlite3_stmt * pStmt, int i)
 	return iType;
 }
 
-/*
- * Get the N-th element of pStmt->pColName[]. If N is out of
- * range, return NULL.
- *
- * There are up to 5 names for each column.  useType determines which
- * name is returned.  Here are the names:
- *
- *    0      The column name as it should be displayed for output
- *    1      The name of the table that the column derives from
- *    2      The name of the table column that the result column derives from
- *
- * If the result is not a simple column reference (if it is an expression
- * or a constant) then useTypes 3 and 4 return NULL.
- */
-static const char *
-columnName(sqlite3_stmt *pStmt, int N, int useType)
-{
-	const char *ret;
-	Vdbe *p;
-	int n;
-	sqlite3 *db;
-#ifdef SQLITE_ENABLE_API_ARMOR
-	if (pStmt == 0) {
-		(void)SQLITE_MISUSE_BKPT;
-		return 0;
-	}
-#endif
-	ret = 0;
-	p = (Vdbe *) pStmt;
-	db = p->db;
-	assert(db != 0);
-	n = sqlite3_column_count(pStmt);
-	if (N < n && N >= 0) {
-		if (useType == COLNAME_NAME)
-			ret = p->columns[N].alias;
-		else
-			ret = p->columns[N].name;
-	}
-	return ret;
-}
-
-/*
- * Return the name of the Nth column of the result set returned by SQL
- * statement pStmt.
- */
-const char *
-sqlite3_column_name(sqlite3_stmt * pStmt, int N)
-{
-	return columnName(pStmt, N, COLNAME_NAME);
-}
-
-/*
- * Return the name of the table column from which a result column derives.
- * NULL is returned if the result column is an expression or constant or
- * anything else which is not an unambiguous reference to a database column.
- */
-const char *
-sqlite3_column_origin_name(sqlite3_stmt * pStmt, int N)
-{
-	return columnName(pStmt, N, COLNAME_COLUMN);
-}
-
 const struct sql_column_meta *
 sqlite3_column_meta(sqlite3_stmt *stmt, int fieldno)
 {

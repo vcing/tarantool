@@ -108,11 +108,11 @@ sqlite3_exec(sqlite3 * db,	/* The database on which the SQL executes */
 					if (azCols == 0) {
 						goto exec_out;
 					}
+					const struct sql_column_meta *meta;
 					for (i = 0; i < nCol; i++) {
-						azCols[i] =
-						    (char *)
-						    sqlite3_column_name(pStmt,
-									i);
+						meta =
+						  sqlite3_column_meta(pStmt, i);
+						azCols[i] = meta->alias;
 						assert(azCols[i] != 0);
 					}
 					callbackIsInit = 1;
