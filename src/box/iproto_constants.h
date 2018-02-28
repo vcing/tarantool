@@ -121,7 +121,30 @@ enum iproto_key {
  */
 enum iproto_metadata_key {
 	IPROTO_FIELD_NAME = 0,
+	IPROTO_FIELD_COLUMN = 1,
+	IPROTO_FIELD_FLAGS = 2,
+	IPROTO_METADATA_KEY_MAX,
 };
+
+/** Bit members of IPROTO_FIELD_FLAGS. */
+enum iproto_field_flag {
+	IPROTO_FIELD_IS_NULLABLE = 1,
+	IPROTO_FIELD_IS_PRIMARY_PART = 2,
+	IPROTO_FIELD_IS_AUTOINCREMENT = 4,
+	IPROTO_FIELD_IS_CASE_SENSITIVE = 8,
+	IPROTO_FIELD_FLAG_MAX,
+};
+
+/**
+ * If the assert fails, then update
+ * struct iproto_sql_column_meta_bin.
+ */
+static_assert(IPROTO_METADATA_KEY_MAX <= 0x7f,
+	      "IPROTO_METADATA fields must fit in one MessagePack byte");
+static_assert(IPROTO_METADATA_KEY_MAX <= 15,
+	      "IPROTO_METADATA MessagePack map header must fit in one byte");
+static_assert(IPROTO_FIELD_FLAG_MAX - 1 <= 0x7f,
+	      "IPROTO_FIELD_FLAGS must fit in one MessagePack byte");
 
 #define bit(c) (1ULL<<IPROTO_##c)
 

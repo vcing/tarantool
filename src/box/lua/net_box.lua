@@ -39,10 +39,22 @@ local IPROTO_SCHEMA_VERSION_KEY = 0x05
 local IPROTO_METADATA_KEY = 0x32
 local IPROTO_SQL_INFO_KEY = 0x43
 local IPROTO_SQL_ROW_COUNT_KEY = 0x44
-local IPROTO_FIELD_NAME_KEY = 0
 local IPROTO_DATA_KEY      = 0x30
 local IPROTO_ERROR_KEY     = 0x31
 local IPROTO_GREETING_SIZE = 128
+
+local iproto_metadata_keys = {
+    name = 0,
+    column = 1,
+    flags = 2,
+}
+
+local iproto_field_flags = {
+    is_nullable = 1,
+    is_primary_part = 2,
+    is_autoincrement = 4,
+    is_case_sensitive = 8,
+}
 
 -- select errors from box.error
 local E_UNKNOWN              = box.error.UNKNOWN
@@ -850,8 +862,19 @@ function remote_methods:execute(query, parameters, sql_opts, netbox_opts)
     end
     -- Set readable names for the metadata fields.
     for i, field_meta in pairs(metadata) do
-        field_meta["name"] = field_meta[IPROTO_FIELD_NAME_KEY]
-        field_meta[IPROTO_FIELD_NAME_KEY] = nil
+        for key, code in pairs(iproto_metadata_keys) do
+            field_meta[key] = field_meta[code]
+            field_meta[code] = nil
+        end
+        if not field_meta.name and field_meta.column then
+            field_meta.name = field_meta.column
+        end
+        if field_meta.flags then
+            for flag, value in pairs(iproto_field_flags) do
+                field_meta[flag] = bit.band(field_meta.flags, value) ~= 0
+            end
+            field_meta.flags = nil
+        end
     end
     setmetatable(res, sequence_mt)
     return {metadata = metadata, rows = res}

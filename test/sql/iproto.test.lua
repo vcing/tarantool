@@ -39,6 +39,15 @@ cn:execute('')
 cn:execute('   ;')
 
 --
+-- gh-2620: return column metadata on SELECT.
+--
+cn:execute('create table test2 (id integer primary key autoincrement, ci collate "unicode_ci" not null)')
+cn:reload_schema()
+cn:execute('select id as identifier, ci from test2')
+cn:execute('drop table test2')
+cn:reload_schema()
+
+--
 -- Parmaeters bindig.
 --
 

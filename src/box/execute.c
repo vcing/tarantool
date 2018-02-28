@@ -32,6 +32,7 @@
 
 #include "iproto_constants.h"
 #include "sql/sqlite3.h"
+#include "sql/sqliteInt.h"
 #include "sql/sqliteLimit.h"
 #include "errcode.h"
 #include "small/region.h"
@@ -507,6 +508,108 @@ sql_bind(const struct sql_request *request, struct sqlite3_stmt *stmt)
 }
 
 /**
+ * Binary encoded MessagePack map. It is used to avoid multiple
+ * mp_sizeof_...() + mp_encode_uint() during column meta building.
+ * Select can contain very big amount of columns, so column meta
+ * building speed is important.
+ */
+struct PACKED iproto_sql_column_meta_bin {
+	/** MP_MAP with key count. */
+	uint8_t m_header;
+	/** IPROTO_FIELD_FLAGS: MP_UINT8. */
+	uint8_t k_flags;
+	uint8_t m_flags;
+};
+
+/** 0x80 - MessagePack map with 0 keys. */
+static const struct iproto_sql_column_meta_bin iproto_sql_column_meta_bin = {
+	0x80, IPROTO_FIELD_FLAGS, 0
+};
+
+/**
+ * Encode meta information about a non-table column represented in
+ * a SELECT column list by a constant, or by a complex expression.
+ * It does not have any meta except an alias.
+ * @param out Output buffer.
+ * @param column Column meta.
+ *
+ * @retval  0 Success.
+ * @retval -1 Memory error.
+ */
+static inline int
+sql_artificial_column_meta_encode(struct obuf *out,
+				  const struct sql_column_meta *column)
+{
+	assert(column->alias != NULL);
+	assert(column->name == NULL);
+	int alias_len = strlen(column->alias);
+	size_t size = mp_sizeof_map(1) + mp_sizeof_uint(IPROTO_FIELD_NAME) +
+		      mp_sizeof_str(alias_len);
+	char *pos = (char *) obuf_alloc(out, size);
+	if (pos == NULL) {
+		diag_set(OutOfMemory, size, "obuf_alloc", "pos");
+		return -1;
+	}
+	char *begin = pos;
+	pos = mp_encode_map(pos, 1);
+	pos = mp_encode_uint(pos, IPROTO_FIELD_NAME);
+	pos = mp_encode_str(pos, column->alias, alias_len);
+	assert(pos == begin + size);
+	return 0;
+}
+
+/**
+ * Encode meta information about a table column specified in a
+ * SELECT column list.
+ * @param out Output buffer.
+ * @param column Column meta.
+ *
+ * @retval  0 Success.
+ * @retval -1 Memory error.
+ */
+static inline int
+sql_table_column_meta_encode(struct obuf *out,
+			     const struct sql_column_meta *column)
+{
+	assert(column->alias != NULL);
+	assert(column->name != NULL);
+	int alias_len = strlen(column->alias);
+	int name_len = strlen(column->name);
+	bool is_alias_eq_name =
+		alias_len == name_len &&
+		memcmp(column->name, column->alias, name_len) == 0;
+	struct iproto_sql_column_meta_bin header = iproto_sql_column_meta_bin;
+	size_t size = sizeof(header) + mp_sizeof_uint(IPROTO_FIELD_COLUMN) +
+		      mp_sizeof_str(name_len);
+	if (! is_alias_eq_name) {
+		size += mp_sizeof_uint(IPROTO_FIELD_NAME) +
+			mp_sizeof_str(alias_len);
+		/* @Sa mp_encode_map(). */
+		header.m_header |= 3;
+	} else {
+		header.m_header |= 2;
+	}
+	header.m_flags = column->flags;
+
+	char *pos = (char *) obuf_alloc(out, size);
+	if (pos == NULL) {
+		diag_set(OutOfMemory, size, "obuf_alloc", "pos");
+		return -1;
+	}
+	char *begin = pos;
+	memcpy(pos, &header, sizeof(header));
+	pos += sizeof(header);
+	if (! is_alias_eq_name) {
+		pos = mp_encode_uint(pos, IPROTO_FIELD_NAME);
+		pos = mp_encode_str(pos, column->alias, alias_len);
+	}
+	pos = mp_encode_uint(pos, IPROTO_FIELD_COLUMN);
+	pos = mp_encode_str(pos, column->name, name_len);
+	assert(pos == begin + size);
+	return 0;
+}
+
+/**
  * Serialize a description of the prepared statement.
  * @param stmt Prepared statement.
  * @param out Out buffer.
@@ -524,24 +627,12 @@ sql_get_description(struct sqlite3_stmt *stmt, struct obuf *out,
 		return -1;
 
 	for (int i = 0; i < column_count; ++i) {
-		size_t size = mp_sizeof_map(1) +
-			      mp_sizeof_uint(IPROTO_FIELD_NAME);
-		const char *name = sqlite3_column_name(stmt, i);
-		/*
-		 * Can not fail, since all column names are
-		 * preallocated during prepare phase and the
-		 * column_name simply returns them.
-		 */
-		assert(name != NULL);
-		size += mp_sizeof_str(strlen(name));
-		char *pos = (char *) obuf_alloc(out, size);
-		if (pos == NULL) {
-			diag_set(OutOfMemory, size, "obuf_alloc", "pos");
-			return -1;
-		}
-		pos = mp_encode_map(pos, 1);
-		pos = mp_encode_uint(pos, IPROTO_FIELD_NAME);
-		pos = mp_encode_str(pos, name, strlen(name));
+		const struct sql_column_meta *column =
+			sqlite3_column_meta(stmt, i);
+		if (column->name != NULL)
+			sql_table_column_meta_encode(out, column);
+		else
+			sql_artificial_column_meta_encode(out, column);
 	}
 	return 0;
 }

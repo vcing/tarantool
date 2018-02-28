@@ -41,7 +41,11 @@ cn:ping()
 -- Simple select.
 cn:execute('select * from test')
 ---
-- metadata: [{'name': ID}, {'name': 'A'}, {'name': 'B'}]
+- metadata: [{'is_case_sensitive': true, column: 'ID', 'is_nullable': false, 'is_primary_part': true,
+      'name': 'ID', 'is_autoincrement': false}, {'is_case_sensitive': true, 'column': 'A',
+      'is_nullable': true, 'is_primary_part': false, 'name': 'A', 'is_autoincrement': false},
+    {'is_case_sensitive': true, 'column': 'B', 'is_nullable': true, 'is_primary_part': false,
+      'name': 'B', 'is_autoincrement': false}]
   rows:
   - [1, 2, '3']
   - [4, 5, '6']
@@ -76,7 +80,8 @@ cn:execute('insert qwerty gjsdjq  q  qwd qmq;; q;qwd;')
 -- Empty result.
 cn:execute('select id as identifier from test where a = 5;')
 ---
-- metadata: [{'name': IDENTIFIER}]
+- metadata: [{'is_case_sensitive': true, column: 'ID', 'is_nullable': false, 'is_primary_part': true,
+      'name': 'IDENTIFIER', 'is_autoincrement': false}]
   rows: []
 ...
 -- netbox API errors.
@@ -98,11 +103,40 @@ cn:execute('   ;')
 - error: 'Failed to execute SQL statement: syntax error: empty request'
 ...
 --
+-- gh-2620: return column metadata on SELECT.
+--
+cn:execute('create table test2 (id integer primary key autoincrement, ci collate "unicode_ci" not null)')
+---
+- rowcount: 1
+...
+cn:reload_schema()
+---
+...
+cn:execute('select id as identifier, ci from test2')
+---
+- metadata: [{'is_case_sensitive': true, column: 'ID', 'is_nullable': false, 'is_primary_part': true,
+      'name': 'IDENTIFIER', 'is_autoincrement': true}, {'is_case_sensitive': false,
+      'column': 'CI', 'is_nullable': false, 'is_primary_part': false, 'name': 'CI',
+      'is_autoincrement': false}]
+  rows: []
+...
+cn:execute('drop table test2')
+---
+- rowcount: 1
+...
+cn:reload_schema()
+---
+...
+--
 -- Parmaeters bindig.
 --
 cn:execute('select * from test where id = ?', {1})
 ---
-- metadata: [{'name': ID}, {'name': 'A'}, {'name': 'B'}]
+- metadata: [{'is_case_sensitive': true, column: 'ID', 'is_nullable': false, 'is_primary_part': true,
+      'name': 'ID', 'is_autoincrement': false}, {'is_case_sensitive': true, 'column': 'A',
+      'is_nullable': true, 'is_primary_part': false, 'name': 'A', 'is_autoincrement': false},
+    {'is_case_sensitive': true, 'column': 'B', 'is_nullable': true, 'is_primary_part': false,
+      'name': 'B', 'is_autoincrement': false}]
   rows:
   - [1, 2, '3']
 ...
@@ -117,7 +151,11 @@ parameters[1][':value'] = 1
 ...
 cn:execute('select * from test where id = :value', parameters)
 ---
-- metadata: [{'name': ID}, {'name': 'A'}, {'name': 'B'}]
+- metadata: [{'is_case_sensitive': true, column: 'ID', 'is_nullable': false, 'is_primary_part': true,
+      'name': 'ID', 'is_autoincrement': false}, {'is_case_sensitive': true, 'column': 'A',
+      'is_nullable': true, 'is_primary_part': false, 'name': 'A', 'is_autoincrement': false},
+    {'is_case_sensitive': true, 'column': 'B', 'is_nullable': true, 'is_primary_part': false,
+      'name': 'B', 'is_autoincrement': false}]
   rows:
   - [1, 2, '3']
 ...
@@ -299,7 +337,12 @@ cn:execute('insert into test2 values (1, 1, 1, 1)')
 ...
 cn:execute('select * from test2')
 ---
-- metadata: [{'name': ID}, {'name': 'A'}, {'name': 'B'}, {'name': 'C'}]
+- metadata: [{'is_case_sensitive': true, column: 'ID', 'is_nullable': false, 'is_primary_part': true,
+      'name': 'ID', 'is_autoincrement': false}, {'is_case_sensitive': true, 'column': 'A',
+      'is_nullable': true, 'is_primary_part': false, 'name': 'A', 'is_autoincrement': false},
+    {'is_case_sensitive': true, 'column': 'B', 'is_nullable': true, 'is_primary_part': false,
+      'name': 'B', 'is_autoincrement': false}, {'is_case_sensitive': true, 'column': 'C',
+      'is_nullable': true, 'is_primary_part': false, 'name': 'C', 'is_autoincrement': false}]
   rows:
   - [1, 1, 1, 1]
 ...
@@ -469,7 +512,11 @@ res = cn:execute('select * from test')
 ...
 res.metadata
 ---
-- [{'name': ID}, {'name': 'A'}, {'name': 'B'}]
+- [{'is_case_sensitive': true, column: 'ID', 'is_nullable': false, 'is_primary_part': true,
+    'name': 'ID', 'is_autoincrement': false}, {'is_case_sensitive': true, 'column': 'A',
+    'is_nullable': true, 'is_primary_part': false, 'name': 'A', 'is_autoincrement': false},
+  {'is_case_sensitive': true, 'column': 'B', 'is_nullable': true, 'is_primary_part': false,
+    'name': 'B', 'is_autoincrement': false}]
 ...
 cn:close()
 ---
