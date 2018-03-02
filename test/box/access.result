@@ -378,7 +378,6 @@ box.schema.user.create('grantee')
 ...
 box.schema.user.grant('grantee', 'read, write, execute', 'universe')
 ---
-- error: Grant access to universe '' is denied for user 'grantor'
 ...
 session.su('grantee')
 ---
@@ -386,7 +385,8 @@ session.su('grantee')
 -- fails - can't suicide - ask the creator to kill you
 box.schema.user.drop('grantee')
 ---
-- error: Read access to space '_user' is denied for user 'grantee'
+- error: 'Failed to drop user or role ''grantee'': the user is active in the current
+    session'
 ...
 session.su('grantor')
 ---
@@ -897,7 +897,6 @@ session.su('test')
 ...
 box.internal.collation.drop('test') -- fail
 ---
-- error: Drop access to collation 'test' is denied for user 'test'
 ...
 session.su('admin')
 ---
@@ -1373,18 +1372,13 @@ box.session.su("tester", box.schema.space.create, "test_space")
 ...
 box.session.su("tester", box.schema.user.create, 'test_user')
 ---
-- error: Write access to space '_user' is denied for user 'tester'
+- error: Create access to user 'test_user' is denied for user 'tester'
 ...
 box.session.su("tester", box.schema.func.create, 'test_func')
 ---
-- error: Write access to space '_func' is denied for user 'tester'
+- error: Create access to function 'test_func' is denied for user 'tester'
 ...
---
--- FIXME 2.0: we still need to grant 'write' on universe
--- explicitly since we still use process_rw to write to system
--- tables from ddl
---
-box.schema.user.grant("tester", "create,write", "universe")
+box.schema.user.grant("tester", "create", "universe")
 ---
 ...
 -- successful create
@@ -1422,7 +1416,7 @@ box.session.su("tester")
 ...
 box.schema.user.drop("test")
 ---
-- error: Revoke access to role 'public' is denied for user 'tester'
+- error: Drop access to user 'test' is denied for user 'tester'
 ...
 box.session.su("admin")
 ---

@@ -193,10 +193,6 @@ user_grant_priv(struct user *user, struct priv_def *def)
 	}
 }
 
-/**
- * Find the corresponding access structure
- * given object type and object id.
- */
 struct access *
 access_find(struct priv_def *priv)
 {

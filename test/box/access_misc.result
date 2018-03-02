@@ -61,6 +61,9 @@ box.schema.user.grant('testus', 'read', 'space', 'admin_space')
 ---
 - error: User 'testus' already has read access on space 'admin_space'
 ...
+box.schema.user.grant('testus', 'read', 'universe')
+---
+...
 session.su('testus')
 ---
 ...
@@ -78,7 +81,7 @@ s:delete(1)
 ...
 s:drop()
 ---
-- error: Write access to space '_space_sequence' is denied for user 'testus'
+- error: Drop access to space 'admin_space' is denied for user 'testus'
 ...
 --
 -- Check double revoke
@@ -92,6 +95,9 @@ box.schema.user.revoke('testus', 'read', 'space', 'admin_space')
 box.schema.user.revoke('testus', 'read', 'space', 'admin_space')
 ---
 - error: User 'testus' does not have read access on space 'admin_space'
+...
+box.schema.user.revoke('testus', 'read', 'universe')
+---
 ...
 session.su('testus')
 ---
@@ -124,9 +130,18 @@ s:insert({3})
 ---
 - [3]
 ...
+session.su('admin')
+---
+...
+box.schema.user.grant('testus', 'read', 'universe')
+---
+...
+session.su('testus')
+---
+...
 s:drop()
 ---
-- error: Write access to space '_space_sequence' is denied for user 'testus'
+- error: Drop access to space 'admin_space' is denied for user 'testus'
 ...
 session.su('admin')
 ---
@@ -167,9 +182,18 @@ s:delete({3})
 ---
 - error: Write access to space 'admin_space' is denied for user 'guest'
 ...
+session.su('admin')
+---
+...
+box.schema.user.grant('guest', 'read', 'universe')
+---
+...
+session.su('guest')
+---
+...
 s:drop()
 ---
-- error: Write access to space '_space_sequence' is denied for user 'guest'
+- error: Drop access to space 'admin_space' is denied for user 'guest'
 ...
 gs = box.schema.space.create('guest_space')
 ---
@@ -177,9 +201,12 @@ gs = box.schema.space.create('guest_space')
 ...
 box.schema.func.create('guest_func')
 ---
-- error: Read access to space '_func' is denied for user 'guest'
+- error: Create access to function 'guest_func' is denied for user 'guest'
 ...
 session.su('admin')
+---
+...
+box.schema.user.revoke('guest', 'read', 'universe')
 ---
 ...
 s:select()
@@ -277,7 +304,7 @@ session.su('admin')
 box.schema.user.create('someuser')
 ---
 ...
-box.schema.user.grant('someuser', 'read, write, execute', 'universe')
+box.schema.user.grant('someuser', 'read', 'universe')
 ---
 ...
 session.su('someuser')
@@ -344,7 +371,7 @@ testuser_uid = session.uid()
 ...
 _ = box.space._user:delete(2)
 ---
-- error: Drop access to user 'public' is denied for user 'testuser'
+- error: 'Failed to drop user or role ''public'': the user or the role is a system'
 ...
 box.space._user:select(1)
 ---
@@ -381,7 +408,7 @@ session.su('testuser')
 ...
 _  = box.space._user:delete(2)
 ---
-- error: Write access to space '_user' is denied for user 'testuser'
+- error: Drop access to user 'public' is denied for user 'testuser'
 ...
 box.space._user:select(1)
 ---
@@ -389,7 +416,8 @@ box.space._user:select(1)
 ...
 box.space._user:insert{uid, session.uid(), 'someone2', 'user'}
 ---
-- error: Write access to space '_user' is denied for user 'testuser'
+- error: Tuple field count 4 is less than required by space format or defined indexes
+    (expected at least 5)
 ...
 session.su('admin')
 ---
@@ -409,7 +437,7 @@ box.space._index:select(272)
 ...
 box.space._index:insert{512, 1,'owner','tree', 1, 1, 0,'unsigned'}
 ---
-- error: Write access to space '_index' is denied for user 'testuser'
+- error: 'Tuple field 5 type does not match one required by operation: expected map'
 ...
 session.su('admin')
 ---

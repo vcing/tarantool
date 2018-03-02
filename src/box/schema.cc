@@ -37,6 +37,9 @@
 #include "scoped_guard.h"
 #include "version.h"
 #include "user.h"
+#include "session.h"
+#include "xrow.h"
+#include "memtx_tuple.h"
 #include <stdio.h>
 /**
  * @module Data Dictionary
@@ -253,6 +256,15 @@ schema_find_id(uint32_t system_space_id, uint32_t index_id,
 }
 
 /**
+ * Access checks for system spaces, which can be modified only by admin
+ * _collation, _cluster
+ */
+static int
+sys_read_write_access_check(MAYBE_UNUSED struct space *space,
+			    user_access_t access);
+
+
+/**
  * Initialize a prototype for the two mandatory data
  * dictionary spaces and create a cache entry for them.
  * When restoring data from the snapshot these spaces
@@ -310,7 +322,9 @@ schema_init()
 	sc_space_new(BOX_SEQUENCE_DATA_ID, "_sequence_data", key_def,
 		     &on_replace_sequence_data, NULL);
 
-	/* _space_seq - association space <-> sequence. */
+	/* _space_seq - association space <-> sequence.
+	 *
+	 */
 	sc_space_new(BOX_SPACE_SEQUENCE_ID, "_space_sequence", key_def,
 		     &on_replace_space_sequence, NULL);
 
@@ -522,6 +536,69 @@ sequence_cache_delete(uint32_t id)
 	}
 }
 
+
+/**
+ * This function runs simple read, usage checks. Returns -1, 0 in
+ * case this checks are performed.
+ * All other checks are postponed. Returns 1 in thi
+ */
+static int
+sys_read_access_check(struct space *space, user_access_t access)
+{
+	credentials *cr = effective_user();
+	if (~cr->universal_access & PRIV_U) {
+		struct user *user = user_find(cr->uid);
+		if (user != NULL)
+			diag_set(AccessDeniedError,
+				 priv_name(PRIV_U),
+				 schema_object_name(SC_UNIVERSE),
+				 "",
+				 user->def->name);
+		return -1;
+	}
+	if (access == PRIV_R) {
+		uint32_t access = cr->universal_access |
+				  space->access[cr->auth_token].effective;
+		if (~access & PRIV_R) {
+			struct user *user = user_find(cr->uid);
+			if (user != NULL)
+				diag_set(AccessDeniedError,
+					 priv_name(PRIV_R),
+					 schema_object_name(SC_SPACE),
+					 space->def->name,
+					 user->def->name);
+			return -1;
+		}
+	}
+	/* Other checks are postponed to trigger*/
+	return 0;
+}
+
+static int
+sys_read_write_access_check(struct space *space,
+			    user_access_t access)
+{
+	credentials *cr = effective_user();
+	if (access == PRIV_W) {
+		uint32_t has_access = space->access[cr->auth_token].effective
+				      | cr->universal_access;
+		if (~has_access & access) {
+			struct user *user = user_find(cr->uid);
+			if (user != NULL) {
+				diag_set(AccessDeniedError,
+					 priv_name(access),
+					 schema_object_name(SC_SPACE),
+					 space->def->name,
+					 user->def->name);
+			}
+			return -1;
+		}
+		return 0;
+	}
+	return sys_read_access_check(space, access);
+}
+
+
 const char *
 schema_find_name(enum schema_object_type type, uint32_t object_id)
 {
@@ -565,3 +642,45 @@ schema_find_name(enum schema_object_type type, uint32_t object_id)
 	return "(nil)";
 }
 
+uint32_t
+schema_find_access(enum schema_object_type type, uint32_t object_id,
+		   struct user *grantor)
+{
+	struct priv_def def;
+	def.object_type = type;
+	def.object_id = object_id;
+	def.grantor_id = grantor->def->uid;
+	uint32_t access = universe.access[grantor->auth_token].effective;
+	struct access *ent_access = get_entity_access(type);
+	if (ent_access != NULL)
+		access |= ent_access[grantor->auth_token].effective;
+	struct access *obj_access = access_find(&def);
+	if (obj_access != NULL)
+		access |= obj_access->effective;
+	return access;
+}
+
+access_check_func_t
+get_access_check_func(uint32_t space_id)
+{
+	switch (space_id) {
+	case BOX_COLLATION_ID:
+	case BOX_CLUSTER_ID:
+		return sys_read_write_access_check;
+	case BOX_SCHEMA_ID:
+	case BOX_SPACE_ID:
+	case BOX_TRUNCATE_ID:
+	case BOX_INDEX_ID:
+	case BOX_FUNC_ID:
+	case BOX_USER_ID:
+	case BOX_SEQUENCE_ID:
+	case BOX_SEQUENCE_DATA_ID:
+	case BOX_SPACE_SEQUENCE_ID:
+	case BOX_PRIV_ID:
+		/* Specialized access checks will be performed
+		* in trigger. */
+		return sys_read_access_check;
+	default:
+		return access_check_user_space;
+	}
+}

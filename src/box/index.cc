@@ -38,6 +38,7 @@
 #include "txn.h"
 #include "rmean.h"
 #include "info.h"
+#include "xrow.h"
 
 /* {{{ Utilities. **********************************************/
 

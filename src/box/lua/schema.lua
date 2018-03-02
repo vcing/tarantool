@@ -1972,10 +1972,7 @@ box.schema.user.create = function(name, opts)
     uid = _user:auto_increment{session.euid(), name, 'user', auth_mech_list}[1]
     -- grant role 'public' to the user
     box.schema.user.grant(uid, 'public')
-    -- we have to grant global privileges from setuid function, since
-    -- only admin has the ownership over universe and we don't have
-    -- grant option
-    box.session.su('admin', box.schema.user.grant, uid, 'session,usage', 'universe',
+    box.schema.user.grant(uid, 'session,usage', 'universe',
                    nil, {if_not_exists=true})
 end
 
@@ -2091,12 +2088,9 @@ local function drop(uid, opts)
     for k, tuple in pairs(sequences) do
         box.schema.sequence.drop(tuple[1])
     end
-    -- xxx: hack, we have to revoke session and usage privileges
-    -- of a user using a setuid function in absence of create/drop
-    -- privileges and grant option
     if box.space._user:get{uid}[4] == 'user' then
-        box.session.su('admin', box.schema.user.revoke, uid,
-                       'session,usage', 'universe', nil, {if_exists = true})
+        box.schema.user.revoke(uid, 'session,usage', 'universe',
+                nil, {if_exists = true})
     end
     local privs = _priv.index.primary:select{uid}
     for k, tuple in pairs(privs) do

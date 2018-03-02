@@ -37,6 +37,7 @@
 #include "space.h"
 #include "latch.h"
 #include "user.h"
+#include "iproto_constants.h"
 
 #if defined(__cplusplus)
 extern "C" {
@@ -98,6 +99,12 @@ space_foreach(int (*func)(struct space *sp, void *udata), void *udata);
 const char *
 schema_find_name(enum schema_object_type type, uint32_t object_id);
 
+uint32_t
+schema_find_access(enum schema_object_type type, uint32_t object_id,
+		   struct user *grantor);
+
+int
+access_check_user_space(struct space *space, user_access_t access);
 #if defined(__cplusplus)
 } /* extern "C" */
 
@@ -207,6 +214,12 @@ sequence_cache_delete(uint32_t id);
 #endif /* defined(__cplusplus) */
 
 /**
+ * Utility function used to specify access_check function for system space.
+ */
+access_check_func_t
+get_access_check_func(uint32_t space_id);
+
+/**
  * Triggers fired after committing a change in space definition.
  * The space is passed to the trigger callback in the event
  * argument. It is the new space in case of create/update or
@@ -264,5 +277,4 @@ get_entity_access(enum schema_object_type type)
 		return NULL;
 	}
 }
-
 #endif /* INCLUDES_TARANTOOL_BOX_SCHEMA_H */

@@ -518,12 +518,7 @@ box.session.su("tester", box.schema.space.create, "test_space")
 box.session.su("tester", box.schema.user.create, 'test_user')
 box.session.su("tester", box.schema.func.create, 'test_func')
 
---
--- FIXME 2.0: we still need to grant 'write' on universe
--- explicitly since we still use process_rw to write to system
--- tables from ddl
---
-box.schema.user.grant("tester", "create,write", "universe")
+box.schema.user.grant("tester", "create", "universe")
 -- successful create
 s1 = box.session.su("tester", box.schema.space.create, "test_space")
 _ = box.session.su("tester", box.schema.user.create, 'test_user')

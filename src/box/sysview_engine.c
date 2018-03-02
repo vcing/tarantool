@@ -32,6 +32,9 @@
 #include "sysview_index.h"
 #include "schema.h"
 #include "space.h"
+#include "session.h"
+#include "xrow.h"
+#include "iproto_constants.h"
 
 static void
 sysview_space_destroy(struct space *space)
@@ -230,6 +233,7 @@ sysview_engine_create_space(struct engine *engine, struct space_def *def,
 		free(space);
 		return NULL;
 	}
+	space->access_check = access_check_user_space;
 	return space;
 }
 

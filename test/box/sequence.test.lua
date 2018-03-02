@@ -481,7 +481,7 @@ sq:reset() -- error
 box.session.su('admin')
 
 -- A user cannot alter sequences created by other users.
-box.schema.user.grant('user', 'read,write', 'universe')
+box.schema.user.grant('user', 'read', 'universe')
 box.session.su('user')
 sq:alter{step = 2} -- error
 sq:drop() -- error
@@ -507,7 +507,7 @@ sq:drop()
 sq1 = box.schema.sequence.create('seq1')
 s1 = box.schema.space.create('space1')
 _ = s1:create_index('pk')
-box.schema.user.grant('user', 'read,write', 'universe')
+box.schema.user.grant('user', 'read, create', 'universe')
 box.session.su('user')
 sq2 = box.schema.sequence.create('seq2')
 s2 = box.schema.space.create('space2')
@@ -522,7 +522,7 @@ box.session.su('admin')
 -- If the user owns a sequence attached to a space,
 -- it can use it for auto increment, otherwise it
 -- needs privileges.
-box.schema.user.revoke('user', 'read,write', 'universe')
+box.schema.user.revoke('user', 'read,create', 'universe')
 box.session.su('user')
 s2:insert{nil, 1} -- ok: {1, 1}
 box.session.su('admin')
@@ -570,8 +570,8 @@ box.sequence
 -- to a sequence.
 box.schema.user.create('user1')
 box.schema.user.create('user2')
-box.schema.user.grant('user1', 'read,write', 'universe')
-box.schema.user.grant('user2', 'read,write', 'universe')
+box.schema.user.grant('user1', 'read, create', 'universe')
+box.schema.user.grant('user2', 'read', 'universe')
 box.session.su('user1')
 sq = box.schema.sequence.create('test')
 box.session.su('user2')
