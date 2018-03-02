@@ -49,6 +49,8 @@ struct request;
 struct port;
 struct tuple;
 
+typedef int (*access_check_func_t)(struct space *space, user_access_t access);
+
 struct space_vtab {
 	/** Free a space instance. */
 	void (*destroy)(struct space *);
@@ -139,6 +141,7 @@ struct space_vtab {
 struct space {
 	/** Virtual function table. */
 	const struct space_vtab *vtab;
+	access_check_func_t access_check;
 	/** Cached runtime access information. */
 	struct access access[BOX_USER_MAX];
 	/** Engine used by this space. */
@@ -291,8 +294,11 @@ index_name_by_id(struct space *space, uint32_t id);
  * Check whether or not the current user can be granted
  * the requested access to the space.
  */
-int
-access_check_space(struct space *space, user_access_t access);
+static inline int
+access_check_space(struct space *space, user_access_t access)
+{
+	return space->access_check(space, access);
+}
 
 static inline int
 space_apply_initial_join_row(struct space *space, struct request *request)
@@ -424,6 +430,12 @@ space_swap_index(struct space *lhs, struct space *rhs,
 void
 space_fill_index_map(struct space *space);
 
+/*
+ * Utility function used to specify access_check function for system space.
+ */
+access_check_func_t
+get_access_check_func(uint32_t space_id);
+
 #if defined(__cplusplus)
 } /* extern "C" */
 
@@ -539,5 +551,6 @@ space_prepare_alter_xc(struct space *old_space, struct space *new_space)
 }
 
 #endif /* defined(__cplusplus) */
+
 
 #endif /* TARANTOOL_BOX_SPACE_H_INCLUDED */

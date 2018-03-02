@@ -36,6 +36,7 @@
 #include "error.h"
 #include "space.h"
 #include "latch.h"
+#include "user.h"
 
 #if defined(__cplusplus)
 extern "C" {
@@ -103,6 +104,13 @@ schema_find_name(enum schema_object_type type, uint32_t object_id);
  */
 struct sequence *
 sequence_by_id(uint32_t id);
+
+uint32_t
+schema_find_access(enum schema_object_type type, uint32_t object_id,
+		   struct user *grantor);
+
+int
+access_check_user_space(struct space *space, user_access_t access);
 #if defined(__cplusplus)
 } /* extern "C" */
 
@@ -203,6 +211,12 @@ void
 sequence_cache_delete(uint32_t id);
 
 #endif /* defined(__cplusplus) */
+
+/**
+ * Utility function used to specify access_check function for system space.
+ */
+access_check_func_t
+get_access_check_func(uint32_t space_id);
 
 /**
  * Triggers fired after committing a change in space definition.

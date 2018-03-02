@@ -199,6 +199,13 @@ priv_grant(struct user *grantee, struct priv_def *priv);
 void
 priv_def_create_from_tuple(struct priv_def *priv, struct tuple *tuple);
 
+/**
+ * Find the corresponding access structure
+ * given object type and object id.
+ */
+struct access *
+access_find(struct priv_def *priv);
+
 /* }}} */
 
 #endif /* defined(__cplusplus) */
