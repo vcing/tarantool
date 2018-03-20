@@ -38,7 +38,6 @@
 #include "engine.h"
 #include "cluster.h"
 #include "schema.h"
-#include "vclock.h"
 #include "xrow.h"
 #include "coeio.h"
 #include "coio.h"
@@ -250,6 +249,7 @@ relay_subscribe(int fd, struct xrow_header *packet,
 	 * and identify ourselves with our own server id.
 	 */
 	struct xrow_header row;
+	vclock_copy(&relay.local_vclock_at_subscribe, master_vclock);
 	xrow_encode_vclock(&row, master_vclock);
 	/*
 	 * Identify the message with the server id of this
@@ -286,10 +286,16 @@ relay_send_row(struct recovery *r, void *param, struct xrow_header *packet)
 	 * (JOIN request). In this case, send every row.
 	 * Otherwise, we're feeding a WAL, thus responding to
 	 * SUBSCRIBE request. In that case, only send a row if
-	 * it is not from the same server (i.e. don't send
-	 * replica's own rows back).
-	 */
-	if (packet->server_id == 0 || packet->server_id != r->server_id) {
+	 * it is not from the same server (i.e. don't send replica's
+	 * own rows back) or if this row is missing on the other side
+	 * (i.e. in case of sudden power-loss, data was not written to WAL,
+	 * so remote master can't recover it). In the latter case packet's
+	 * LSN is less than or equal to local master's LSN at the moment it
+	 * received 'SUBSCRIBE' request.
+     */
+	if (packet->server_id == 0 || packet->server_id != r->server_id ||
+	    packet->lsn <= vclock_get(&relay->local_vclock_at_subscribe,
+				      packet->server_id)) {
 		relay_send(relay, packet);
 		ERROR_INJECT(ERRINJ_RELAY,
 		{

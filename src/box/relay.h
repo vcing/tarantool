@@ -32,6 +32,7 @@
  */
 #include "evio.h"
 #include "fiber.h"
+#include "vclock.h"
 
 struct xrow_header;
 
@@ -45,6 +46,11 @@ struct relay {
 	uint64_t sync;
 	struct recovery *r;
 	ev_tstamp wal_dir_rescan_delay;
+	/**
+	 * Local vclock at the moment of subscribe, used to check
+	 * dataset on the other side and send missing data rows if any.
+	 */
+	struct vclock local_vclock_at_subscribe;
 };
 
 /**

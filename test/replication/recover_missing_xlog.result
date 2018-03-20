@@ -1,0 +1,142 @@
+env = require('test_run')
+---
+...
+test_run = env.new()
+---
+...
+SERVERS = { 'master1', 'master2', 'master3' }
+---
+...
+-- Start servers
+test_run:create_cluster(SERVERS)
+---
+...
+-- Check connection status
+-- first on master 1
+test_run:cmd("switch master1")
+---
+- true
+...
+fiber = require('fiber')
+---
+...
+while box.info.replication.status ~= 'follow' do fiber.sleep(0.001) end
+---
+...
+box.info.replication.status
+---
+- follow
+...
+-- and then on master 2
+test_run:cmd("switch master2")
+---
+- true
+...
+fiber = require('fiber')
+---
+...
+while box.info.replication.status ~= 'follow' do fiber.sleep(0.001) end
+---
+...
+box.info.replication.status
+---
+- follow
+...
+-- and finally on master 3
+test_run:cmd("switch master3")
+---
+- true
+...
+fiber = require('fiber')
+---
+...
+while box.info.replication.status ~= 'follow' do fiber.sleep(0.001) end
+---
+...
+box.info.replication.status
+---
+- follow
+...
+test_run:cmd("switch master1")
+---
+- true
+...
+box.snapshot()
+---
+- ok
+...
+box.space.test:insert({1})
+---
+- [1]
+...
+box.space.test:count()
+---
+- 1
+...
+test_run:cmd("switch master3")
+---
+- true
+...
+box.space.test:count()
+---
+- 1
+...
+test_run:cmd("switch master2")
+---
+- true
+...
+box.space.test:count()
+---
+- 1
+...
+test_run:cmd("stop server master1")
+---
+- true
+...
+fio = require('fio')
+---
+...
+fio.unlink(fio.pathjoin(fio.abspath("."), string.format('master1/%020d.xlog', 0)))
+---
+- true
+...
+test_run:cmd("start server master1")
+---
+- true
+...
+test_run:cmd("switch master1")
+---
+- true
+...
+box.space.test:count()
+---
+- 1
+...
+test_run:cmd("switch default")
+---
+- true
+...
+test_run:cmd("stop server master1")
+---
+- true
+...
+test_run:cmd("stop server master2")
+---
+- true
+...
+test_run:cmd("stop server master3")
+---
+- true
+...
+test_run:cmd("cleanup server master1")
+---
+- true
+...
+test_run:cmd("cleanup server master2")
+---
+- true
+...
+test_run:cmd("cleanup server master3")
+---
+- true
+...
