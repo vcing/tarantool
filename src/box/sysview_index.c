@@ -182,23 +182,24 @@ static const struct index_vtab sysview_index_vtab = {
 	/* .end_build = */ generic_index_end_build,
 };
 
+const uint32_t PRIV_WRDA = PRIV_W | PRIV_D | PRIV_A | PRIV_R;
+
 static bool
 vspace_filter(struct space *source, struct tuple *tuple)
 {
 	struct credentials *cr = effective_user();
-	if (PRIV_R & cr->universal_access)
-		return true; /* read access to unverse */
-	if (PRIV_R & source->access[cr->auth_token].effective)
-		return true; /* read access to original space */
-
+	if (PRIV_WRDA & cr->universal_access)
+		return true;
+	if (source->access[cr->auth_token].effective & PRIV_R)
+		return true;
 	uint32_t space_id;
 	if (tuple_field_u32(tuple, BOX_SPACE_FIELD_ID, &space_id) != 0)
 		return false;
 	struct space *space = space_cache_find(space_id);
 	if (space == NULL)
 		return false;
-	uint8_t effective = space->access[cr->auth_token].effective;
-	return ((PRIV_R | PRIV_W) & (cr->universal_access | effective) ||
+	uint32_t effective = space->access[cr->auth_token].effective;
+	return ((PRIV_R | PRIV_W | PRIV_D | PRIV_A) & effective ||
 		space->def->uid == cr->uid);
 }
 
@@ -206,10 +207,11 @@ static bool
 vuser_filter(struct space *source, struct tuple *tuple)
 {
 	struct credentials *cr = effective_user();
-	if (PRIV_R & cr->universal_access)
-		return true; /* read access to unverse */
-	if (PRIV_R & source->access[cr->auth_token].effective)
-		return true; /* read access to original space */
+	/* If user has global alter, drop privilege she may access all users */
+	if (PRIV_WRDA & cr->universal_access)
+		return true;
+	if (source->access[cr->auth_token].effective & PRIV_R)
+		return true;
 
 	uint32_t uid;
 	if (tuple_field_u32(tuple, BOX_USER_FIELD_ID, &uid) != 0)
@@ -217,17 +219,20 @@ vuser_filter(struct space *source, struct tuple *tuple)
 	uint32_t owner_id;
 	if (tuple_field_u32(tuple, BOX_USER_FIELD_UID, &owner_id) != 0)
 		return false;
-	return uid == cr->uid || owner_id == cr->uid;
+	return uid == cr->uid || owner_id == cr->uid || uid == PUBLIC;
 }
 
 static bool
 vpriv_filter(struct space *source, struct tuple *tuple)
 {
 	struct credentials *cr = effective_user();
-	if (PRIV_R & cr->universal_access)
-		return true; /* read access to unverse */
-	if (PRIV_R & source->access[cr->auth_token].effective)
-		return true; /* read access to original space */
+	/* If user has global alter, drop privilege
+	 * she may access all privileges
+	 */
+	if (PRIV_WRDA & cr->universal_access)
+		return true;
+	if (source->access[cr->auth_token].effective & PRIV_R)
+		return true;
 
 	uint32_t grantor_id;
 	if (tuple_field_u32(tuple, BOX_PRIV_FIELD_ID, &grantor_id) != 0)
@@ -235,15 +240,21 @@ vpriv_filter(struct space *source, struct tuple *tuple)
 	uint32_t grantee_id;
 	if (tuple_field_u32(tuple, BOX_PRIV_FIELD_UID, &grantee_id) != 0)
 		return false;
-	return grantor_id == cr->uid || grantee_id == cr->uid;
+	const char *type;
+	uint32_t obj_id;
+	if ((type = tuple_field_cstr(tuple, BOX_PRIV_FIELD_OBJECT_TYPE)) == NULL ||
+		tuple_field_u32(tuple, BOX_PRIV_FIELD_OBJECT_ID, &obj_id) != 0)
+		return false;
+	return grantor_id == cr->uid || grantee_id == cr->uid ||
+		(strncmp(type, "role", 4) == 0 && obj_id == PUBLIC);
 }
 
 static bool
 vfunc_filter(struct space *source, struct tuple *tuple)
 {
 	struct credentials *cr = effective_user();
-	if ((PRIV_R | PRIV_X) & cr->universal_access)
-		return true; /* read or execute access to unverse */
+	if ((PRIV_WRDA | PRIV_X) & cr->universal_access)
+		return true;
 	if (PRIV_R & source->access[cr->auth_token].effective)
 		return true; /* read access to original space */
 
@@ -253,18 +264,17 @@ vfunc_filter(struct space *source, struct tuple *tuple)
 	uint32_t name_len = strlen(name);
 	struct func *func = func_by_name(name, name_len);
 	assert(func != NULL);
-	uint8_t effective = func->access[cr->auth_token].effective;
-	if (func->def->uid == cr->uid || (PRIV_X & effective))
-		return true;
-	return false;
+	uint32_t effective = func->access[cr->auth_token].effective;
+	return func->def->uid == cr->uid ||
+		((PRIV_WRDA | PRIV_X) & effective);
 }
 
 static bool
 vsequence_filter(struct space *source, struct tuple *tuple)
 {
 	struct credentials *cr = effective_user();
-	if ((PRIV_R | PRIV_X) & cr->universal_access)
-		return true; /* read or execute access to unverse */
+	if (PRIV_WRDA & cr->universal_access)
+		return true;
 	if (PRIV_R & source->access[cr->auth_token].effective)
 		return true; /* read access to original space */
 
@@ -274,12 +284,10 @@ vsequence_filter(struct space *source, struct tuple *tuple)
 	struct sequence *sequence = sequence_by_id(id);
 	if (sequence == NULL)
 		return false;
-	uint8_t effective = sequence->access[cr->auth_token].effective;
-	if (sequence->def->uid == cr->uid || ((PRIV_W | PRIV_R) & effective))
-		return true;
-	return false;
+	uint32_t effective = sequence->access[cr->auth_token].effective;
+	return sequence->def->uid == cr->uid ||
+		(PRIV_WRDA & effective);
 }
-
 
 struct sysview_index *
 sysview_index_new(struct sysview_engine *sysview,

@@ -509,14 +509,17 @@ s:drop()
 --
 box.schema.user.create("tester")
 s = box.schema.space.create("test")
+_ = s:create_index("primary")
+seq = box.schema.sequence.create("test")
 u = box.schema.user.create("test")
 f = box.schema.func.create("test")
-box.schema.user.grant("tester", "read,execute", "universe")
 
 -- failed create
-box.session.su("tester", box.schema.space.create, "test_space")
-box.session.su("tester", box.schema.user.create, 'test_user')
-box.session.su("tester", box.schema.func.create, 'test_func')
+box.session.su("tester")
+box.schema.space.create("test_space")
+box.schema.user.create('test_user')
+box.schema.func.create('test_func')
+box.session.su("admin")
 
 --
 -- FIXME 2.0: we still need to grant 'write' on universe
@@ -524,15 +527,19 @@ box.session.su("tester", box.schema.func.create, 'test_func')
 -- tables from ddl
 --
 box.schema.user.grant("tester", "create,write", "universe")
+box.session.su("tester")
 -- successful create
-s1 = box.session.su("tester", box.schema.space.create, "test_space")
-_ = box.session.su("tester", box.schema.user.create, 'test_user')
-_ = box.session.su("tester", box.schema.func.create, 'test_func')
+s1 = box.schema.space.create("test_space")
+_ = s1:create_index("primary")
+_ = box.schema.user.create('test_user')
+_ = box.schema.func.create('test_func')
+seq1 = box.schema.sequence.create('test_seq')
 
 -- successful drop of owned objects
-_ = box.session.su("tester", s1.drop, s1)
-_ = box.session.su("tester", box.schema.user.drop, 'test_user')
-_ = box.session.su("tester", box.schema.func.drop, 'test_func')
+s1:drop()
+seq1:drop()
+box.schema.user.drop('test_user')
+box.schema.func.drop('test_func')
 
 -- failed alter
 -- box.session.su("tester", s.format, s, {name="id", type="unsigned"})
@@ -543,19 +550,16 @@ _ = box.session.su("tester", box.schema.func.drop, 'test_func')
 
 -- failed drop
 -- box.session.su("tester", s.drop, s)
-
--- can't use here sudo
--- because drop use sudo inside
--- and currently sudo can't be performed nested
-box.session.su("tester")
+s:drop()
+seq:drop()
 box.schema.user.drop("test")
+box.schema.func.drop("test")
+
 box.session.su("admin")
-
-box.session.su("tester", box.schema.func.drop, "test")
-
 box.schema.user.grant("tester", "drop", "universe")
 -- successful drop
 box.session.su("tester", s.drop, s)
+box.session.su("tester", seq.drop, seq)
 box.session.su("tester", box.schema.user.drop, "test")
 box.session.su("tester", box.schema.func.drop, "test")
 

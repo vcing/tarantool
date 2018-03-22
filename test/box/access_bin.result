@@ -55,14 +55,14 @@ c = remote.connect(box.cfg.listen)
 ...
 c:call("setuid_func")
 ---
-- error: Read access to space 'setuid_space' is denied for user 'guest'
+- error: Write access to space 'setuid_space' is denied for user 'guest'
 ...
 session.su('guest')
 ---
 ...
 setuid_func()
 ---
-- error: Read access to space 'setuid_space' is denied for user 'guest'
+- error: Write access to space 'setuid_space' is denied for user 'guest'
 ...
 session.su('admin')
 ---
@@ -85,7 +85,7 @@ session.su('guest')
 ...
 setuid_func()
 ---
-- error: Read access to space 'setuid_space' is denied for user 'guest'
+- error: Write access to space 'setuid_space' is denied for user 'guest'
 ...
 session.su('admin')
 ---
@@ -122,7 +122,7 @@ session.su('guest')
 ...
 setuid_func()
 ---
-- error: Read access to space 'setuid_space' is denied for user 'guest'
+- error: Write access to space 'setuid_space' is denied for user 'guest'
 ...
 session.su('admin')
 ---
