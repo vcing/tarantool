@@ -35,6 +35,8 @@
  */
 #include <box/coll.h>
 #include "sqliteInt.h"
+#include "tarantoolInt.h"
+#include "box/schema.h"
 #include "box/session.h"
 
 /*
@@ -1921,99 +1923,88 @@ sqlite3ColumnsFromExprList(Parse * pParse,	/* Parsing context */
 	return SQLITE_OK;
 }
 
-/*
+/**
  * Add type and collation information to a column list based on
  * a SELECT statement.
  *
- * The column list presumably came from selectColumnNamesFromExprList().
- * The column list has only names, not types or collations.  This
- * routine goes through and adds the types and collations.
- *
+ * The column list presumably came from columnsFromExprList().
+ * The column list has only names, not types or collations.
+ * This routine goes through and adds the types and collations.
  * This routine requires that all identifiers in the SELECT
  * statement be resolved.
+ *
+ * @param parse_context Current parsing context.
+ * @param[out] table Add column type information to this table.
+ * @param select SELECT used to determine types and collations.
  */
 void
-sqlite3SelectAddColumnTypeAndCollation(Parse * pParse,		/* Parsing contexts */
-				       Table * pTab,		/* Add column type information to this table */
-				       Select * pSelect)	/* SELECT used to determine types and collations */
+sql_select_add_column_properties(struct Parse *parse_context,
+				 struct Table *table, struct Select *select)
 {
-	sqlite3 *db = pParse->db;
-	NameContext sNC;
-	Column *pCol;
-	struct coll *pColl;
-	int i;
-	Expr *p;
-	struct ExprList_item *a;
-	u64 szAll = 0;
-
-	assert(pSelect != 0);
-	assert((pSelect->selFlags & SF_Resolved) != 0);
-	assert(pTab->nCol == pSelect->pEList->nExpr || db->mallocFailed);
-	if (db->mallocFailed)
-		return;
-	memset(&sNC, 0, sizeof(sNC));
-	sNC.pSrcList = pSelect->pSrc;
-	a = pSelect->pEList->a;
-	for (i = 0, pCol = pTab->aCol; i < pTab->nCol; i++, pCol++) {
-		enum field_type type;
-		p = a[i].pExpr;
-		type = columnType(&sNC, p, 0, 0, 0, &pCol->szEst);
-		szAll += pCol->szEst;
-		pCol->affinity = sqlite3ExprAffinity(p);
-		pCol->type = type;
-
-		if (pCol->affinity == 0)
-			pCol->affinity = SQLITE_AFF_BLOB;
-		pColl = sqlite3ExprCollSeq(pParse, p);
-		if (pColl && pCol->zColl == 0) {
-			pCol->zColl = sqlite3DbStrDup(db, pColl->name);
-		}
+	assert(table != NULL);
+	assert(select != NULL);
+	assert((select->selFlags & SF_Resolved) != 0);
+	assert(table->nCol == select->pEList->nExpr);
+	struct sqlite3 *db = parse_context->db;
+	u64 row_size = 0;
+	struct NameContext name_context;
+	memset(&name_context, 0, sizeof(name_context));
+	name_context.pSrcList = select->pSrc;
+	struct ExprList_item *a = select->pEList->a;
+	struct Column *column = table->aCol;
+	for (int i = 0; i < table->nCol; i++, column++) {
+		Expr *p = a[i].pExpr;
+		column->type = columnType(&name_context, p, 0, 0, 0,
+					  &column->szEst);
+		row_size += column->szEst;
+		column->affinity = sqlite3ExprAffinity(p);
+		if (column->affinity == 0)
+			column->affinity = SQLITE_AFF_BLOB;
+		struct coll *collation = sqlite3ExprCollSeq(parse_context, p);
+		if (collation != NULL && column->zColl == NULL)
+			column->zColl = sqlite3DbStrDup(db, collation->name);
 	}
-	pTab->szTabRow = sqlite3LogEst(szAll * 4);
+	table->szTabRow = sqlite3LogEst(row_size * 4);
 }
 
-/*
- * Given a SELECT statement, generate a Table structure that describes
- * the result set of that SELECT.
+/**
+ * Given a SELECT statement, generate a Table structure that
+ * describes the result set of that SELECT, including column
+ * names, their types and collations.
+ *
+ * Also see sql_view_get_column_names().
+ *
+ * @param parse_context Current parsing context.
+ * @param select Select to be processed.
+ * @retval Fake table which represents result set of given select.
  */
 Table *
-sqlite3ResultSetOfSelect(Parse * pParse, Select * pSelect)
+sql_result_set_of_select(struct Parse *parse_context, struct Select *select)
 {
-	Table *pTab;
-	sqlite3 *db = pParse->db;
-	uint32_t savedFlags;
+	struct sqlite3 *db = parse_context->db;
 	struct session *user_session = current_session();
-
-	savedFlags = user_session->sql_flags;
+	uint32_t savedFlags = user_session->sql_flags;
 	user_session->sql_flags |= ~SQLITE_FullColNames;
 	user_session->sql_flags &= SQLITE_ShortColNames;
-	sqlite3SelectPrep(pParse, pSelect, 0);
-	if (pParse->nErr)
-		return 0;
-	while (pSelect->pPrior)
-		pSelect = pSelect->pPrior;
+	sqlite3SelectPrep(parse_context, select, 0);
+	if (parse_context->nErr)
+		return NULL;
+	while (select->pPrior)
+		select = select->pPrior;
 	user_session->sql_flags = savedFlags;
-	pTab = sqlite3DbMallocZero(db, sizeof(Table));
-	if (pTab == 0) {
-		return 0;
-	}
-	/* The sqlite3ResultSetOfSelect() is only used n contexts where lookaside
-	 * is disabled
-	 */
-	assert(db->lookaside.bDisable);
-	pTab->nTabRef = 1;
-	pTab->zName = 0;
-	pTab->nRowLogEst = 200;
-	assert(200 == sqlite3LogEst(1048576));
-	sqlite3ColumnsFromExprList(pParse, pSelect->pEList, &pTab->nCol,
-				   &pTab->aCol);
-	sqlite3SelectAddColumnTypeAndCollation(pParse, pTab, pSelect);
-	pTab->iPKey = -1;
+	struct Table *result_table = sqlite3Malloc(sizeof(Table));
+	if (result_table == NULL)
+		return NULL;
+	memset(result_table, 0, sizeof(struct Table));
+	result_table->nTabRef = 1;
+	sqlite3ColumnsFromExprList(parse_context, select->pEList,
+				   &result_table->nCol, &result_table->aCol);
+	sql_select_add_column_properties(parse_context, result_table, select);
 	if (db->mallocFailed) {
-		sqlite3DeleteTable(db, pTab);
-		return 0;
+		sqlite3DeleteTable(db, result_table);
+		return NULL;
 	}
-	return pTab;
+	return result_table;
 }
 
 /*
@@ -4600,8 +4591,9 @@ withExpand(Walker * pWalker, struct SrcList_item *pFrom)
 			pEList = pCte->pCols;
 		}
 
-		sqlite3ColumnsFromExprList(pParse, pEList, &pTab->nCol,
-					   &pTab->aCol);
+		if (sqlite3ColumnsFromExprList(pParse, pEList, &pTab->nCol,
+					       &pTab->aCol))
+			return SQLITE_NOMEM;
 		if (bMayRecursive) {
 			if (pSel->selFlags & SF_Recursive) {
 				pCte->zCteErr =
@@ -4758,12 +4750,16 @@ selectExpander(Walker * pWalker, Select * p)
 				return WRC_Abort;
 			}
 			if (space_is_view(pTab)) {
+				uint32_t space_id = SQLITE_PAGENO_TO_SPACEID(pTab->tnum);
+				struct space *space = space_by_id(space_id);
+				assert(space != NULL);
 				i16 nCol;
-				if (sqlite3ViewGetColumnNames(pParse, pTab))
+				if (sql_view_column_names(pParse, pTab))
 					return WRC_Abort;
 				assert(pFrom->pSelect == 0);
-				pFrom->pSelect =
-				    sqlite3SelectDup(db, pTab->pSelect, 0);
+				if (sql_view_compile(db, space->def->opts.sql,
+						     &pFrom->pSelect) != 0)
+					return WRC_Abort;
 				sqlite3SelectSetName(pFrom->pSelect,
 						     pTab->zName);
 				nCol = pTab->nCol;
@@ -5071,9 +5067,9 @@ selectAddSubqueryTypeInfo(Walker * pWalker, Select * p)
 			if (pSel) {
 				while (pSel->pPrior)
 					pSel = pSel->pPrior;
-				sqlite3SelectAddColumnTypeAndCollation(pParse,
-								       pTab,
-								       pSel);
+				sql_select_add_column_properties(pParse,
+								 pTab,
+								 pSel);
 			}
 		}
 	}

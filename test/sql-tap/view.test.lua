@@ -1,6 +1,6 @@
 #!/usr/bin/env tarantool
 test = require("sqltester")
-test:plan(65)
+test:plan(67)
 
 --!./tcltestrunner.lua
 -- 2002 February 26
@@ -903,20 +903,30 @@ test:do_catchsql_test(
 -- Ticket #1658
 --
 -- MUST_WORK_TEST temp views do not work
-if (0 > 0)
- then
-    test:do_catchsql_test(
+test:do_catchsql_test(
         "view-14.1",
         [[
-            CREATE TEMP VIEW t1 AS SELECT a,b FROM t1;
-            SELECT * FROM temp.t1;
+            CREATE VIEW v11 AS SELECT a,b FROM v11;
+            SELECT * FROM v11;
         ]], {
             -- <view-14.1>
-            1, "view t1 is circularly defined"
+            1, "view V11 is circularly defined"
             -- </view-14.1>
         })
 
-end
+test:do_catchsql_test(
+	"view-14.2",
+	[[
+	    DROP VIEW IF EXISTS v11;
+	    CREATE VIEW v11 AS SELECT * FROM v22;
+	    CREATE VIEW v22 AS SELECT * FROM v11;
+	    SELECT * FROM v11;
+	]], {
+	    -- <view-14.2>
+	    1, "view V11 is circularly defined"
+	    -- </view-14.2>
+	})
+
 -- Tickets #1688 #1709
 test:do_execsql2_test(
     "view-15.1",

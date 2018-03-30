@@ -3013,6 +3013,8 @@ struct Parse {
 	bool parse_only;
 	/** If parse_only is set to true, store parsed expression. */
 	struct Expr *parsed_expr;
+	/** If parse_only is set to true, store parsed SELECT. */
+	struct Select *parsed_select;
 };
 
 /*
@@ -3514,6 +3516,9 @@ void sqlite3NormalizeName(char *z);
 void sqlite3TokenInit(Token *, char *);
 int sqlite3KeywordCode(const unsigned char *, int);
 int sqlite3RunParser(Parse *, const char *, char **);
+int
+sql_view_compile(struct sqlite3 *db, const char *view_stmt,
+		 struct Select **select);
 void sqlite3FinishCoding(Parse *);
 int sqlite3GetTempReg(Parse *);
 void sqlite3ReleaseTempReg(Parse *, int);
@@ -3547,8 +3552,11 @@ void sqlite3CommitInternalChanges();
 void sqlite3DeleteColumnNames(sqlite3 *, Table *);
 bool table_column_is_in_pk(Table *, uint32_t);
 int sqlite3ColumnsFromExprList(Parse *, ExprList *, i16 *, Column **);
-void sqlite3SelectAddColumnTypeAndCollation(Parse *, Table *, Select *);
-Table *sqlite3ResultSetOfSelect(Parse *, Select *);
+void
+sql_select_add_column_properties(struct Parse *parse_context,
+				 struct Table *table, struct Select *select);
+Table *
+sql_result_set_of_select(struct Parse *parse_context, Select *select);
 Index *sqlite3PrimaryKeyIndex(Table *);
 i16 sqlite3ColumnOfIndex(Index *, i16);
 void sqlite3StartTable(Parse *, Token *, int);
@@ -3580,7 +3588,10 @@ int sqlite3FaultSim(int);
 #endif
 
 void sqlite3CreateView(Parse *, Token *, Token *, ExprList *, Select *, int);
-int sqlite3ViewGetColumnNames(Parse *, Table *);
+void
+sql_store_select(struct Parse *parse_context, struct Select *select);
+int
+sql_view_column_names(struct Parse *parse_context, struct Table *table);
 
 #if SQLITE_MAX_ATTACHED>30
 int sqlite3DbMaskAllZero(yDbMask);

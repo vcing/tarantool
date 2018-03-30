@@ -162,7 +162,7 @@ sqlite3Update(Parse * pParse,		/* The parser context */
 	isView = space_is_view(pTab);
 	assert(pTrigger || tmask == 0);
 
-	if (sqlite3ViewGetColumnNames(pParse, pTab)) {
+	if (sql_view_column_names(pParse, pTab)) {
 		goto update_cleanup;
 	}
 	if (sqlite3IsReadOnly(pParse, pTab, tmask)) {

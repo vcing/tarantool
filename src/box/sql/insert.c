@@ -392,7 +392,7 @@ sqlite3Insert(Parse * pParse,	/* Parser context */
 	/* If pTab is really a view, make sure it has been initialized.
 	 * ViewGetColumnNames() is a no-op if pTab is not a view.
 	 */
-	if (sqlite3ViewGetColumnNames(pParse, pTab)) {
+	if (sql_view_column_names(pParse, pTab)) {
 		goto insert_cleanup;
 	}
 

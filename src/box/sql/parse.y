@@ -369,7 +369,11 @@ ifexists(A) ::= .            {A = 0;}
 //
 cmd ::= createkw(X) VIEW ifnotexists(E) nm(Y) eidlist_opt(C)
           AS select(S). {
-  sqlite3CreateView(pParse, &X, &Y, C, S, E);
+  if (!pParse->parse_only)
+    sqlite3CreateView(pParse, &X, &Y, C, S, E);
+  else {
+    sql_store_select(pParse, S);
+  }
 }
 cmd ::= DROP VIEW ifexists(E) fullname(X). {
   sqlite3DropTable(pParse, X, 1, E);

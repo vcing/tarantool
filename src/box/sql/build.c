@@ -2083,102 +2083,144 @@ sqlite3CreateView(Parse * pParse,	/* The parsing context */
 	return;
 }
 
-/*
- * The Table structure pTable is really a VIEW.  Fill in the names of
- * the columns of the view in the pTable structure.  Return the number
- * of errors.  If an error is seen leave an error message in pParse->zErrMsg.
+/**
+ * Store duplicate of SELECT into parsing context.
+ * This routine is called during parsing.
+ *
+ * @param parse_context Current parsing context.
+ * @param select Select to be stored.
+ */
+void
+sql_store_select(struct Parse *parse_context, struct Select *select)
+{
+	Select *select_copy = sqlite3SelectDup(parse_context->db, select, 0);
+	parse_context->parsed_select = select_copy;
+}
+
+/**
+ * The Table structure table is really a VIEW. Fill in the names
+ * of the columns of the view in the table structure.
+ * This routine is needed due to the fact that at VIEW
+ * compilation time table(s) may not exist:
+ *
+ * CREATE VIEW v AS SELECT * FROM t;
+ * CREATE TABLE t1 (id INT PRIMARY KEY, a TEXT) ...;
+ * SELECT a FROM v1 WHERE id = 1;
+ *
+ * Thus, we should fetch column's names and types at compilation
+ * of SELECT statement stage.
+ *
+ * @param parse_context Current parsing context.
+ * @param[out] table Table which represent a view and to be filled
+ *                   with names and types of columns.
+ * @retval 0 on success, number of occurred errors otherwise.
  */
 int
-sqlite3ViewGetColumnNames(Parse * pParse, Table * pTable)
+sql_view_column_names(struct Parse *parse_context, struct Table *table)
 {
-	Table *pSelTab;		/* A fake table from which we get the result set */
-	Select *pSel;		/* Copy of the SELECT that implements the view */
-	int nErr = 0;		/* Number of errors encountered */
-	int n;			/* Temporarily holds the number of cursors assigned */
-	sqlite3 *db = pParse->db;	/* Database connection for malloc errors */
-
-	assert(pTable);
-
-	/* A positive nCol means the columns names for this view are
-	 * already known.
+	assert(table != NULL);
+	struct sqlite3 *db = parse_context->db;
+	/*
+	 * A positive nCol means the columns names for this view
+	 * are already known.
 	 */
-	if (pTable->nCol > 0)
+	if (table->nCol > 0)
 		return 0;
-
-	/* A negative nCol is a special marker meaning that we are currently
-	 * trying to compute the column names.  If we enter this routine with
-	 * a negative nCol, it means two or more views form a loop, like this:
+	/*
+	 * A negative nCol is a special marker meaning that we
+	 * are currently trying to compute the column names.
+	 * If we enter this routine with a negative nCol,
+	 * it means two or more views form a loop, like this:
 	 *
 	 *     CREATE VIEW one AS SELECT * FROM two;
 	 *     CREATE VIEW two AS SELECT * FROM one;
-	 *
-	 * Actually, the error above is now caught prior to reaching this point.
-	 * But the following test is still important as it does come up
-	 * in the following:
-	 *
-	 *     CREATE TABLE main.ex1(a);
-	 *     CREATE TEMP VIEW ex1 AS SELECT a FROM ex1;
-	 *     SELECT * FROM temp.ex1;
+	 * or
+	 *     CREATE VIEW v AS SELECT * FROM v;
 	 */
-	if (pTable->nCol < 0) {
-		sqlite3ErrorMsg(pParse, "view %s is circularly defined",
-				pTable->zName);
+	if (table->nCol < 0) {
+		sqlite3ErrorMsg(parse_context, "view %s is circularly defined",
+				table->zName);
 		return 1;
 	}
-	assert(pTable->nCol >= 0);
-
-	/* If we get this far, it means we need to compute the table names.
-	 * Note that the call to sqlite3ResultSetOfSelect() will expand any
-	 * "*" elements in the results set of the view and will assign cursors
-	 * to the elements of the FROM clause.  But we do not want these changes
-	 * to be permanent.  So the computation is done on a copy of the SELECT
-	 * statement that defines the view.
+	uint32_t space_id =
+		SQLITE_PAGENO_TO_SPACEID(table->tnum);
+	struct space *space = space_by_id(space_id);
+	assert(space != NULL);
+	assert(space->def->opts.is_view);
+	/*
+	 * If we get this far, it means we need to compute
+	 * the table names. Note that the call to
+	 * sql_result_set_of_select() will expand any "*" elements
+	 * in the results set of the view and will assign cursors
+	 * to the elements of the FROM clause. But we do not want
+	 * these changes to be permanent. So the computation is
+	 * done on a copy of the SELECT statement that defines
+	 * the view.
 	 */
-	assert(pTable->pSelect);
-	pSel = sqlite3SelectDup(db, pTable->pSelect, 0);
-	if (pSel) {
-		n = pParse->nTab;
-		sqlite3SrcListAssignCursors(pParse, pSel->pSrc);
-		pTable->nCol = -1;
-		db->lookaside.bDisable++;
-		pSelTab = sqlite3ResultSetOfSelect(pParse, pSel);
-		pParse->nTab = n;
-		if (pTable->pCheck) {
-			/* CREATE VIEW name(arglist) AS ...
-			 * The names of the columns in the table are taken from
-			 * arglist which is stored in pTable->pCheck.  The pCheck field
-			 * normally holds CHECK constraints on an ordinary table, but for
-			 * a VIEW it holds the list of column names.
-			 */
-			sqlite3ColumnsFromExprList(pParse, pTable->pCheck,
-						   &pTable->nCol,
-						   &pTable->aCol);
-			if (db->mallocFailed == 0 && pParse->nErr == 0
-			    && pTable->nCol == pSel->pEList->nExpr) {
-				sqlite3SelectAddColumnTypeAndCollation(pParse,
-								       pTable,
-								       pSel);
-			}
-		} else if (pSelTab) {
-			/* CREATE VIEW name AS...  without an argument list.  Construct
-			 * the column names from the SELECT statement that defines the view.
-			 */
-			assert(pTable->aCol == 0);
-			pTable->nCol = pSelTab->nCol;
-			pTable->aCol = pSelTab->aCol;
-			pSelTab->nCol = 0;
-			pSelTab->aCol = 0;
-		} else {
-			pTable->nCol = 0;
-			nErr++;
-		}
-		sqlite3DeleteTable(db, pSelTab);
-		sqlite3SelectDelete(db, pSel);
-		db->lookaside.bDisable--;
-	} else {
-		nErr++;
+	/* Copy of the SELECT that implements the view. */
+	struct Select *select = NULL;
+	/* Fetch SELECT statement from "CREATE VIEW ..." string. */
+	if (sql_view_compile(db, space->def->opts.sql, &select) != 0) {
+		sqlite3ErrorMsg(parse_context,
+				"failed to parse view statement: %s",
+				space->def->opts.sql);
+		return 1;
 	}
-	return nErr;
+	int error_count = 0;
+	if (select != NULL) {
+		/* Temporarily holds the number of cursors assigned. */
+		int n = parse_context->nTab;
+		sqlite3SrcListAssignCursors(parse_context, select->pSrc);
+		table->nCol = -1;
+		/* Fill fake table from which we get the result set. */
+		struct Table *select_table =
+			sql_result_set_of_select(parse_context, select);
+		parse_context->nTab = n;
+		if (space->def->field_count > 0) {
+			/* CREATE VIEW name(arglist) AS ... */
+			table->nCol = space->def->field_count;
+			uint32_t size = sizeof(table->aCol[0]) * table->nCol;
+			table->aCol = sqlite3Malloc(size);
+			if (table->aCol == NULL)
+				return ++error_count;
+			memset(table->aCol, 0, size);
+			for (int i = 0; i < table->nCol; ++i) {
+				size_t name_len =
+					strlen(space->def->fields[i].name) + 1;
+				table->aCol[i].zName = sqlite3Malloc(name_len);
+				if (table->aCol[i].zName == NULL)
+					return ++error_count;
+				memcpy(table->aCol[i].zName,
+				       space->def->fields[i].name, name_len);
+			}
+			if (db->mallocFailed == 0 && parse_context->nErr == 0
+			    && table->nCol == select->pEList->nExpr) {
+				sql_select_add_column_properties(parse_context,
+								 table,
+								 select);
+			}
+		} else if (select_table != NULL) {
+			/*
+			 * CREATE VIEW name AS...  without an
+			 * argument list. Construct the column
+			 * names from the SELECT statement that
+			 * defines the view.
+			 */
+			assert(table->aCol == 0);
+			table->nCol = select_table->nCol;
+			table->aCol = select_table->aCol;
+			select_table->nCol = 0;
+			select_table->aCol = 0;
+		} else {
+			table->nCol = 0;
+			error_count++;
+		}
+		sqlite3DeleteTable(db, select_table);
+		sqlite3SelectDelete(db, select);
+	} else {
+		error_count++;
+	}
+	return error_count;
 }
 
 /*

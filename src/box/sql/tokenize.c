@@ -654,8 +654,7 @@ sqlite3RunParser(Parse * pParse, const char *zSql, char **pzErrMsg)
 }
 
 int
-sql_expr_compile(sqlite3 *db, const char *expr, struct Expr **result)
-{
+sql_expr_compile(sqlite3 *db, const char *expr, struct Expr **result) {
 	const char *outer = "SELECT ";
 	int len = strlen(outer) + strlen(expr);
 	char *stmt = (char *) region_alloc(&fiber()->gc, len + 1);
@@ -676,5 +675,32 @@ sql_expr_compile(sqlite3 *db, const char *expr, struct Expr **result)
 	}
 	*result = parser.parsed_expr;
 	sqlite3ParserReset(&parser);
+	return 0;
+}
+
+/**
+ * This routine executes parser on 'CREATE VIEW ...' statement
+ * and loads content of SELECT into internal struct.
+ *
+ * @param db Current SQL context.
+ * @param view_stmt String containing 'CREATE VIEW' statement.
+ * @param[out] select Fetched SELECT statement.
+ * @retval 0 on success, -1 otherwise.
+ */
+int
+sql_view_compile(struct sqlite3 *db, const char *view_stmt,
+		 struct Select **select)
+{
+	assert(select != NULL);
+	/* Surrogate parse context just to accept parser interface. */
+	struct Parse parser;
+	memset(&parser, 0, sizeof(parser));
+	parser.db = db;
+	parser.parse_only = true;
+	char *unused;
+	if (sqlite3RunParser(&parser, view_stmt, &unused) != SQLITE_OK) {
+		return -1;
+	}
+	*select = parser.parsed_select;
 	return 0;
 }
