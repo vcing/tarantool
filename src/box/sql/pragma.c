@@ -153,7 +153,6 @@ returnSingleInt(Vdbe * v, i64 value)
 /*
  * Return a human-readable name for a constraint resolution action.
  */
-#ifndef SQLITE_OMIT_FOREIGN_KEY
 static const char *
 actionName(u8 action)
 {
@@ -178,7 +177,6 @@ actionName(u8 action)
 	}
 	return zName;
 }
-#endif
 
 /*
  * Locate a pragma in the aPragmaName[] array.
@@ -536,7 +534,6 @@ sqlite3Pragma(Parse * pParse, Token * pId,	/* First part of [schema.]id field */
 	}
 #endif				/* SQLITE_OMIT_SCHEMA_PRAGMAS */
 
-#ifndef SQLITE_OMIT_FOREIGN_KEY
 	case PragTyp_FOREIGN_KEY_LIST:{
 			if (zRight) {
 				FKey *pFK;
@@ -569,10 +566,7 @@ sqlite3Pragma(Parse * pParse, Token * pId,	/* First part of [schema.]id field */
 			}
 			break;
 		}
-#endif				/* !defined(SQLITE_OMIT_FOREIGN_KEY) */
 
-#ifndef SQLITE_OMIT_FOREIGN_KEY
-#ifndef SQLITE_OMIT_TRIGGER
 	case PragTyp_FOREIGN_KEY_CHECK:{
 			FKey *pFK;	/* A foreign key constraint */
 			Table *pTab;	/* Child table contain "REFERENCES"
@@ -743,8 +737,6 @@ sqlite3Pragma(Parse * pParse, Token * pId,	/* First part of [schema.]id field */
 			}
 			break;
 		}
-#endif				/* !defined(SQLITE_OMIT_TRIGGER) */
-#endif				/* !defined(SQLITE_OMIT_FOREIGN_KEY) */
 
 #ifndef NDEBUG
 	case PragTyp_PARSER_TRACE:{

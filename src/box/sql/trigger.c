@@ -41,7 +41,6 @@
 /* See comment in sqliteInt.h */
 int sqlSubProgramsRemaining;
 
-#ifndef SQLITE_OMIT_TRIGGER
 /*
  * Delete a linked list of TriggerStep structures.
  */
@@ -1161,5 +1160,3 @@ sqlite3TriggerColmask(Parse * pParse,	/* Parse context */
 
 	return mask;
 }
-
-#endif				/* !defined(SQLITE_OMIT_TRIGGER) */

@@ -4919,7 +4919,6 @@ case OP_DropTrigger: {
 	sqlite3UnlinkAndDeleteTrigger(db, pOp->p4.z);
 	break;
 }
-#ifndef SQLITE_OMIT_TRIGGER
 
 /* Opcode: Program P1 P2 P3 P4 P5
  *
@@ -5076,9 +5075,6 @@ case OP_Param: {           /* out2 */
 	break;
 }
 
-#endif /* #ifndef SQLITE_OMIT_TRIGGER */
-
-#ifndef SQLITE_OMIT_FOREIGN_KEY
 /* Opcode: FkCounter P1 P2 * * *
  * Synopsis: fkctr[P1]+=P2
  *
@@ -5120,7 +5116,6 @@ case OP_FkIfZero: {         /* jump */
 	}
 	break;
 }
-#endif /* #ifndef SQLITE_OMIT_FOREIGN_KEY */
 
 /* Opcode: IfPos P1 P2 P3 * *
  * Synopsis: if r[P1]>0 then r[P1]-=P3, goto P2

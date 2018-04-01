@@ -3580,12 +3580,7 @@ int sqlite3FaultSim(int);
 #endif
 
 void sqlite3CreateView(Parse *, Token *, Token *, ExprList *, Select *, int);
-
-#if !defined(SQLITE_OMIT_VIEW)
 int sqlite3ViewGetColumnNames(Parse *, Table *);
-#else
-#define sqlite3ViewGetColumnNames(A,B) 0
-#endif
 
 #if SQLITE_MAX_ATTACHED>30
 int sqlite3DbMaskAllZero(yDbMask);
@@ -3742,11 +3737,8 @@ int sqlite3SafetyCheckOk(sqlite3 *);
 int sqlite3SafetyCheckSickOrOk(sqlite3 *);
 void sqlite3ChangeCookie(Parse *);
 
-#if !defined(SQLITE_OMIT_VIEW) && !defined(SQLITE_OMIT_TRIGGER)
 void sqlite3MaterializeView(Parse *, Table *, Expr *, int);
-#endif
 
-#ifndef SQLITE_OMIT_TRIGGER
 void sqlite3BeginTrigger(Parse *, Token *, int, int, IdList *, SrcList *,
 			 Expr *, int);
 void sqlite3FinishTrigger(Parse *, TriggerStep *, Token *);
@@ -3770,17 +3762,6 @@ u32 sqlite3TriggerColmask(Parse *, Trigger *, ExprList *, int, int, Table *,
 			  int);
 #define sqlite3ParseToplevel(p) ((p)->pToplevel ? (p)->pToplevel : (p))
 #define sqlite3IsToplevel(p) ((p)->pToplevel==0)
-#else
-#define sqlite3TriggersExist(C,D,E,F) 0
-#define sqlite3DeleteTrigger(A,B)
-#define sqlite3DropTriggerPtr(A,B)
-#define sqlite3UnlinkAndDeleteTrigger(A,B,C)
-#define sqlite3CodeRowTrigger(A,B,C,D,E,F,G,H,I)
-#define sqlite3CodeRowTriggerDirect(A,B,C,D,E,F)
-#define sqlite3ParseToplevel(p) p
-#define sqlite3IsToplevel(p) 1
-#define sqlite3TriggerColmask(A,B,C,D,E,F,G) 0
-#endif
 
 int sqlite3JoinType(Parse *, Token *, Token *, Token *);
 void sqlite3CreateForeignKey(Parse *, ExprList *, Token *, ExprList *, int);
@@ -3997,34 +3978,14 @@ void sqlite3WithPush(Parse *, With *, u8);
 #define sqlite3WithDelete(x,y)
 #endif
 
-/* Declarations for functions in fkey.c. All of these are replaced by
- * no-op macros if OMIT_FOREIGN_KEY is defined. In this case no foreign
- * key functionality is available. If OMIT_TRIGGER is defined but
- * OMIT_FOREIGN_KEY is not, only some of the functions are no-oped. In
- * this case foreign keys are parsed, but no other functionality is
- * provided (enforcement of FK constraints requires the triggers sub-system).
- */
-#if !defined(SQLITE_OMIT_FOREIGN_KEY) && !defined(SQLITE_OMIT_TRIGGER)
 void sqlite3FkCheck(Parse *, Table *, int, int, int *);
 void sqlite3FkDropTable(Parse *, SrcList *, Table *);
 void sqlite3FkActions(Parse *, Table *, ExprList *, int, int *);
 int sqlite3FkRequired(Table *, int *);
 u32 sqlite3FkOldmask(Parse *, Table *);
 FKey *sqlite3FkReferences(Table *);
-#else
-#define sqlite3FkActions(a,b,c,d,e)
-#define sqlite3FkCheck(a,b,c,d,e,f)
-#define sqlite3FkDropTable(a,b,c)
-#define sqlite3FkOldmask(a,b)         0
-#define sqlite3FkRequired(b,c)    0
-#endif
-#ifndef SQLITE_OMIT_FOREIGN_KEY
 void sqlite3FkDelete(sqlite3 *, Table *);
 int sqlite3FkLocateIndex(Parse *, Table *, FKey *, Index **, int **);
-#else
-#define sqlite3FkDelete(a,b)
-#define sqlite3FkLocateIndex(a,b,c,d,e)
-#endif
 
 /*
  * Available fault injectors.  Should be numbered beginning with 0.

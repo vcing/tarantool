@@ -266,9 +266,7 @@ int sql_vdbe_mem_alloc_region(Mem *, uint32_t);
 typedef int (*RecordCompare) (int, const void *, UnpackedRecord *);
 RecordCompare sqlite3VdbeFindCompare(UnpackedRecord *);
 
-#ifndef SQLITE_OMIT_TRIGGER
 void sqlite3VdbeLinkSubProgram(Vdbe *, SubProgram *);
-#endif
 
 /* Use SQLITE_ENABLE_COMMENTS to enable generation of extra comments on
  * each VDBE opcode.

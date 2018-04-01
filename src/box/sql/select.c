@@ -1175,7 +1175,6 @@ selectInnerLoop(Parse * pParse,		/* The parser context */
 		}
 #endif				/* SQLITE_OMIT_CTE */
 
-#if !defined(SQLITE_OMIT_TRIGGER)
 		/* Discard the results.  This is used for SELECT statements inside
 		 * the body of a TRIGGER.  The purpose of such selects is to call
 		 * user-defined functions that have side effects.  We do not care
@@ -1185,7 +1184,6 @@ selectInnerLoop(Parse * pParse,		/* The parser context */
 			assert(eDest == SRT_Discard);
 			break;
 		}
-#endif
 	}
 
 	/* Jump to the end of the loop if the LIMIT is reached.  Except, if
@@ -3471,7 +3469,7 @@ multiSelectOrderBy(Parse * pParse,	/* Parsing context */
 }
 #endif
 
-#if !defined(SQLITE_OMIT_SUBQUERY) || !defined(SQLITE_OMIT_VIEW)
+#if !defined(SQLITE_OMIT_SUBQUERY)
 /* Forward Declarations */
 static void substExprList(Parse *, ExprList *, int, ExprList *);
 static void substSelect(Parse *, Select *, int, ExprList *, int);
@@ -3576,9 +3574,9 @@ substSelect(Parse * pParse,	/* Report errors here */
 		}
 	} while (doPrior && (p = p->pPrior) != 0);
 }
-#endif				/* !defined(SQLITE_OMIT_SUBQUERY) || !defined(SQLITE_OMIT_VIEW) */
+#endif /* !defined(SQLITE_OMIT_SUBQUERY) */
 
-#if !defined(SQLITE_OMIT_SUBQUERY) || !defined(SQLITE_OMIT_VIEW)
+#if !defined(SQLITE_OMIT_SUBQUERY)
 /*
  * This routine attempts to flatten subqueries as a performance optimization.
  * This routine returns 1 if it makes changes and 0 if no flattening occurs.
@@ -4146,9 +4144,9 @@ flattenSubquery(Parse * pParse,		/* Parsing context */
 
 	return 1;
 }
-#endif				/* !defined(SQLITE_OMIT_SUBQUERY) || !defined(SQLITE_OMIT_VIEW) */
+#endif /* !defined(SQLITE_OMIT_SUBQUERY) */
 
-#if !defined(SQLITE_OMIT_SUBQUERY) || !defined(SQLITE_OMIT_VIEW)
+#if !defined(SQLITE_OMIT_SUBQUERY)
 /*
  * Make copies of relevant WHERE clause terms of the outer query into
  * the WHERE clause of subquery.  Example:
@@ -4225,7 +4223,7 @@ pushDownWhereTerms(Parse * pParse,	/* Parse context (for malloc() and error repo
 	}
 	return nChng;
 }
-#endif				/* !defined(SQLITE_OMIT_SUBQUERY) || !defined(SQLITE_OMIT_VIEW) */
+#endif /* !defined(SQLITE_OMIT_SUBQUERY) */
 
 /*
  * Based on the contents of the AggInfo structure indicated by the first
@@ -4759,7 +4757,6 @@ selectExpander(Walker * pWalker, Select * p)
 			if (cannotBeFunction(pParse, pFrom)) {
 				return WRC_Abort;
 			}
-#if !defined(SQLITE_OMIT_VIEW)
 			if (space_is_view(pTab)) {
 				i16 nCol;
 				if (sqlite3ViewGetColumnNames(pParse, pTab))
@@ -4774,7 +4771,6 @@ selectExpander(Walker * pWalker, Select * p)
 				sqlite3WalkSelect(pWalker, pFrom->pSelect);
 				pTab->nCol = nCol;
 			}
-#endif
 		}
 
 		/* Locate the index named by the INDEXED BY clause, if any. */
@@ -5416,7 +5412,7 @@ sqlite3Select(Parse * pParse,		/* The parser context */
 
 	/* Try to flatten subqueries in the FROM clause up into the main query
 	 */
-#if !defined(SQLITE_OMIT_SUBQUERY) || !defined(SQLITE_OMIT_VIEW)
+#if !defined(SQLITE_OMIT_SUBQUERY)
 	for (i = 0; !p->pPrior && i < pTabList->nSrc; i++) {
 		struct SrcList_item *pItem = &pTabList->a[i];
 		Select *pSub = pItem->pSelect;
@@ -5478,7 +5474,7 @@ sqlite3Select(Parse * pParse,		/* The parser context */
 
 	/* Generate code for all sub-queries in the FROM clause
 	 */
-#if !defined(SQLITE_OMIT_SUBQUERY) || !defined(SQLITE_OMIT_VIEW)
+#if !defined(SQLITE_OMIT_SUBQUERY)
 	for (i = 0; i < pTabList->nSrc; i++) {
 		struct SrcList_item *pItem = &pTabList->a[i];
 		SelectDest dest;

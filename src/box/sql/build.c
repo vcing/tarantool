@@ -1912,11 +1912,9 @@ sqlite3EndTable(Parse * pParse,	/* Parse context */
 		if (p->pSelect == 0) {
 			/* A regular table */
 			zType = "TABLE";
-#ifndef SQLITE_OMIT_VIEW
 		} else {
 			/* A view */
 			zType = "VIEW";
-#endif
 		}
 
 		/* If this is a CREATE TABLE xx AS SELECT ..., execute the SELECT
@@ -2011,7 +2009,6 @@ sqlite3EndTable(Parse * pParse,	/* Parse context */
 	}
 }
 
-#ifndef SQLITE_OMIT_VIEW
 /*
  * The parser calls this routine in order to create a new VIEW
  */
@@ -2080,9 +2077,7 @@ sqlite3CreateView(Parse * pParse,	/* The parsing context */
 	sqlite3ExprListDelete(db, pCNames);
 	return;
 }
-#endif				/* SQLITE_OMIT_VIEW */
 
-#if !defined(SQLITE_OMIT_VIEW)
 /*
  * The Table structure pTable is really a VIEW.  Fill in the names of
  * the columns of the view in the pTable structure.  Return the number
@@ -2099,7 +2094,6 @@ sqlite3ViewGetColumnNames(Parse * pParse, Table * pTable)
 
 	assert(pTable);
 
-#ifndef SQLITE_OMIT_VIEW
 	/* A positive nCol means the columns names for this view are
 	 * already known.
 	 */
@@ -2179,12 +2173,9 @@ sqlite3ViewGetColumnNames(Parse * pParse, Table * pTable)
 	} else {
 		nErr++;
 	}
-#endif				/* SQLITE_OMIT_VIEW */
 	return nErr;
 }
-#endif				/* !defined(SQLITE_OMIT_VIEW) */
 
-#ifndef SQLITE_OMIT_VIEW
 /*
  * Clear the column names from every VIEW in database idx.
  */
@@ -2202,9 +2193,6 @@ sqliteViewResetAll(sqlite3 * db)
 		}
 	}
 }
-#else
-#define sqliteViewResetAll(A,B)
-#endif				/* SQLITE_OMIT_VIEW */
 
 /*
  * Remove entries from the sqlite_statN tables (for N in (1,2,3))
@@ -2385,7 +2373,6 @@ sqlite3DropTable(Parse * pParse, SrcList * pName, int isView, int noErr)
 			sqlite3CodeVerifySchema(pParse);
 		goto exit_drop_table;
 	}
-#ifndef SQLITE_OMIT_VIEW
 	/* Ensure DROP TABLE is not used on a view, and DROP VIEW is not used
 	 * on a table.
 	 */
@@ -2399,7 +2386,6 @@ sqlite3DropTable(Parse * pParse, SrcList * pName, int isView, int noErr)
 				pTab->zName);
 		goto exit_drop_table;
 	}
-#endif
 
 	/* Generate code to remove the table from Tarantool and internal SQL
 	 * tables. Basically, it consists from 3 stages:
@@ -2448,7 +2434,6 @@ sqlite3CreateForeignKey(Parse * pParse,	/* Parsing context */
     )
 {
 	sqlite3 *db = pParse->db;
-#ifndef SQLITE_OMIT_FOREIGN_KEY
 	FKey *pFKey = 0;
 	FKey *pNextTo;
 	Table *p = pParse->pNewTable;
@@ -2552,7 +2537,6 @@ sqlite3CreateForeignKey(Parse * pParse,	/* Parsing context */
 
  fk_end:
 	sqlite3DbFree(db, pFKey);
-#endif				/* !defined(SQLITE_OMIT_FOREIGN_KEY) */
 	sqlite3ExprListDelete(db, pFromCol);
 	sqlite3ExprListDelete(db, pToCol);
 }
@@ -2567,14 +2551,12 @@ sqlite3CreateForeignKey(Parse * pParse,	/* Parsing context */
 void
 sqlite3DeferForeignKey(Parse * pParse, int isDeferred)
 {
-#ifndef SQLITE_OMIT_FOREIGN_KEY
 	Table *pTab;
 	FKey *pFKey;
 	if ((pTab = pParse->pNewTable) == 0 || (pFKey = pTab->pFKey) == 0)
 		return;
 	assert(isDeferred == 0 || isDeferred == 1);	/* EV: R-30323-21917 */
 	pFKey->isDeferred = (u8) isDeferred;
-#endif
 }
 
 /*
@@ -2896,12 +2878,10 @@ sqlite3CreateIndex(Parse * pParse,	/* All information about this parse */
 
 	assert(pTab != 0);
 	assert(pParse->nErr == 0);
-#ifndef SQLITE_OMIT_VIEW
 	if (pTab->pSelect) {
 		sqlite3ErrorMsg(pParse, "views may not be indexed");
 		goto exit_create_index;
 	}
-#endif
 	/*
 	 * Find the name of the index.  Make sure there is not already another
 	 * index or table with the same name.

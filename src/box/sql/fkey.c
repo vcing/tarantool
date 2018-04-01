@@ -37,9 +37,6 @@
 #include "sqliteInt.h"
 #include "box/session.h"
 
-#ifndef SQLITE_OMIT_FOREIGN_KEY
-#ifndef SQLITE_OMIT_TRIGGER
-
 /*
  * Deferred and Immediate FKs
  * --------------------------
@@ -1495,8 +1492,6 @@ sqlite3FkActions(Parse * pParse,	/* Parse context */
 	}
 }
 
-#endif				/* ifndef SQLITE_OMIT_TRIGGER */
-
 /*
  * Free all memory associated with foreign key definitions attached to
  * table pTab. Remove the deleted foreign keys from the Schema.fkeyHash
@@ -1531,13 +1526,10 @@ sqlite3FkDelete(sqlite3 * db, Table * pTab)
 		assert(pFKey->isDeferred == 0 || pFKey->isDeferred == 1);
 
 		/* Delete any triggers created to implement actions for this FK. */
-#ifndef SQLITE_OMIT_TRIGGER
 		fkTriggerDelete(db, pFKey->apTrigger[0]);
 		fkTriggerDelete(db, pFKey->apTrigger[1]);
-#endif
 
 		pNext = pFKey->pNextFrom;
 		sqlite3DbFree(db, pFKey);
 	}
 }
-#endif				/* ifndef SQLITE_OMIT_FOREIGN_KEY */

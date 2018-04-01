@@ -35,7 +35,6 @@ add_library(sql STATIC
         cursor.c
     build.c
     callback.c
-    complete.c
     date.c
     delete.c
     expr.c

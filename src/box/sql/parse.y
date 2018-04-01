@@ -367,7 +367,6 @@ ifexists(A) ::= .            {A = 0;}
 
 ///////////////////// The CREATE VIEW statement /////////////////////////////
 //
-%ifndef SQLITE_OMIT_VIEW
 cmd ::= createkw(X) VIEW ifnotexists(E) nm(Y) eidlist_opt(C)
           AS select(S). {
   sqlite3CreateView(pParse, &X, &Y, C, S, E);
@@ -375,7 +374,6 @@ cmd ::= createkw(X) VIEW ifnotexists(E) nm(Y) eidlist_opt(C)
 cmd ::= DROP VIEW ifexists(E) fullname(X). {
   sqlite3DropTable(pParse, X, 1, E);
 }
-%endif  SQLITE_OMIT_VIEW
 
 //////////////////////// The SELECT statement /////////////////////////////////
 //
@@ -1350,8 +1348,6 @@ plus_num(A) ::= number(A).
 minus_num(A) ::= MINUS number(X).     {A = X;}
 //////////////////////////// The CREATE TRIGGER command /////////////////////
 
-%ifndef SQLITE_OMIT_TRIGGER
-
 cmd ::= createkw trigger_decl(A) BEGIN trigger_cmd_list(S) END(Z). {
   Token all;
   all.z = A.z;
@@ -1464,7 +1460,6 @@ expr(A) ::= RAISE(X) LP raisetype(T) COMMA STRING(Z) RP(Y).  {
     A.pExpr->affinity = (char)T;
   }
 }
-%endif  !SQLITE_OMIT_TRIGGER
 
 %type raisetype {int}
 raisetype(A) ::= ROLLBACK.  {A = ON_CONFLICT_ACTION_ROLLBACK;}
@@ -1473,11 +1468,9 @@ raisetype(A) ::= FAIL.      {A = ON_CONFLICT_ACTION_FAIL;}
 
 
 ////////////////////////  DROP TRIGGER statement //////////////////////////////
-%ifndef SQLITE_OMIT_TRIGGER
 cmd ::= DROP TRIGGER ifexists(NOERR) fullname(X). {
   sqlite3DropTrigger(pParse,X,NOERR);
 }
-%endif  !SQLITE_OMIT_TRIGGER
 
 ////////////////////////// REINDEX collation //////////////////////////////////
 %ifndef SQLITE_OMIT_REINDEX

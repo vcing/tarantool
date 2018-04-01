@@ -307,8 +307,6 @@ lookupName(Parse * pParse,	/* The parsing context */
 				}
 			}
 		}
-		/* if( pSrcList ) */
-#ifndef SQLITE_OMIT_TRIGGER
 		/* If we have not already resolved the name, then maybe
 		 * it is a new.* or old.* trigger argument reference
 		 */
@@ -367,7 +365,6 @@ lookupName(Parse * pParse,	/* The parsing context */
 				}
 			}
 		}
-#endif				/* !defined(SQLITE_OMIT_TRIGGER) */
 
 		/*
 		 * If the input is of the form Z (not Y.Z or X.Y.Z) then the name Z

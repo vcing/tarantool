@@ -1537,8 +1537,7 @@ sqlite3ExprListDup(sqlite3 * db, ExprList * p, int flags)
  * sqlite3SelectDup(), can be called. sqlite3SelectDup() is sometimes
  * called with a NULL argument.
  */
-#if !defined(SQLITE_OMIT_VIEW) || !defined(SQLITE_OMIT_TRIGGER) \
- || !defined(SQLITE_OMIT_SUBQUERY)
+#if !defined(SQLITE_OMIT_SUBQUERY)
 SrcList *
 sqlite3SrcListDup(sqlite3 * db, SrcList * p, int flags)
 {
@@ -4429,7 +4428,6 @@ sqlite3ExprCodeTarget(Parse * pParse, Expr * pExpr, int target)
 			sqlite3VdbeResolveLabel(v, endLabel);
 			break;
 		}
-#ifndef SQLITE_OMIT_TRIGGER
 	case TK_RAISE:{
 			assert(pExpr->affinity == ON_CONFLICT_ACTION_ROLLBACK
 			       || pExpr->affinity == ON_CONFLICT_ACTION_ABORT
@@ -4459,7 +4457,6 @@ sqlite3ExprCodeTarget(Parse * pParse, Expr * pExpr, int target)
 
 			break;
 		}
-#endif
 	}
 	sqlite3ReleaseTempReg(pParse, regFree1);
 	sqlite3ReleaseTempReg(pParse, regFree2);

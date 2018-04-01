@@ -87,17 +87,14 @@ sqlite3IsReadOnly(Parse * pParse, Table * pTab, int viewOk)
 				pTab->zName);
 		return 1;
 	}
-#ifndef SQLITE_OMIT_VIEW
 	if (!viewOk && space_is_view(pTab)) {
 		sqlite3ErrorMsg(pParse, "cannot modify %s because it is a view",
 				pTab->zName);
 		return 1;
 	}
-#endif
 	return 0;
 }
 
-#if !defined(SQLITE_OMIT_VIEW) && !defined(SQLITE_OMIT_TRIGGER)
 /*
  * Evaluate a view and store its result in an ephemeral table.  The
  * pWhere argument is an optional WHERE clause that restricts the
@@ -128,7 +125,6 @@ sqlite3MaterializeView(Parse * pParse,	/* Parsing context */
 	sqlite3Select(pParse, pSel, &dest);
 	sqlite3SelectDelete(db, pSel);
 }
-#endif				/* !defined(SQLITE_OMIT_VIEW) && !defined(SQLITE_OMIT_TRIGGER) */
 
 #if defined(SQLITE_ENABLE_UPDATE_DELETE_LIMIT) && !defined(SQLITE_OMIT_SUBQUERY)
 /*
@@ -261,11 +257,8 @@ sqlite3DeleteFrom(Parse * pParse,	/* The parser context */
 				 * subqueries in the WHERE clause
 				 */
 	struct session *user_session = current_session();
-
-#ifndef SQLITE_OMIT_TRIGGER
 	int isView;		/* True if attempting to delete from a view */
 	Trigger *pTrigger;	/* List of table triggers, if required */
-#endif
 
 	db = pParse->db;
 	if (pParse->nErr || db->mallocFailed) {
@@ -285,18 +278,9 @@ sqlite3DeleteFrom(Parse * pParse,	/* The parser context */
 	/* Figure out if we have any triggers and if the table being
 	 * deleted from is a view
 	 */
-#ifndef SQLITE_OMIT_TRIGGER
 	pTrigger = sqlite3TriggersExist(pTab, TK_DELETE, 0, 0);
 	isView = pTab->pSelect != 0;
 	bComplex = pTrigger || sqlite3FkRequired(pTab, 0);
-#else
-#define pTrigger 0
-#define isView 0
-#endif
-#ifdef SQLITE_OMIT_VIEW
-#undef isView
-#define isView 0
-#endif
 
 	/* If pTab is really a view, make sure it has been initialized.
 	 */
@@ -330,12 +314,10 @@ sqlite3DeleteFrom(Parse * pParse,	/* The parser context */
 	/* If we are trying to delete from a view, realize that view into
 	 * an ephemeral table.
 	 */
-#if !defined(SQLITE_OMIT_VIEW) && !defined(SQLITE_OMIT_TRIGGER)
 	if (isView) {
 		sqlite3MaterializeView(pParse, pTab, pWhere, iTabCur);
 		iDataCur = iIdxCur = iTabCur;
 	}
-#endif
 
 	/* Resolve the column names in the WHERE clause.
 	 */

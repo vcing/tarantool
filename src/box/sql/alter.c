@@ -106,13 +106,11 @@ sqlite3AlterRenameTable(Parse * pParse,	/* Parser context. */
 		goto exit_rename_table;
 	}
 
-#ifndef SQLITE_OMIT_VIEW
 	if (space_is_view(pTab)) {
 		sqlite3ErrorMsg(pParse, "view %s may not be altered",
 				pTab->zName);
 		goto exit_rename_table;
 	}
-#endif
 
 	/* Begin a transaction for database.
 	 * Then modify the schema cookie (since the ALTER TABLE modifies the

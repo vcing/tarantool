@@ -347,12 +347,9 @@ sqlite3Insert(Parse * pParse,	/* Parser context */
 	int regData;		/* register holding first column to insert */
 	int *aRegIdx = 0;	/* One register allocated to each index */
 	uint32_t space_id = 0;
-
-#ifndef SQLITE_OMIT_TRIGGER
 	int isView;		/* True if attempting to insert into a view */
 	Trigger *pTrigger;	/* List of triggers on pTab, if required */
 	int tmask;		/* Mask of trigger times */
-#endif
 
 	db = pParse->db;
 	memset(&dest, 0, sizeof(dest));
@@ -388,18 +385,8 @@ sqlite3Insert(Parse * pParse,	/* Parser context */
 	/* Figure out if we have any triggers and if the table being
 	 * inserted into is a view
 	 */
-#ifndef SQLITE_OMIT_TRIGGER
 	pTrigger = sqlite3TriggersExist(pTab, TK_INSERT, 0, &tmask);
 	isView = space_is_view(pTab);
-#else
-#define pTrigger 0
-#define tmask 0
-#define isView 0
-#endif
-#ifdef SQLITE_OMIT_VIEW
-#undef isView
-#define isView 0
-#endif
 	assert((pTrigger && tmask) || (pTrigger == 0 && tmask == 0));
 
 	/* If pTab is really a view, make sure it has been initialized.
@@ -1896,7 +1883,6 @@ xferOptimization(Parse * pParse,	/* Parser context */
 		return 0;	/* Tables have different CHECK constraints.  Ticket #2252 */
 	}
 #endif
-#ifndef SQLITE_OMIT_FOREIGN_KEY
 	/* Disallow the transfer optimization if the destination table constains
 	 * any foreign key constraints.  This is more restrictive than necessary.
 	 * So the extra complication to make this rule less restrictive is probably
@@ -1906,7 +1892,6 @@ xferOptimization(Parse * pParse,	/* Parser context */
 	    && pDest->pFKey != 0) {
 		return 0;
 	}
-#endif
 	if ((user_session->sql_flags & SQLITE_CountRows) != 0) {
 		return 0;	/* xfer opt does not play well with PRAGMA count_changes */
 	}

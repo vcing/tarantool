@@ -127,12 +127,9 @@ sqlite3Update(Parse * pParse,		/* The parser context */
 	int labelBreak;		/* Jump here to break out of UPDATE loop */
 	int labelContinue;	/* Jump here to continue next step of UPDATE loop */
 	struct session *user_session = current_session();
-
-#ifndef SQLITE_OMIT_TRIGGER
 	int isView;		/* True when updating a view (INSTEAD OF trigger) */
 	Trigger *pTrigger;	/* List of triggers on pTab, if required */
 	int tmask;		/* Mask of TRIGGER_BEFORE|TRIGGER_AFTER */
-#endif
 	int newmask;		/* Mask of NEW.* columns accessed by BEFORE triggers */
 	int iEph = 0;		/* Ephemeral table holding all primary key values */
 	int nKey = 0;		/* Number of elements in regKey */
@@ -161,19 +158,9 @@ sqlite3Update(Parse * pParse,		/* The parser context */
 	/* Figure out if we have any triggers and if the table being
 	 * updated is a view.
 	 */
-#ifndef SQLITE_OMIT_TRIGGER
 	pTrigger = sqlite3TriggersExist(pTab, TK_UPDATE, pChanges, &tmask);
 	isView = space_is_view(pTab);
 	assert(pTrigger || tmask == 0);
-#else
-#define pTrigger 0
-#define isView 0
-#define tmask 0
-#endif
-#ifdef SQLITE_OMIT_VIEW
-#undef isView
-#define isView 0
-#endif
 
 	if (sqlite3ViewGetColumnNames(pParse, pTab)) {
 		goto update_cleanup;
@@ -306,13 +293,11 @@ sqlite3Update(Parse * pParse,		/* The parser context */
 	/* If we are trying to update a view, realize that view into
 	 * an ephemeral table.
 	 */
-#if !defined(SQLITE_OMIT_VIEW) && !defined(SQLITE_OMIT_TRIGGER)
 	if (isView) {
 		sqlite3MaterializeView(pParse, pTab, pWhere, iDataCur);
 		/* Number of columns from SELECT plus ID.*/
 		nKey = pTab->nCol + 1;
 	}
-#endif
 
 	/* Resolve the column names in all the expressions in the
 	 * WHERE clause.
