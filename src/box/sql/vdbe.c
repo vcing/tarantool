@@ -4318,6 +4318,34 @@ case OP_Next:          /* jump */
 	goto check_for_interrupt;
 }
 
+/* Opcode: SorterInsert P1 P2 * * *
+ * Synopsis: key=r[P2]
+ *
+ * Register P2 holds an SQL index key made using the
+ * MakeRecord instructions.  This opcode writes that key
+ * into the sorter P1.  Data for the entry is nil.
+ */
+case OP_SorterInsert: { 	/* in2 */
+	VdbeCursor *pC;
+
+	assert(pOp->p1>=0 && pOp->p1<p->nCursor);
+	pC = p->apCsr[pOp->p1];
+	assert(pC!=0);
+	assert(isSorter(pC)==(pOp->opcode==OP_SorterInsert));
+	pIn2 = &aMem[pOp->p2];
+	assert(pIn2->flags & MEM_Blob);
+
+	if (pOp->p5 & OPFLAG_NCHANGE) p->nChange++;
+	rc = ExpandBlob(pIn2);
+	if (rc) goto abort_due_to_error;
+
+	if (pOp->opcode==OP_SorterInsert)
+		rc = sqlite3VdbeSorterWrite(pC, pIn2);
+	if (rc) goto abort_due_to_error;
+	
+	break;
+}
+
 /* Opcode: IdxInsert P1 P2 P3 P4 P5
  * Synopsis: key=r[P2]
  *
@@ -4351,14 +4379,6 @@ case OP_Next:          /* jump */
  * This opcode works exactly as IdxInsert does, but in Tarantool
  * internals it invokes box_replace() instead of box_insert().
  */
-/* Opcode: SorterInsert P1 P2 * * *
- * Synopsis: key=r[P2]
- *
- * Register P2 holds an SQL index key made using the
- * MakeRecord instructions.  This opcode writes that key
- * into the sorter P1.  Data for the entry is nil.
- */
-case OP_SorterInsert:       /* in2 */
 case OP_IdxReplace:
 case OP_IdxInsert: {        /* in2 */
 	VdbeCursor *pC;
@@ -4370,41 +4390,38 @@ case OP_IdxInsert: {        /* in2 */
 	pIn2 = &aMem[pOp->p2];
 	assert(pIn2->flags & MEM_Blob);
 	if (pOp->p5 & OPFLAG_NCHANGE) p->nChange++;
-	assert(pC->eCurType==CURTYPE_TARANTOOL || pOp->opcode==OP_SorterInsert);
+	assert(pC->eCurType==CURTYPE_TARANTOOL);
 	rc = ExpandBlob(pIn2);
 	if (rc) goto abort_due_to_error;
-	if (pOp->opcode==OP_SorterInsert) {
-		rc = sqlite3VdbeSorterWrite(pC, pIn2);
+	BtCursor *pBtCur = pC->uc.pCursor;
+	pBtCur->nKey = pIn2->n;
+	pBtCur->key = pIn2->z;
+	struct space *space = pBtCur->space;
+	if (space->def->opts.temporary == 0) {
+		/* Make sure that memory has been allocated on region. */
+		assert(aMem[pOp->p2].flags & MEM_Ephem);
+		if (pOp->opcode == OP_IdxInsert)
+			rc = tarantoolSqlite3Insert(space, pBtCur->key,
+						    pBtCur->nKey);
+		else
+			rc = tarantoolSqlite3Replace(space, pBtCur->key,
+						     pBtCur->nKey);
+	} else if (space->def->opts.temporary == 1) {
+		rc = tarantoolSqlite3EphemeralInsert(pBtCur);
 	} else {
-		BtCursor *pBtCur = pC->uc.pCursor;
-		pBtCur->nKey = pIn2->n;
-		pBtCur->key = pIn2->z;
-		if (pBtCur->curFlags & BTCF_TaCursor) {
-			/* Make sure that memory has been allocated on region. */
-			assert(aMem[pOp->p2].flags & MEM_Ephem);
-			if (pOp->opcode == OP_IdxInsert)
-				rc = tarantoolSqlite3Insert(pBtCur);
-			else
-				rc = tarantoolSqlite3Replace(pBtCur);
-		} else if (pBtCur->curFlags & BTCF_TEphemCursor) {
-			rc = tarantoolSqlite3EphemeralInsert(pBtCur);
-		} else {
-			unreachable();
-		}
-		assert(pC->deferredMoveto==0);
-		pC->cacheStatus = CACHE_STALE;
-
-		/*
-		 * Memory for tuple passed to Tarantool is
-		 * allocated in region. This memory will be
-		 * automatically released by Tarantool.
-		 * However, VDBE in the end will also try to
-		 * release it, so pointers should be explicitly
-		 * nullified.
-		 */
-		pBtCur->nKey = 0;
-		pBtCur->key = NULL;
+		unreachable();
 	}
+
+	/*
+	 * Memory for tuple passed to Tarantool is
+	 * allocated in region. This memory will be
+	 * automatically released by Tarantool.
+	 * However, VDBE in the end will also try to
+	 * release it, so pointers should be explicitly
+	 * nullified.
+	 */
+	pBtCur->nKey = 0;
+	pBtCur->key = NULL;
 
 	if (pOp->p5 & OPFLAG_OE_IGNORE) {
 		/* Ignore any kind of failes and do not raise error message */
@@ -4444,12 +4461,9 @@ case OP_SInsert: {
 	assert(space != NULL);
 	assert(space_is_system(space));
 	/* Create surrogate cursor to pass to SQL bindings. */
-	BtCursor surrogate_cur;
-	surrogate_cur.space = space;
-	surrogate_cur.key = pIn2->z;
-	surrogate_cur.nKey = pIn2->n;
-	surrogate_cur.curFlags = BTCF_TaCursor;
-	rc = tarantoolSqlite3Insert(&surrogate_cur);
+	char *key = pIn2->z;
+	uint64_t key_length = pIn2->n;
+	rc = tarantoolSqlite3Insert(space, key, key_length);
 	if (rc)
 		goto abort_due_to_error;
 	if (pOp->p5 & OPFLAG_NCHANGE)

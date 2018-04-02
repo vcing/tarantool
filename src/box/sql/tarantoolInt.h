@@ -74,8 +74,10 @@ int tarantoolSqlite3Previous(BtCursor * pCur, int *pRes);
 int tarantoolSqlite3MovetoUnpacked(BtCursor * pCur, UnpackedRecord * pIdxKey,
 				   int *pRes);
 int tarantoolSqlite3Count(BtCursor * pCur, i64 * pnEntry);
-int tarantoolSqlite3Insert(BtCursor * pCur);
-int tarantoolSqlite3Replace(BtCursor * pCur);
+int tarantoolSqlite3Insert(struct space *space, const char *key,
+			   uint64_t key_length);
+int tarantoolSqlite3Replace(struct space *space, const char *key,
+			    uint64_t key_length);
 int tarantoolSqlite3Delete(BtCursor * pCur, u8 flags);
 int
 sql_delete_by_key(struct space *space, char *key, uint32_t key_size);
