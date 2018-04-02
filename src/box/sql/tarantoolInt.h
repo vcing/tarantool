@@ -126,7 +126,7 @@ tarantoolSqlite3IncrementMaxid(uint64_t *space_max_id);
  * Returns result size.
  * If buf==NULL estimate result size.
  */
-int tarantoolSqlite3MakeTableFormat(Table * pTable, void *buf);
+int tarantoolSqlite3MakeTableFormat(Parse *parse, Table * pTable, void *buf);
 
 /*
  * Format "opts" dictionary for _space entry.

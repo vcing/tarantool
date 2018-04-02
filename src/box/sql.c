@@ -1450,7 +1450,7 @@ static const char *convertSqliteAffinity(int affinity, bool allow_nulls)
  *
  * Ex: [{"name": "col1", "type": "integer"}, ... ]
  */
-int tarantoolSqlite3MakeTableFormat(Table *pTable, void *buf)
+int tarantoolSqlite3MakeTableFormat(Parse *parse, Table *pTable, void *buf)
 {
 	struct Column *aCol = pTable->aCol;
 	const struct Enc *enc = get_enc(buf);
@@ -1459,7 +1459,8 @@ int tarantoolSqlite3MakeTableFormat(Table *pTable, void *buf)
 	char *base = buf, *p;
 	int i, n = pTable->nCol;
 
-	p = enc->encode_array(base, n);
+	if (n != 0 || pTable->pCheck == NULL)
+		p = enc->encode_array(base, n);
 
 	/* If table's PK is single column which is INTEGER, then
 	 * treat it as strict type, not affinity.  */
@@ -1510,6 +1511,23 @@ int tarantoolSqlite3MakeTableFormat(Table *pTable, void *buf)
 			p = enc->encode_str(p, "default", strlen("default"));
 			p = enc->encode_str(p, def->u.zToken, strlen(def->u.zToken));
 		}
+	}
+	/* If table is really a view, set only fields names.
+	 * In this case they are encoded as CHECK constraints.
+	 */
+	if (n == 0 && pTable->pCheck != NULL) {
+		Column *cols;
+		i16 col_count;
+		sqlite3ColumnsFromExprList(parse, pTable->pCheck,
+					   &col_count, &cols);
+		p = enc->encode_array(base, col_count);
+		for (i = 0; i < col_count; ++i) {
+			p = enc->encode_map(p, 1);
+			p = enc->encode_str(p, "name", 4);
+			p = enc->encode_str(p, cols[i].zName,
+					    strlen(cols[i].zName));
+		}
+		sqlite3_free(cols);
 	}
 	return (int)(p - base);
 }

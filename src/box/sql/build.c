@@ -1639,7 +1639,7 @@ createSpace(Parse * pParse, int iSpaceId, char *zStmt)
 	int zOptsSz, zFormatSz;
 
 	zOpts = sqlite3DbMallocRaw(pParse->db,
-				   tarantoolSqlite3MakeTableFormat(p, NULL) +
+				   tarantoolSqlite3MakeTableFormat(pParse, p, NULL) +
 				   tarantoolSqlite3MakeTableOpts(p, zStmt,
 								 NULL) + 2);
 	if (!zOpts) {
@@ -1649,7 +1649,7 @@ createSpace(Parse * pParse, int iSpaceId, char *zStmt)
 	} else {
 		zOptsSz = tarantoolSqlite3MakeTableOpts(p, zStmt, zOpts);
 		zFormat = zOpts + zOptsSz + 1;
-		zFormatSz = tarantoolSqlite3MakeTableFormat(p, zFormat);
+		zFormatSz = tarantoolSqlite3MakeTableFormat(pParse, p, zFormat);
 #if SQLITE_DEBUG
 		/* NUL-termination is necessary for VDBE-tracing facility only */
 		zOpts[zOptsSz] = 0;
@@ -1664,8 +1664,13 @@ createSpace(Parse * pParse, int iSpaceId, char *zStmt)
 			  sqlite3DbStrDup(pParse->db, p->zName), P4_DYNAMIC);
 	sqlite3VdbeAddOp4(v, OP_String8, 0, iFirstCol + 3 /* engine */ , 0,
 			  "memtx", P4_STATIC);
-	sqlite3VdbeAddOp2(v, OP_Integer, p->nCol,
-			  iFirstCol + 4 /* field_count */ );
+	/* Add field count. */
+	if (p->pSelect != NULL && p->pCheck != NULL) {
+		sqlite3VdbeAddOp2(v, OP_Integer, p->pCheck->nExpr,
+				  iFirstCol + 4);
+	} else {
+		sqlite3VdbeAddOp2(v, OP_Integer, p->nCol, iFirstCol + 4);
+	}
 	sqlite3VdbeAddOp4(v, OP_Blob, zOptsSz, iFirstCol + 5, MSGPACK_SUBTYPE,
 			  zOpts, P4_DYNAMIC);
 	/* zOpts and zFormat are co-located, hence STATIC */
