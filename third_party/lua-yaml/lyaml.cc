@@ -807,6 +807,19 @@ error:
    }
 }
 
+int lua_yaml_encode_tagged(lua_State *L, struct luaL_serializer *serializer,
+                           const char *tag_handle, const char *tag_prefix)
+{
+   assert(tag_handle != NULL && tag_prefix != NULL);
+   assert(lua_gettop(L) == 1);
+   return lua_yaml_encode_impl(L, serializer, tag_handle, tag_prefix);
+}
+
+int lua_yaml_encode(lua_State *L, struct luaL_serializer *serializer)
+{
+   return lua_yaml_encode_impl(L, serializer, NULL, NULL);
+}
+
 /**
  * Dump Lua objects into YAML string. It takes any argument count,
  * and dumps each in a separate document.
@@ -845,7 +858,11 @@ usage_error:
 }
 
 static int
-l_new(lua_State *L);
+l_new(lua_State *L)
+{
+   lua_yaml_new_serializer(L);
+   return 1;
+}
 
 static const luaL_Reg yamllib[] = {
    { "encode", l_dump },
@@ -855,12 +872,12 @@ static const luaL_Reg yamllib[] = {
    { NULL, NULL}
 };
 
-static int
-l_new(lua_State *L)
+struct luaL_serializer *
+lua_yaml_new_serializer(lua_State *L)
 {
    struct luaL_serializer *s = luaL_newserializer(L, NULL, yamllib);
    s->has_compact = 1;
-   return 1;
+   return s;
 }
 
 int
