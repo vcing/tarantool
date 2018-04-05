@@ -3236,7 +3236,9 @@ case OP_OpenTEphemeral: {
 	assert(pOp->p4.pKeyInfo != 0);
 	assert(pOp->p4type == P4_KEYINFO);
 
-	pCx = allocateCursor(p, pOp->p1, pOp->p2, CURTYPE_TARANTOOL);
+	uint32_t field_count = pOp->p2;
+
+	pCx = allocateCursor(p, pOp->p1, field_count, CURTYPE_TARANTOOL);
 	if (pCx == 0) goto no_mem;
 	pCx->nullRow = 1;
 
@@ -3246,9 +3248,17 @@ case OP_OpenTEphemeral: {
 	pBtCur->eState = CURSOR_INVALID;
 	pBtCur->curFlags = BTCF_TEphemCursor;
 
-	rc = tarantoolSqlite3EphemeralCreate(pCx->uc.pCursor, pOp->p2,
-					     pOp->p4.pKeyInfo->aColl[0]);
+	struct space *ephem_new_space;
+	struct coll *coll_seq = pOp->p4.pKeyInfo->aColl[0];
+
+	rc = tarantoolSqlite3EphemeralCreate(&ephem_new_space, field_count,
+					     coll_seq);
 	if (rc) goto abort_due_to_error;
+
+	rc = tarantoolSqlite3EphemeralSetFirst(pBtCur, ephem_new_space,
+					       field_count);
+	if (rc) goto abort_due_to_error;
+
 	break;
 }
 

@@ -371,25 +371,23 @@ int tarantoolSqlite3Count(BtCursor *pCur, i64 *pnEntry)
 	return SQLITE_OK;
 }
 
-/*
- * Create ephemeral space and set cursor to the first entry. Features of
+/**
+ * Create ephemeral space. Features of
  * ephemeral spaces: id == 0, name == "ephemeral", memtx engine (in future it
  * can be changed, but now only memtx engine is supported), primary index
  * which covers all fields and no secondary indexes, given field number and
  * collation sequence. All fields are scalar and nullable.
  *
- * @param pCur Cursor which will point to the new ephemeral space.
+ * @param space - pointer to a new created ephemeral sapce.
  * @param field_count Number of fields in ephemeral space.
  * @param aColl Collation sequence of ephemeral space.
  *
  * @retval SQLITE_OK on success, SQLITE_TARANTOOL_ERROR otherwise.
  */
-int tarantoolSqlite3EphemeralCreate(BtCursor *pCur, uint32_t field_count,
-				    struct coll *aColl)
+int
+tarantoolSqlite3EphemeralCreate(struct space **space, uint32_t field_count,
+				struct coll *coll_seq)
 {
-	assert(pCur);
-	assert(pCur->curFlags & BTCF_TEphemCursor);
-
 	struct key_def *ephemer_key_def = key_def_new(field_count);
 	if (ephemer_key_def == NULL)
 		return SQL_TARANTOOL_ERROR;
@@ -398,7 +396,7 @@ int tarantoolSqlite3EphemeralCreate(BtCursor *pCur, uint32_t field_count,
 				 part /* filed no */,
 				 FIELD_TYPE_SCALAR,
 				 ON_CONFLICT_ACTION_NONE /* nullable_action */,
-				 aColl /* coll */);
+				 coll_seq /* coll */);
 	}
 
 	struct index_def *ephemer_index_def =
@@ -426,10 +424,34 @@ int tarantoolSqlite3EphemeralCreate(BtCursor *pCur, uint32_t field_count,
 
 	struct space *ephemer_new_space = space_new_ephemeral(ephemer_space_def,
 							      &key_list);
+	if (ephemer_new_space == NULL) {
+		return SQL_TARANTOOL_ERROR;
+	}
+
 	index_def_delete(ephemer_index_def);
 	space_def_delete(ephemer_space_def);
-	if (ephemer_new_space == NULL)
-		return SQL_TARANTOOL_ERROR;
+
+	*space = ephemer_new_space;
+
+	return 0;
+}
+
+/**
+ * Set cursor to the first entry of a new created ephemeral space.
+ *
+ * @param pCur Cursor which will point to the new ephemeral space.
+ * @param ephemer_new_space New ephemeral space to which cursor
+ *        should point.
+ * @param field_count Number of fields in ephemeral space.
+ *
+ * @retval SQLITE_OK on success, SQLITE_TARANTOOL_ERROR otherwise.
+ */
+int tarantoolSqlite3EphemeralSetFirst(BtCursor *pCur,
+				      struct space *ephemer_new_space,
+				      uint32_t field_count)
+{
+	assert(pCur != NULL);
+
 	if (key_alloc(pCur, field_count) != 0) {
 		space_delete(ephemer_new_space);
 		return SQL_TARANTOOL_ERROR;

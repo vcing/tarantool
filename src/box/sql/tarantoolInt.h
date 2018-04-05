@@ -96,8 +96,11 @@ int tarantoolSqlite3RenameParentTable(int iTab, const char *zOldParentName,
 				      const char *zNewParentName);
 
 /* Interface for ephemeral tables. */
-int tarantoolSqlite3EphemeralCreate(BtCursor * pCur, uint32_t filed_count,
-				    struct coll *aColl);
+int tarantoolSqlite3EphemeralCreate(struct space **ephem_new_space,
+				    uint32_t filed_count, struct coll *aColl);
+int tarantoolSqlite3EphemeralSetFirst(BtCursor * pCur,
+				      struct space *ephem_new_space,
+				      uint32_t filed_count);
 int tarantoolSqlite3EphemeralInsert(BtCursor * pCur);
 int tarantoolSqlite3EphemeralDelete(BtCursor * pCur);
 int tarantoolSqlite3EphemeralCount(BtCursor * pCur, i64 * pnEntry);
