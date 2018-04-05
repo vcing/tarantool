@@ -220,6 +220,7 @@ void sqlite3VdbeChangeP1(Vdbe *, u32 addr, int P1);
 void sqlite3VdbeChangeP2(Vdbe *, u32 addr, int P2);
 void sqlite3VdbeChangeP3(Vdbe *, u32 addr, int P3);
 void sqlite3VdbeChangeP5(Vdbe *, int P5);
+void sqlite3VdbeAppendP5(Vdbe *, int P5);
 void sqlite3VdbeJumpHere(Vdbe *, int addr);
 int sqlite3VdbeChangeToNoop(Vdbe *, int addr);
 int sqlite3VdbeDeletePriorOpcode(Vdbe *, u8 op);

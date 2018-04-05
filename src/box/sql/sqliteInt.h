@@ -3028,8 +3028,16 @@ struct Parse {
  *    OPFLAG_SAVEPOSITION == BTREE_SAVEPOSITION
  *    OPFLAG_AUXDELETE    == BTREE_AUXDELETE
  */
-#define OPFLAG_NCHANGE       0x01	/* OP_Insert: Set to update db->nChange */
-				     /* Also used in P2 (not P5) of OP_Delete */
+
+/**
+ * OP_IdxInsert: Set to update db->nChange 
+ * Also used in P2 (not P5) of OP_Delete
+ */
+#define OPFLAG_NCHANGE       0x01
+/* OP_IdxInsert: insertion is performed into ordinary space */
+#define OPFLAG_SPACE_INSERT  0x02
+/* OP_IdxInsert: insertion is performed into ephemeral space */
+#define OPFLAG_EPHEM_INSERT  0x04
 #define OPFLAG_EPHEM         0x01	/* OP_Column: Ephemeral output is ok */
 #define OPFLAG_ISUPDATE      0x04	/* This OP_Insert is an sql UPDATE */
 #define OPFLAG_OE_IGNORE    0x200	/* OP_IdxInsert: Ignore flag */
@@ -3714,7 +3722,7 @@ vdbe_emit_insertion_completion(Vdbe *v, int cursor_id, int tuple_id,
 			       u8 on_error);
 
 int sqlite3OpenTableAndIndices(Parse *, Table *, int, u8, int, u8 *, int *,
-			       int *, u8, u8);
+			       int *, int, u8, u8);
 void
 sql_set_multi_write(Parse *, bool);
 void sqlite3MayAbort(Parse *);

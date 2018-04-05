@@ -173,7 +173,7 @@ openStatTable(Parse * pParse,	/* Parsing context */
 		}
 	}
 
-	/* Open the sql_stat[134] tables for writing. */
+	/* Open the sql_stat[14] tables for writing. */
 	for (i = 0; aTable[i]; i++) {
 		int addr = emit_open_cursor(pParse, iStatCur + i, aRoot[i]);
 		v->aOp[addr].p4.pKeyInfo = 0;
@@ -801,7 +801,6 @@ static void
 analyzeOneTable(Parse * pParse,	/* Parser context */
 		Table * pTab,	/* Table whose indices are to be analyzed */
 		Index * pOnlyIdx,	/* If not NULL, only analyze this one index */
-		int iStatCur,	/* Index of VdbeCursor that writes the _sql_stat1 table */
 		int iMem,	/* Available memory locations begin here */
 		int iTab	/* Next available cursor */
     )
@@ -1048,7 +1047,19 @@ analyzeOneTable(Parse * pParse,	/* Parser context */
 		assert("BBB"[0] == SQLITE_AFF_TEXT);
 		sqlite3VdbeAddOp4(v, OP_MakeRecord, regTabname, 3, regTemp,
 				  "BBB", 0);
-		sqlite3VdbeAddOp2(v, OP_IdxInsert, iStatCur, regTemp);
+
+		int space_stat1_reg = ++pParse->nMem;
+		Table *sql_stat1 = sqlite3HashFind(&db->pSchema->tblHash,
+						  "_sql_stat1");
+		assert(sql_stat1 != NULL);
+		struct space *sql_stat1_space =
+			space_by_id(SQLITE_PAGENO_TO_SPACEID(sql_stat1->tnum));
+		assert(sql_stat1_space != NULL);
+		sqlite3VdbeAddOp4Ptr(v, OP_LoadPtr, 0,
+				space_stat1_reg, 0, (void *) sql_stat1_space);
+
+		sqlite3VdbeAddOp2(v, OP_IdxInsert, space_stat1_reg, regTemp);
+		sqlite3VdbeChangeP5(v, OPFLAG_SPACE_INSERT);
 
 		/* Add the entries to the stat4 table. */
 
@@ -1078,14 +1089,25 @@ analyzeOneTable(Parse * pParse,	/* Parser context */
 		 */
 		VdbeCoverageNeverTaken(v);
 		for (i = 0; i < nColTest; i++) {
-			sqlite3ExprCodeLoadIndexColumn(pParse, pIdx,
-									 iTabCur, i,
-									 regCol + i);
+			sqlite3ExprCodeLoadIndexColumn(pParse, pIdx, iTabCur, i,
+						       regCol + i);
 		}
 		sqlite3VdbeAddOp3(v, OP_MakeRecord, regCol, nColTest,
 				  regSample);
 		sqlite3VdbeAddOp3(v, OP_MakeRecord, regTabname, 6, regTemp);
-		sqlite3VdbeAddOp2(v, OP_IdxReplace, iStatCur + 1, regTemp);
+
+		int space_stat4_reg = ++pParse->nMem;
+		Table *sql_stat4 = sqlite3HashFind(&db->pSchema->tblHash,
+						"_sql_stat4");
+		assert(sql_stat4 != NULL);
+		struct space *sql_stat4_space =
+			space_by_id(SQLITE_PAGENO_TO_SPACEID(sql_stat4->tnum));
+		assert(sql_stat4_space != NULL);
+		sqlite3VdbeAddOp4Ptr(v, OP_LoadPtr, 0,
+				space_stat4_reg, 0, (void *) sql_stat4_space);
+
+		sqlite3VdbeAddOp2(v, OP_IdxReplace, space_stat4_reg, regTemp);
+		sqlite3VdbeChangeP5(v, OPFLAG_SPACE_INSERT);
 		sqlite3VdbeAddOp2(v, OP_Goto, 1, addrNext);	/* P1==1 for end-of-loop */
 		sqlite3VdbeJumpHere(v, addrIsNull);
 
@@ -1128,7 +1150,7 @@ analyzeDatabase(Parse * pParse)
 	iTab = pParse->nTab;
 	for (k = sqliteHashFirst(&pSchema->tblHash); k; k = sqliteHashNext(k)) {
 		Table *pTab = (Table *) sqliteHashData(k);
-		analyzeOneTable(pParse, pTab, 0, iStatCur, iMem, iTab);
+		analyzeOneTable(pParse, pTab, 0, iMem, iTab);
 	}
 	loadAnalysis(pParse);
 }
@@ -1152,7 +1174,7 @@ analyzeTable(Parse * pParse, Table * pTab, Index * pOnlyIdx)
 	} else {
 		openStatTable(pParse, iStatCur, pTab->zName, "tbl");
 	}
-	analyzeOneTable(pParse, pTab, pOnlyIdx, iStatCur, pParse->nMem + 1,
+	analyzeOneTable(pParse, pTab, pOnlyIdx, pParse->nMem + 1,
 			pParse->nTab);
 	loadAnalysis(pParse);
 }

@@ -4372,45 +4372,39 @@ case OP_SorterInsert: {       /* in2 */
  */
 case OP_IdxReplace:
 case OP_IdxInsert: {        /* in2 */
-	VdbeCursor *pC;
-
-	assert(pOp->p1>=0 && pOp->p1<p->nCursor);
-	pC = p->apCsr[pOp->p1];
-	assert(pC!=0);
+	assert(pOp->p1>=0);
 	pIn2 = &aMem[pOp->p2];
 	assert(pIn2->flags & MEM_Blob);
 	if (pOp->p5 & OPFLAG_NCHANGE) p->nChange++;
-	assert(pC->eCurType==CURTYPE_TARANTOOL);
 	rc = ExpandBlob(pIn2);
 	if (rc) goto abort_due_to_error;
-	BtCursor *pBtCur = pC->uc.pCursor;
-	pBtCur->nKey = pIn2->n;
-	pBtCur->key = pIn2->z;
-	if (pBtCur->curFlags & BTCF_TaCursor) {
+
+	const char *key = pIn2->z;
+	uint32_t key_length = pIn2->n;
+
+	if (pOp->p5 & OPFLAG_SPACE_INSERT) {
+		pIn1 = &aMem[pOp->p1];
+		assert(pIn1->flags & MEM_Ptr);
+		struct space *space = (struct space *)pIn1->u.p;
 		/* Make sure that memory has been allocated on region. */
 		assert(aMem[pOp->p2].flags & MEM_Ephem);
-		if (pOp->opcode == OP_IdxInsert)
-			rc = tarantoolSqlite3Insert(pBtCur);
-		else
-			rc = tarantoolSqlite3Replace(pBtCur);
-	} else if (pBtCur->curFlags & BTCF_TEphemCursor) {
-		rc = tarantoolSqlite3EphemeralInsert(pBtCur);
-	} else {
-		unreachable();
-	}
-	assert(pC->deferredMoveto==0);
-	pC->cacheStatus = CACHE_STALE;
 
-	/*
-	 * Memory for tuple passed to Tarantool is
-	 * allocated in region. This memory will be
-	 * automatically released by Tarantool.
-	 * However, VDBE in the end will also try to
-	 * release it, so pointers should be explicitly
-	 * nullified.
-	 */
-	pBtCur->nKey = 0;
-	pBtCur->key = NULL;
+		assert(space->def->opts.temporary == 0);
+		if (pOp->opcode == OP_IdxInsert)
+			rc = tarantoolSqlite3Insert(space, key, key_length);
+		else
+			rc = tarantoolSqlite3Replace(space, key, key_length);
+	} else {
+		assert(pOp->p1 <= p->nCursor);
+		VdbeCursor *pC = p->apCsr[pOp->p1];
+		assert(pC != NULL);
+		BtCursor *bt_cursor = pC->uc.pCursor;
+		assert(bt_cursor != NULL);
+		assert(bt_cursor->curFlags & BTCF_TEphemCursor);
+
+		rc = tarantoolSqlite3EphemeralInsert(bt_cursor->space, key,
+						     key_length);
+	}
 
 	if (pOp->p5 & OPFLAG_OE_IGNORE) {
 		/* Ignore any kind of failes and do not raise error message */
@@ -4450,12 +4444,7 @@ case OP_SInsert: {
 	assert(space != NULL);
 	assert(space_is_system(space));
 	/* Create surrogate cursor to pass to SQL bindings. */
-	BtCursor surrogate_cur;
-	surrogate_cur.space = space;
-	surrogate_cur.key = pIn2->z;
-	surrogate_cur.nKey = pIn2->n;
-	surrogate_cur.curFlags = BTCF_TaCursor;
-	rc = tarantoolSqlite3Insert(&surrogate_cur);
+	rc = tarantoolSqlite3Insert(space, pIn2->z, pIn2->n);
 	if (rc)
 		goto abort_due_to_error;
 	if (pOp->p5 & OPFLAG_NCHANGE)

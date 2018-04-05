@@ -395,6 +395,7 @@ sqlite3Update(Parse * pParse,		/* The parser context */
 	}
 
 	labelBreak = sqlite3VdbeMakeLabel(v);
+	int space_ptr_reg = 0;
 	if (!isView) {
 		/*
 		 * Open every index that needs updating.  Note that if any
@@ -418,8 +419,10 @@ sqlite3Update(Parse * pParse,		/* The parser context */
 			if (aiCurOnePass[1] >= 0)
 				aToOpen[aiCurOnePass[1] - iBaseCur] = 0;
 		}
+		space_ptr_reg = ++pParse->nMem;
 		sqlite3OpenTableAndIndices(pParse, pTab, OP_OpenWrite, 0,
-					   iBaseCur, aToOpen, 0, 0, onError, 1);
+					   iBaseCur, aToOpen, 0, 0,
+					   space_ptr_reg, onError, 1);
 	}
 
 	/* Top of the update loop */
@@ -615,7 +618,8 @@ sqlite3Update(Parse * pParse,		/* The parser context */
 		}
 
 		/* Insert the new index entries and the new record. */
-		vdbe_emit_insertion_completion(v, iIdxCur, aRegIdx[0], onError);
+		vdbe_emit_insertion_completion(v, space_ptr_reg,
+					       aRegIdx[0], onError);
 
 		/* Do any ON CASCADE, SET NULL or SET DEFAULT operations required to
 		 * handle rows (possibly in other tables) that refer via a foreign key

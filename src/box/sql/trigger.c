@@ -37,6 +37,7 @@
 #include "tarantoolInt.h"
 #include "vdbeInt.h"
 #include "box/session.h"
+#include "box/schema.h"
 
 /* See comment in sqliteInt.h */
 int sqlSubProgramsRemaining;
@@ -235,7 +236,6 @@ sqlite3FinishTrigger(Parse * pParse,	/* Parser context */
 		int zOptsSz;
 		Table *pSysTrigger;
 		int iFirstCol;
-		int iCursor = pParse->nTab++;
 		int iRecord;
 
 		/* Make an entry in the _trigger space.  */
@@ -252,7 +252,12 @@ sqlite3FinishTrigger(Parse * pParse,	/* Parser context */
 		if (db->mallocFailed)
 			goto triggerfinish_cleanup;
 
-		sqlite3OpenTable(pParse, iCursor, pSysTrigger, OP_OpenWrite);
+		struct space *space =
+			space_by_id(SQLITE_PAGENO_TO_SPACEID(pSysTrigger->tnum));
+		assert(space != NULL);
+		int space_ptr_reg = ++pParse->nMem;
+		sqlite3VdbeAddOp4Ptr(v, OP_LoadPtr, 0, space_ptr_reg, 0,
+				     (void *) space);
 
 		/* makerecord(cursor(iRecord), [reg(iFirstCol), reg(iFirstCol+1)])  */
 		iFirstCol = pParse->nMem + 1;
@@ -279,14 +284,14 @@ sqlite3FinishTrigger(Parse * pParse,	/* Parser context */
 		sqlite3VdbeAddOp4(v, OP_Blob, zOptsSz, iFirstCol + 1,
 				  MSGPACK_SUBTYPE, zOpts, P4_DYNAMIC);
 		sqlite3VdbeAddOp3(v, OP_MakeRecord, iFirstCol, 2, iRecord);
-		sqlite3VdbeAddOp2(v, OP_IdxInsert, iCursor, iRecord);
+		sqlite3VdbeAddOp2(v, OP_IdxInsert, space_ptr_reg, iRecord);
+		sqlite3VdbeChangeP5(v, OPFLAG_SPACE_INSERT);
 		/* Do not account nested operations: the count of such
 		 * operations depends on Tarantool data dictionary internals,
 		 * such as data layout in system spaces.
 		 */
 		if (!pParse->nested)
-			sqlite3VdbeChangeP5(v, OPFLAG_NCHANGE);
-		sqlite3VdbeAddOp1(v, OP_Close, iCursor);
+			sqlite3VdbeAppendP5(v, OPFLAG_NCHANGE);
 
 		/* parseschema3(reg(iFirstCol), ref(iFirstCol)+1) */
 		iFirstCol = pParse->nMem + 1;

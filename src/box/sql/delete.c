@@ -496,10 +496,12 @@ sqlite3DeleteFrom(Parse * pParse,	/* The parser context */
 				iAddrOnce = sqlite3VdbeAddOp0(v, OP_Once);
 				VdbeCoverage(v);
 			}
+			int space_ptr_reg = ++pParse->nMem;
 			sqlite3OpenTableAndIndices(pParse, pTab, OP_OpenWrite,
 						   OPFLAG_FORDELETE, iTabCur,
 						   aToOpen, &iDataCur,
 						   &iIdxCur,
+						   space_ptr_reg,
 						   ON_CONFLICT_ACTION_NONE, 0);
 			assert(pPk || iDataCur == iTabCur);
 			assert(pPk || iIdxCur == iDataCur + 1);

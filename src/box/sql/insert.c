@@ -616,12 +616,14 @@ sqlite3Insert(Parse * pParse,	/* Parser context */
 	}
 
 	/* If this is not a view, open the table and and all indices */
+	int space_ptr_reg = 0;
 	if (!isView) {
 		int nIdx;
+		space_ptr_reg = ++pParse->nMem;
 		nIdx =
 		    sqlite3OpenTableAndIndices(pParse, pTab, OP_OpenWrite, 0,
 					       -1, 0, &iDataCur, &iIdxCur,
-					       onError, 0);
+					       space_ptr_reg, onError, 0);
 
 		aRegIdx = sqlite3DbMallocRawNN(db, sizeof(int) * (nIdx + 1));
 		if (aRegIdx == 0) {
@@ -851,7 +853,8 @@ sqlite3Insert(Parse * pParse,	/* Parser context */
 						ipkColumn >= 0, onError,
 						endOfLoop, &isReplace, 0);
 		sqlite3FkCheck(pParse, pTab, 0, regIns, 0);
-		vdbe_emit_insertion_completion(v, iIdxCur, aRegIdx[0], onError);
+		vdbe_emit_insertion_completion(v, space_ptr_reg,
+					       aRegIdx[0], onError);
 	}
 
 	/* Update the count of rows that are inserted
@@ -1474,9 +1477,11 @@ sqlite3GenerateConstraintChecks(Parse * pParse,		/* The parser context */
 }
 
 void
-vdbe_emit_insertion_completion(Vdbe *v, int cursor_id, int tuple_id, u8 on_error)
+vdbe_emit_insertion_completion(Vdbe *v, int space_ptr_reg, int tuple_id,
+			       u8 on_error)
 {
 	assert(v != NULL);
+	assert(space_ptr_reg > 0);
 	int opcode;
 	if (on_error == ON_CONFLICT_ACTION_REPLACE)
 		opcode = OP_IdxReplace;
@@ -1489,7 +1494,9 @@ vdbe_emit_insertion_completion(Vdbe *v, int cursor_id, int tuple_id, u8 on_error
 	else if (on_error == ON_CONFLICT_ACTION_FAIL)
 		pik_flags |= OPFLAG_OE_FAIL;
 
-	sqlite3VdbeAddOp2(v, opcode, cursor_id, tuple_id);
+	pik_flags |= OPFLAG_SPACE_INSERT;
+
+	sqlite3VdbeAddOp2(v, opcode, space_ptr_reg, tuple_id);
 	sqlite3VdbeChangeP5(v, pik_flags);
 }
 
@@ -1517,6 +1524,7 @@ sqlite3OpenTableAndIndices(Parse * pParse,	/* Parsing context */
 			   u8 * aToOpen,	/* If not NULL: boolean for each table and index */
 			   int *piDataCur,	/* Write the database source cursor number here */
 			   int *piIdxCur, 	/* Write the first index cursor number here */
+			   int space_ptr_reg,
 			   u8 overrideError,	/* Override error action for indexes */
 			   u8 isUpdate)		/* Opened for udpate or not */
 {
@@ -1536,9 +1544,9 @@ sqlite3OpenTableAndIndices(Parse * pParse,	/* Parsing context */
 		*piDataCur = iDataCur;
 	if (piIdxCur)
 		*piIdxCur = iBase;
-	struct space *space = space_by_id(SQLITE_PAGENO_TO_SPACEID(pTab->tnum));
+	struct space *space =
+			space_by_id(SQLITE_PAGENO_TO_SPACEID(pTab->tnum));
 	assert(space != NULL);
-	int space_ptr_reg = ++pParse->nMem;
 	sqlite3VdbeAddOp4Ptr(v, OP_LoadPtr, 0, space_ptr_reg, 0, (void *) space);
 
 	/* One iteration of this cycle adds OpenRead/OpenWrite which
@@ -1886,6 +1894,11 @@ xferOptimization(Parse * pParse,	/* Parser context */
 		sqlite3VdbeJumpHere(v, addr1);
 	}
 
+	int space_ptr_reg = ++pParse->nMem;
+	struct space *space =
+		space_by_id(SQLITE_PAGENO_TO_SPACEID(pDest->tnum));
+	assert(space != NULL);
+	sqlite3VdbeAddOp4Ptr(v, OP_LoadPtr, 0, space_ptr_reg, 0, (void *) space);
 	for (pDestIdx = pDest->pIndex; pDestIdx; pDestIdx = pDestIdx->pNext) {
 		for (pSrcIdx = pSrc->pIndex; ALWAYS(pSrcIdx);
 		     pSrcIdx = pSrcIdx->pNext) {
@@ -1903,9 +1916,11 @@ xferOptimization(Parse * pParse,	/* Parser context */
 		addr1 = sqlite3VdbeAddOp2(v, OP_Rewind, iSrc, 0);
 		VdbeCoverage(v);
 		sqlite3VdbeAddOp2(v, OP_RowData, iSrc, regData);
-		sqlite3VdbeAddOp2(v, OP_IdxInsert, iDest, regData);
+
+		sqlite3VdbeAddOp2(v, OP_IdxInsert, space_ptr_reg, regData);
+		sqlite3VdbeChangeP5(v, OPFLAG_SPACE_INSERT);
 		if (pDestIdx->idxType == SQLITE_IDXTYPE_PRIMARYKEY)
-			sqlite3VdbeChangeP5(v, OPFLAG_NCHANGE);
+			sqlite3VdbeAppendP5(v, OPFLAG_NCHANGE);
 		sqlite3VdbeAddOp2(v, OP_Next, iSrc, addr1 + 1);
 		VdbeCoverage(v);
 		sqlite3VdbeJumpHere(v, addr1);

@@ -890,6 +890,14 @@ sqlite3VdbeChangeP5(Vdbe * p, int p5)
 		p->aOp[p->nOp - 1].p5 = p5;
 }
 
+void
+sqlite3VdbeAppendP5(Vdbe * p, int p5)
+{
+	assert(p->nOp > 0 || p->db->mallocFailed);
+	if (p->nOp > 0)
+		p->aOp[p->nOp - 1].p5 |= p5;
+}
+
 /*
  * Change the P2 operand of instruction addr so that it points to
  * the address of the next instruction to be coded.

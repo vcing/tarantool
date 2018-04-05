@@ -473,14 +473,13 @@ int tarantoolSqlite3EphemeralSetFirst(BtCursor *pCur,
  *
  * @retval SQLITE_OK on success, SQLITE_TARANTOOL_ERROR otherwise.
  */
-int tarantoolSqlite3EphemeralInsert(BtCursor *pCur)
+int tarantoolSqlite3EphemeralInsert(struct space *space, const char *key,
+				    uint32_t key_length)
 {
-	assert(pCur);
-	assert(pCur->curFlags & BTCF_TEphemCursor);
-	mp_tuple_assert(pCur->key, pCur->key + pCur->nKey);
+	mp_tuple_assert(key, key + key_length);
 
-	if (space_ephemeral_replace(pCur->space, pCur->key,
-				    pCur->key + pCur->nKey) != 0) {
+	if (space_ephemeral_replace(space, key,
+				    key + key_length) != 0) {
 		diag_log();
 		return SQL_TARANTOOL_INSERT_FAIL;
 	}
@@ -497,28 +496,30 @@ int tarantoolSqlite3EphemeralDrop(BtCursor *pCur)
 }
 
 static inline int
-insertOrReplace(BtCursor *pCur, enum iproto_type type)
+insert_or_replace(struct space *space, const char *key, uint32_t key_length,
+		  enum iproto_type type)
 {
-	assert(pCur->curFlags & BTCF_TaCursor);
 	struct request request;
 	memset(&request, 0, sizeof(request));
-	request.tuple = pCur->key;
-	request.tuple_end = pCur->key + pCur->nKey;
-	request.space_id = pCur->space->def->id;
+	request.tuple = key;
+	request.tuple_end = key + key_length;
+	request.space_id = space->def->id;
 	request.type = type;
 	mp_tuple_assert(request.tuple, request.tuple_end);
-	int rc = box_process_rw(&request, pCur->space, NULL);
+	int rc = box_process_rw(&request, space, NULL);
 	return rc == 0 ? SQLITE_OK : SQL_TARANTOOL_INSERT_FAIL;
 }
 
-int tarantoolSqlite3Insert(BtCursor *pCur)
+int tarantoolSqlite3Insert(struct space *space, const char *key,
+			   uint32_t key_length)
 {
-	return insertOrReplace(pCur, IPROTO_INSERT);
+	return insert_or_replace(space, key, key_length, IPROTO_INSERT);
 }
 
-int tarantoolSqlite3Replace(BtCursor *pCur)
+int tarantoolSqlite3Replace(struct space *space, const char *key,
+			    uint32_t key_length)
 {
-	return insertOrReplace(pCur, IPROTO_REPLACE);
+	return insert_or_replace(space, key, key_length, IPROTO_REPLACE);
 }
 
 /*
