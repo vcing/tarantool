@@ -39,6 +39,7 @@
 #include <small/mempool.h>
 #include "fiber_cond.h"
 #include "vclock.h"
+#include "latch.h"
 
 /**
  * @module replication - global state of multi-master
@@ -204,7 +205,14 @@ struct replicaset {
 		 * state.
 		 */
 		struct fiber_cond cond;
+		/*
+		 * The latch is used to order replication requests for all
+		 * orhaned replicas.
+		 */
+		struct latch order_latch;
 	} applier;
+	/** Map of all known replica_id's to correspponding replica's. */
+	struct replica **replica_by_id;
 };
 extern struct replicaset replicaset;
 
@@ -256,6 +264,8 @@ struct replica {
 	struct trigger on_applier_state;
 	/** Replica sync state. */
 	enum replica_state state;
+	/* The latch is used to order replication requests. */
+	struct latch order_latch;
 };
 
 enum {
@@ -271,6 +281,12 @@ enum {
  */
 struct replica *
 replica_by_uuid(const struct tt_uuid *uuid);
+
+/**
+ * Find a replica by ID
+ */
+struct replica *
+replica_by_id(uint32_t replica_id);
 
 /**
  * Return the replica set leader.
