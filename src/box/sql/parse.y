@@ -1323,7 +1323,7 @@ cmd ::= PRAGMA nm(X) EQ minus_num(Y).        {
 cmd ::= PRAGMA nm(X) LP minus_num(Y) RP.     {
     sqlite3Pragma(pParse,&X,0,&Y,0,1);
 }
-cmd ::= PRAGMA nm(X) EQ nm(Z) DOT nm(Y).    {
+cmd ::= PRAGMA nm(X) LP nm(Z) DOT nm(Y) RP.    {
     sqlite3Pragma(pParse,&X,0,&Y,&Z,0);
 }
 cmd ::= PRAGMA .                            {

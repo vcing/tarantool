@@ -448,65 +448,37 @@ sqlite3Pragma(Parse * pParse, Token * pId,	/* First part of [schema.]id field */
 			break;
 		}
 
-	case PragTyp_INDEX_INFO:{
-			if (zRight && zTable) {
-				Index *pIdx;
-				pIdx = sqlite3LocateIndex(db, zRight, zTable);
-				if (pIdx) {
-					int i;
-					int mx;
-					if (pPragma->iArg) {
-						/* PRAGMA index_xinfo (newer
-						 * version with more rows and
-						 * columns)
-						 */
-						mx = pIdx->nColumn;
-						pParse->nMem = 6;
-					} else {
-						/* PRAGMA index_info (legacy
-						 * version)
-						 */
-						mx = pIdx->nKeyCol;
-						pParse->nMem = 3;
-					}
-					sqlite3CodeVerifySchema(pParse);
-					assert(pParse->nMem <=
-					       pPragma->nPragCName);
-					for (i = 0; i < mx; i++) {
-						i16 cnum = pIdx->aiColumn[i];
-						assert(pIdx->pTable);
-						sqlite3VdbeMultiLoad(v, 1,
-								     "iis", i,
-								     cnum,
-								     cnum <
-								     0 ? 0 :
-								     pIdx->
-								     pTable->
-								     aCol[cnum].
-								     zName);
-						if (pPragma->iArg) {
-							sqlite3VdbeMultiLoad(v,
-									     4,
-									     "isi",
-									     pIdx->
-									     aSortOrder
-									     [i],
-									     pIdx->
-									     azColl
-									     [i],
-									     i <
-									     pIdx->
-									     nKeyCol);
-						}
-						sqlite3VdbeAddOp2(v,
-								  OP_ResultRow,
-								  1,
-								  pParse->nMem);
-					}
+	case PragTyp_INDEX_INFO:
+		if (zRight && zTable) {
+			Index *pIdx;
+			pIdx = sqlite3LocateIndex(db, zRight, zTable);
+			if (pIdx) {
+				int i;
+				int mx;
+				mx = pIdx->nColumn;
+				pParse->nMem = 7;
+				sqlite3CodeVerifySchema(pParse);
+				assert(pParse->nMem <= pPragma->nPragCName);
+				for (i = 0; i < mx; i++) {
+					i16 cnum = pIdx->aiColumn[i];
+					assert(pIdx->pTable);
+					char *type = sqlite3ColumnType(pIdx->
+							pTable->aCol+ cnum, "");
+					sqlite3VdbeMultiLoad(v, 1, "iisisis", i,
+							     cnum, cnum < 0 ?
+							     0 : pIdx->pTable->
+							     aCol[cnum].zName,
+							     pIdx->aSortOrder
+							     [i], pIdx->azColl
+							     [i], i < pIdx->
+							     nKeyCol, type);
+					sqlite3VdbeAddOp2(v, OP_ResultRow, 1,
+							  pParse->nMem);
 				}
 			}
-			break;
 		}
+		break;
+
 	case PragTyp_INDEX_LIST:{
 			if (zRight) {
 				Index *pIdx;
