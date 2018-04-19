@@ -511,7 +511,7 @@ test:do_execsql_test("insert-4.7", [[
 --   SELECT * FROM tab1;
 -- } {11 22}
 -- do_execsql_test insert-12.3 {
---   CREATE TABLE t12c(a INT, b INT DEFAULT 'xyzzy', c INT);
+--   CREATE TABLE t12c(a INT, b TEXT DEFAULT 'xyzzy', c INT);
 --   INSERT INTO t12c(a, rowid, c) SELECT 'one', 999, 'two';
 --   SELECT * FROM t12c;
 -- } {one xyzzy two}

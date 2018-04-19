@@ -317,7 +317,7 @@ test:do_test(
     "table-4.1",
     function()
         for i = 1, 100, 1 do
-            local INT sql = "CREATE TABLE "..string.format("test%03d", i).." (id INT primary key,  "
+            local sql = "CREATE TABLE "..string.format("test%03d", i).." (id INT primary key,  "
             for k = 1, i-1, 1 do
                 sql = sql .. "field"..k.." text,"
             end
@@ -895,16 +895,16 @@ test:do_execsql_test(
         -- </table-11.2>
     })
 
--- # Test that when creating a table using CREATE TABLE AS, column INT types are
+-- # Test that when creating a table using CREATE TABLE AS, column types are
 -- # assigned correctly for (SELECT ...) and 'x AS y' expressions.
 -- do_test table-12.1 {
 --   ifcapable subquery {
 --     execsql {
---       CREATE TABLE t8 AS SELECT b, h INT, a INT as i, (SELECT f FROM t7) as j FROM t7;
+--       CREATE TABLE t8 AS SELECT b, h INT, a as i, (SELECT f FROM t7) as j FROM t7;
 --     }
 --   } else {
 --     execsql {
---       CREATE TABLE t8 AS SELECT b, h INT, a INT as i, f INT as j FROM t7;
+--       CREATE TABLE t8 AS SELECT b, h INT, a as i, f as j FROM t7;
 --     }
 --   }
 -- } {}
@@ -912,7 +912,7 @@ test:do_execsql_test(
 --   execsql {
 --     SELECT sql FROM sqlite_master WHERE tbl_name = 't8'
 --   }
--- } {{CREATE TABLE t8(b INT NUM,h INT,i INT,j INT)}}
+-- } {{CREATE TABLE t8(b NUM,h INT,i INT,j INT)}}
 ----------------------------------------------------------------------
 -- Test cases table-13.*
 --

@@ -259,7 +259,7 @@ test:do_execsql_test(
 -- } {1 2 4}
 -- do_test where4-6.1 {
 --   execsql {
---     CREATE TABLE t5(a INT,b INT,c INT,d INT,e INT,f INT,UNIQUE INT (a,b INT,c INT,d INT,e INT,f INT));
+--     CREATE TABLE t5(a INT,b INT,c INT,d INT,e INT,f INT,UNIQUE (a,b INT,c INT,d INT,e INT,f INT));
 --     INSERT INTO t5 VALUES(1,1,1,1,1,11111);
 --     INSERT INTO t5 VALUES(2,2,2,2,2,22222);
 --     INSERT INTO t5 VALUES(1,2,3,4,5,12345);

@@ -711,7 +711,7 @@ INSERT INTO t2 VALUES (0, 1), (1, 1), (2, 2), (3, 4), (4, 8), (5, 15);]]
 -- #
 -- do_test select4-7.1 {
 --   execsql {
---     CREATE TABLE t2 AS SELECT log AS 'x', count INT (*) AS 'y' FROM t1 GROUP BY log;
+--     CREATE TABLE t2 AS SELECT log AS 'x', count(*) AS 'y' FROM t1 GROUP BY log;
 --     SELECT * FROM t2 ORDER BY x;
 --   }
 -- } {0 1 1 1 2 2 3 4 4 8 5 15}  

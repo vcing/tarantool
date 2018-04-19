@@ -632,7 +632,7 @@ test:do_execsql_test(
 -- #
 -- # Also verify that references within trigger programs are resolved at
 -- # statement compile time, not trigger installation time. This means, for
--- # example, that INT you can drop and re-create tables referenced by triggers.
+-- # example, that you can drop and re-create tables referenced by triggers.
 -- ifcapable tempdb&&attach {
 --   do_test trigger1-10.0 {
 --     forcedelete test2.db
