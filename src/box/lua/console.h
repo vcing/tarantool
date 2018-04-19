@@ -36,6 +36,16 @@ extern "C" {
 
 struct lua_State;
 
+/**
+ * Encode a single value on top of the stack into YAML document
+ * tagged as push message.
+ * @param object Any lua object on top of the stack.
+ * @retval nil, error Error occured.
+ * @retval not nil Tagged YAML document.
+ */
+int
+console_encode_push(struct lua_State *L);
+
 void
 tarantool_lua_console_init(struct lua_State *L);
 

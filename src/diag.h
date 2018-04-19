@@ -249,6 +249,9 @@ struct error *
 BuildSystemError(const char *file, unsigned line, const char *format, ...);
 struct error *
 BuildXlogError(const char *file, unsigned line, const char *format, ...);
+struct error *
+BuildSocketError(const char *file, unsigned line, int fd, const char *format,
+		 ...);
 
 struct index_def;
 

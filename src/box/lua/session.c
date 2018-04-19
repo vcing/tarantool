@@ -41,6 +41,8 @@
 #include "box/session.h"
 #include "box/user.h"
 #include "box/schema.h"
+#include "box/port.h"
+#include "box/lua/console.h"
 
 static const char *sessionlib_name = "box.session";
 
@@ -356,6 +358,52 @@ lbox_push_on_access_denied_event(struct lua_State *L, void *event)
 }
 
 /**
+ * Port to push a message from Lua.
+ */
+struct lua_push_port {
+	const struct port_vtab *vtab;
+	/**
+	 * Lua state, containing data to dump on top of the stack.
+	 */
+	struct lua_State *L;
+};
+
+static const char *
+lua_push_port_dump_plain(struct port *port, uint32_t *size);
+
+static const struct port_vtab lua_push_port_vtab = {
+       .dump_msgpack = NULL,
+       /*
+        * Dump_16 has no sense, since push appears since 1.10
+        * protocol.
+        */
+       .dump_msgpack_16 = NULL,
+       .dump_plain = lua_push_port_dump_plain,
+       .destroy = NULL,
+};
+
+static const char *
+lua_push_port_dump_plain(struct port *port, uint32_t *size)
+{
+	struct lua_push_port *lua_port = (struct lua_push_port *) port;
+	assert(lua_port->vtab == &lua_push_port_vtab);
+	struct lua_State *L = lua_port->L;
+	int rc = console_encode_push(L);
+	if (rc == 2) {
+		assert(lua_isnil(L, -2));
+		assert(lua_isstring(L, -1));
+		diag_set(ClientError, ER_PROC_LUA, lua_tostring(L, -1));
+		return NULL;
+	}
+	assert(rc == 1);
+	assert(lua_isstring(L, -1));
+	size_t len;
+	const char *result = lua_tolstring(L, -1, &len);
+	*size = (uint32_t) len;
+	return result;
+}
+
+/**
  * Push a message using a protocol, depending on a session type.
  * @param L Lua state. First argument on the stack is data to
  *        push.
@@ -368,7 +416,11 @@ lbox_session_push(struct lua_State *L)
 	if (lua_gettop(L) != 1)
 		return luaL_error(L, "Usage: box.session.push(data)");
 
-	if (session_push(current_session(), NULL) != 0) {
+	struct lua_push_port port;
+	port.vtab = &lua_push_port_vtab;
+	port.L = L;
+
+	if (session_push(current_session(), (struct port *) &port) != 0) {
 		lua_pushnil(L);
 		luaT_pusherror(L, box_error_last());
 		return 2;

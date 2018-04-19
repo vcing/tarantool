@@ -143,6 +143,12 @@ port_dump_msgpack_16(struct port *port, struct obuf *out)
 	return port->vtab->dump_msgpack_16(port, out);
 }
 
+const char *
+port_dump_plain(struct port *port, uint32_t *size)
+{
+	return port->vtab->dump_plain(port, size);
+}
+
 void
 port_init(void)
 {

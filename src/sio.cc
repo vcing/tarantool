@@ -67,6 +67,22 @@ SocketError::SocketError(const char *file, unsigned line, int fd,
 	errno = save_errno;
 }
 
+struct error *
+BuildSocketError(const char *file, unsigned line, int fd, const char *format,
+		 ...)
+{
+	try {
+		SocketError *e = new SocketError(file, line, fd, "");
+		va_list ap;
+		va_start(ap, format);
+		error_vformat_msg(e, format, ap);
+		va_end(ap);
+		return e;
+	} catch (OutOfMemory *e) {
+		return e;
+	}
+}
+
 /** Pretty print socket name and peer (for exceptions) */
 const char *
 sio_socketname(int fd)
