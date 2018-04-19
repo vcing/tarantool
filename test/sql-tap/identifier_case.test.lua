@@ -158,7 +158,7 @@ test:do_test(
 
 test:do_execsql_test(
     test_prefix.."4.0",
-    string.format([[create table table1(a, b primary key)]]),
+    string.format([[create table table1(a, b INT primary key)]]),
     nil
 )
 
@@ -213,7 +213,7 @@ data = {
 test:do_catchsql_test(
     test_prefix.."6.0.",
     [[
-        CREATE TABLE T1 (a primary key, b);
+        CREATE TABLE T1 (a INT primary key, b INT);
     ]],
     {0})
 

@@ -20,7 +20,7 @@ test:plan(176)
 -- ["set","testdir",[["file","dirname",["argv0"]]]]
 -- ["source",[["testdir"],"\/tester.tcl"]]
 test:execsql [[
-    CREATE TABLE t1(a PRIMARY KEY, b);
+    CREATE TABLE t1(a INT PRIMARY KEY, b INT);
     INSERT INTO t1 VALUES(1, 'one');
     INSERT INTO t1 VALUES(2, 'two');
     INSERT INTO t1 VALUES(3, 'three');

@@ -26,7 +26,7 @@ testprefix = "orderby5"
 test:do_execsql_test(
     1.1,
     [[
-        CREATE TABLE t1(id primary key,a,b,c);
+        CREATE TABLE t1(id INT primary key,a INT,b INT,c INT);
         CREATE INDEX t1bc ON t1(b,c);
 
         EXPLAIN QUERY PLAN
@@ -142,7 +142,7 @@ test:do_execsql_test(
 -- # lookups.
 -- #
 -- do_execsql_test 2.1a {
---   CREATE TABLE t2(a,b,c);
+--   CREATE TABLE t2(a INT,b INT,c INT);
 --   CREATE INDEX t2bc ON t2(b,c);
 --   ANALYZE;
 --   INSERT INTO sqlite_stat1 VALUES('t1','t1bc','1000000 10 9');
@@ -182,7 +182,7 @@ test:do_execsql_test(
 test:do_execsql_test(
     3.0,
     [[
-        CREATE TABLE t3(a INTEGER PRIMARY KEY, b, c, d, e, f);
+        CREATE TABLE t3(a INTEGER PRIMARY KEY, b INT, c INT, d INT, e INT, f INT);
         --CREATE INDEX t3bcde ON t3(b, c, d, e);
         -- As pk is not necessary in Tarantool's secondary indexes 'a' should be added manually
         CREATE INDEX t3bcde ON t3(b, c, d, e, a);
@@ -197,7 +197,7 @@ test:do_execsql_test(
 -- MUST_WORK_TEST
 -- do_execsql_test 3.1 {
 --   DROP TABLE t3;
---   CREATE TABLE t3(a INTEGER PRIMARY KEY, b, c, d, e, f);
+--   CREATE TABLE t3(a INTEGER PRIMARY KEY, b INT, c INT, d INT, e INT, f INT);
 --   CREATE INDEX t3bcde ON t3(b, c, d, e);
 --   EXPLAIN QUERY PLAN
 --   SELECT a FROM t3 WHERE b=2 AND c=3 ORDER BY d DESC, e DESC, b, c, a DESC;
