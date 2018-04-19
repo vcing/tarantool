@@ -31,6 +31,7 @@
 #include "session.h"
 #include "lua/utils.h"
 #include "lua/trigger.h"
+#include "lua/msgpack.h"
 
 #include <lua.h>
 #include <lauxlib.h>
@@ -43,6 +44,7 @@
 #include "box/schema.h"
 #include "box/port.h"
 #include "box/lua/console.h"
+#include "small/obuf.h"
 
 static const char *sessionlib_name = "box.session";
 
@@ -371,8 +373,11 @@ struct lua_push_port {
 static const char *
 lua_push_port_dump_plain(struct port *port, uint32_t *size);
 
+static int
+lua_push_port_dump_msgpack(struct port *port, struct obuf *obuf);
+
 static const struct port_vtab lua_push_port_vtab = {
-       .dump_msgpack = NULL,
+       .dump_msgpack = lua_push_port_dump_msgpack,
        /*
         * Dump_16 has no sense, since push appears since 1.10
         * protocol.
@@ -401,6 +406,32 @@ lua_push_port_dump_plain(struct port *port, uint32_t *size)
 	const char *result = lua_tolstring(L, -1, &len);
 	*size = (uint32_t) len;
 	return result;
+}
+
+static void
+obuf_error_cb(void *ctx)
+{
+	*((int *)ctx) = -1;
+}
+
+static int
+lua_push_port_dump_msgpack(struct port *port, struct obuf *obuf)
+{
+	struct lua_push_port *lua_port = (struct lua_push_port *) port;
+	assert(lua_port->vtab == &lua_push_port_vtab);
+	struct mpstream stream;
+	int rc = 0;
+	/*
+	 * Do not use luamp_error to allow a caller to clear the
+	 * obuf, if it already has allocated something (for
+	 * example, iproto push reserves memory for a header).
+	 */
+	mpstream_init(&stream, obuf, obuf_reserve_cb, obuf_alloc_cb,
+		      obuf_error_cb, &rc);
+	luamp_encode(lua_port->L, luaL_msgpack_default, &stream, 1);
+	if (rc == 0)
+		mpstream_flush(&stream);
+	return rc;
 }
 
 /**

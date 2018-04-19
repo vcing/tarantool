@@ -105,8 +105,13 @@ enum fiber_key {
 	/** User global privilege and authentication token */
 	FIBER_KEY_USER = 3,
 	FIBER_KEY_MSG = 4,
-	/** Storage for lua stack */
+	/**
+	 * The storage cell number 5 is shared between lua stack
+	 * for fibers created from Lua, and IProto sync for fibers
+	 * created to execute a binary request.
+	 */
 	FIBER_KEY_LUA_STACK = 5,
+	FIBER_KEY_SYNC      = 5,
 	FIBER_KEY_MAX = 6
 };
 
@@ -608,6 +613,13 @@ fiber_get_key(struct fiber *fiber, enum fiber_key key)
 {
 	assert(key < FIBER_KEY_MAX);
 	return fiber->fls[key];
+}
+
+static inline uint64_t
+fiber_sync(struct fiber *fiber)
+{
+	uint64_t *sync = (uint64_t *) fiber_get_key(fiber, FIBER_KEY_SYNC);
+	return sync != NULL ? *sync : 0;
 }
 
 /**
