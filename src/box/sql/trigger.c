@@ -872,6 +872,8 @@ codeRowTrigger(Parse * pParse,	/* Current parse context */
 	pSubParse->pToplevel = pTop;
 	pSubParse->eTriggerOp = pTrigger->op;
 	pSubParse->nQueryLoop = pParse->nQueryLoop;
+	struct region *region = &fiber()->gc;
+	pSubParse->region_initial_size = region_used(region);
 
 	v = sqlite3GetVdbe(pSubParse);
 	if (v) {

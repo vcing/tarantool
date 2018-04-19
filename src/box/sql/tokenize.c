@@ -554,6 +554,9 @@ sql_expr_compile(sqlite3 *db, const char *expr, struct Expr **result)
 	struct Parse parser;
 	sql_parser_create(&parser, db);
 	parser.parse_only = true;
+	struct region *region = &fiber()->gc;
+	parser.region_initial_size = region_used(region);
+
 	char *unused;
 	if (sqlite3RunParser(&parser, stmt, &unused) != SQLITE_OK) {
 		diag_set(ClientError, ER_SQL_EXECUTE, expr);
