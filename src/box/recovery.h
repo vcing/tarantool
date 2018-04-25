@@ -37,12 +37,14 @@
 #include "vclock.h"
 #include "tt_uuid.h"
 #include <sys/stat.h>
+#include "error.h"
 
 #if defined(__cplusplus)
 extern "C" {
 #endif /* defined(__cplusplus) */
 
-extern const struct type_info type_XlogGapError;
+const struct type_info type_XlogGapError =
+	make_type("XlogGapError", &type_XlogError);
 
 struct xrow_header;
 struct xstream;
@@ -86,6 +88,13 @@ recovery_finalize(struct recovery *r, struct xstream *stream);
 #if defined(__cplusplus)
 } /* extern "C" */
 #endif /* defined(__cplusplus) */
+
+struct XlogGapError: public XlogError {
+	/** Used by BuildXlogGapError() */
+	XlogGapError(const char *file, unsigned line,
+		     const struct vclock *from, const struct vclock *to);
+	virtual void raise() { throw this; }
+};
 
 /**
  * Find out if there are new .xlog files since the current

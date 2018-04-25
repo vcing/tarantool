@@ -597,6 +597,11 @@ applier_f(va_list ap)
 				/* Invalid configuration */
 				applier_log_error(applier, e);
 				goto reconnect;
+			} else if (e->errcode() == ER_XLOG_GAP) {
+				applier_log_error(applier, e);
+				applier_disconnect(applier, APPLIER_STOPPED);
+				applier_join(applier);
+				return 0;
 			} else {
 				/* Unrecoverable errors */
 				applier_log_error(applier, e);
