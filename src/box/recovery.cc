@@ -533,4 +533,12 @@ recovery_stop_local(struct recovery *r)
 	}
 }
 
+void
+check_on_gap(struct vclock *a, struct vclock *b)
+{
+	if (vclock_compare(a, b) < 0) {
+		tnt_raise(XlogGapError, a, b);
+	}
+}
+
 /* }}} */

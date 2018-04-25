@@ -149,6 +149,8 @@ journal_is_initialized(struct journal *journal)
 	return journal->write != NULL;
 }
 
+struct journal *
+journal_set_dummy();
 #if defined(__cplusplus)
 } /* extern "C" */
 

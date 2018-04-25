@@ -687,6 +687,23 @@ replicaset_next(struct replica *replica)
 	return replica_hash_next(&replicaset.hash, replica);
 }
 
+void
+replicaset_hash_free()
+{
+	instance_id = REPLICA_ID_NIL;
+	if (replica_hash_empty(&replicaset.hash))
+		return;
+	replica_hash_t uniq;
+	memset(&uniq, 0, sizeof(uniq));
+	replica_hash_new(&uniq);
+	struct replica *replica, *next;
+
+	replica_hash_foreach_safe(&uniq, replica, next) {
+		replica_hash_remove(&replicaset.hash, replica);
+		replica_delete(replica);
+	}
+}
+
 struct replica *
 replicaset_leader(void)
 {

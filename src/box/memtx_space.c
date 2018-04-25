@@ -290,7 +290,8 @@ dup_replace_mode(uint32_t op)
 }
 
 static int
-memtx_space_apply_initial_join_row(struct space *space, struct request *request)
+memtx_space_apply_join_row(struct space *space, struct request *request,
+			   bool initial)
 {
 	struct memtx_space *memtx_space = (struct memtx_space *)space;
 	if (request->type != IPROTO_INSERT) {
@@ -307,7 +308,8 @@ memtx_space_apply_initial_join_row(struct space *space, struct request *request)
 	if (stmt->new_tuple == NULL)
 		goto rollback;
 	tuple_ref(stmt->new_tuple);
-	if (memtx_space->replace(space, stmt, DUP_INSERT) != 0)
+	if (memtx_space->replace(space, stmt, (initial) ? DUP_INSERT:
+					      DUP_REPLACE_OR_INSERT) != 0)
 		goto rollback;
 	return txn_commit_stmt(txn, request);
 
@@ -844,7 +846,7 @@ memtx_space_prepare_alter(struct space *old_space, struct space *new_space)
 static const struct space_vtab memtx_space_vtab = {
 	/* .destroy = */ memtx_space_destroy,
 	/* .bsize = */ memtx_space_bsize,
-	/* .apply_initial_join_row = */ memtx_space_apply_initial_join_row,
+	/* .apply_join_row = */ memtx_space_apply_join_row,
 	/* .execute_replace = */ memtx_space_execute_replace,
 	/* .execute_delete = */ memtx_space_execute_delete,
 	/* .execute_update = */ memtx_space_execute_update,

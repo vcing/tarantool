@@ -48,6 +48,7 @@
 #include "error.h"
 #include "session.h"
 #include "cfg.h"
+#include "box.h"
 
 STRS(applier_state, applier_STATE);
 
@@ -264,6 +265,7 @@ applier_join(struct applier *applier)
 	struct ev_io *coio = &applier->io;
 	struct ibuf *ibuf = &applier->ibuf;
 	struct xrow_header row;
+	struct journal *prev_journal = NULL;
 	xrow_encode_join_xc(&row, &INSTANCE_UUID);
 	coio_write_xrow(coio, &row);
 
@@ -291,6 +293,10 @@ applier_join(struct applier *applier)
 
 	applier_set_state(applier, APPLIER_INITIAL_JOIN);
 
+	if (applier->rejoin) {
+		xstream_create(applier->join_stream, apply_rejoin_row);
+		prev_journal = journal_set_dummy();
+	}
 	/*
 	 * Receive initial data.
 	 */
@@ -358,6 +364,12 @@ applier_join(struct applier *applier)
 
 	applier_set_state(applier, APPLIER_JOINED);
 	applier_set_state(applier, APPLIER_READY);
+	if (applier->rejoin) {
+		applier->rejoin = false;
+		xstream_create(applier->join_stream, apply_join_row);
+		journal_set(prev_journal);
+		box_checkpoint();
+	}
 }
 
 /**
@@ -560,9 +572,9 @@ applier_f(va_list ap)
 	while (!fiber_is_cancelled()) {
 		try {
 			applier_connect(applier);
-			if (tt_uuid_is_nil(&REPLICASET_UUID)) {
+			if (tt_uuid_is_nil(&REPLICASET_UUID) || applier->rejoin) {
 				/*
-				 * Execute JOIN if this is a bootstrap.
+				 * Execute JOIN if this is a bootstrap or rejoin.
 				 * The join will pause the applier
 				 * until WAL is created.
 				 */
@@ -596,6 +608,10 @@ applier_f(va_list ap)
 			} else if (e->errcode() == ER_CFG) {
 				/* Invalid configuration */
 				applier_log_error(applier, e);
+				goto reconnect;
+			} else if (e->errcode() == ER_XLOG) {
+				applier_log_error(applier, e);
+				applier->rejoin = true;
 				goto reconnect;
 			} else {
 				/* Unrecoverable errors */
@@ -694,6 +710,7 @@ applier_new(const char *uri, struct xstream *join_stream,
 	applier->join_stream = join_stream;
 	applier->subscribe_stream = subscribe_stream;
 	applier->last_row_time = ev_monotonic_now(loop());
+	applier->rejoin = false;
 	rlist_create(&applier->on_state);
 	fiber_cond_create(&applier->resume_cond);
 	fiber_cond_create(&applier->writer_cond);

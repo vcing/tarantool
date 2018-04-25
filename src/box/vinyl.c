@@ -3248,7 +3248,8 @@ out:
 }
 
 static int
-vinyl_space_apply_initial_join_row(struct space *space, struct request *request)
+vinyl_space_apply_join_row(struct space *space, struct request *request,
+			   bool initial)
 {
 	assert(request->header != NULL);
 	struct vy_env *env = vy_env(space->engine);
@@ -3261,10 +3262,15 @@ vinyl_space_apply_initial_join_row(struct space *space, struct request *request)
 	memset(&stmt, 0, sizeof(stmt));
 
 	int rc = -1;
+	uint32_t type;
 	switch (request->type) {
 	case IPROTO_INSERT:
 	case IPROTO_REPLACE:
+		type = request->type;
+		if (!initial)
+			request->type = IPROTO_REPLACE;
 		rc = vy_replace(env, tx, &stmt, space, request);
+		request->type = type;
 		break;
 	case IPROTO_UPSERT:
 		rc = vy_upsert(env, tx, &stmt, space, request);
@@ -4011,7 +4017,7 @@ static const struct engine_vtab vinyl_engine_vtab = {
 static const struct space_vtab vinyl_space_vtab = {
 	/* .destroy = */ vinyl_space_destroy,
 	/* .bsize = */ vinyl_space_bsize,
-	/* .apply_initial_join_row = */ vinyl_space_apply_initial_join_row,
+	/* .apply_join_row = */ vinyl_space_apply_join_row,
 	/* .execute_replace = */ vinyl_space_execute_replace,
 	/* .execute_delete = */ vinyl_space_execute_delete,
 	/* .execute_update = */ vinyl_space_execute_update,

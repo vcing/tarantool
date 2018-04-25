@@ -344,6 +344,8 @@ relay_process_wal_event(struct wal_watcher *watcher, unsigned events)
 	try {
 		recover_remaining_wals(relay->r, &relay->stream, NULL,
 				       (events & WAL_EVENT_ROTATE) != 0);
+		check_on_gap(&relay->r->vclock,
+			     &relay->local_vclock_at_subscribe);
 	} catch (Exception *e) {
 		e->log();
 		diag_move(diag_get(), &relay->diag);

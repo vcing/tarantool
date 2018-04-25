@@ -56,7 +56,7 @@ struct space_vtab {
 	/** Return binary size of a space. */
 	size_t (*bsize)(struct space *);
 
-	int (*apply_initial_join_row)(struct space *, struct request *);
+	int (*apply_join_row)(struct space *, struct request *, bool);
 
 	int (*execute_replace)(struct space *, struct txn *,
 			       struct request *, struct tuple **result);
@@ -277,9 +277,9 @@ int
 access_check_space(struct space *space, user_access_t access);
 
 static inline int
-space_apply_initial_join_row(struct space *space, struct request *request)
+space_apply_join_row(struct space *space, struct request *request, bool initial)
 {
-	return space->vtab->apply_initial_join_row(space, request);
+	return space->vtab->apply_join_row(space, request, initial);
 }
 
 /**
@@ -446,9 +446,10 @@ index_find_system_xc(struct space *space, uint32_t index_id)
 }
 
 static inline void
-space_apply_initial_join_row_xc(struct space *space, struct request *request)
+space_apply_join_row_xc(struct space *space, struct request *request,
+			bool initial)
 {
-	if (space_apply_initial_join_row(space, request) != 0)
+	if (space_apply_join_row(space, request, initial) != 0)
 		diag_raise();
 }
 

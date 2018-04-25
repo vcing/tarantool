@@ -221,7 +221,7 @@ memtx_engine_recover_snapshot_row(struct memtx_engine *memtx,
 		return -1;
 	}
 	/* no access checks here - applier always works with admin privs */
-	if (space_apply_initial_join_row(space, &request) != 0)
+	if (space_apply_join_row(space, &request, true) != 0)
 		return -1;
 	/*
 	 * Don't let gc pool grow too much. Yet to

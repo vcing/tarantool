@@ -72,3 +72,10 @@ journal_entry_new(size_t n_rows)
 	return entry;
 }
 
+struct journal *
+journal_set_dummy()
+{
+	struct journal *prev = current_journal;
+	current_journal = &dummy_journal;
+	return prev;
+}

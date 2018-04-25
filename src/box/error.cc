@@ -144,6 +144,7 @@ ClientError::log() const
 		      tnt_errcode_str(m_errcode));
 }
 
+const struct type_info type_XlogError = make_type("XlogError", &type_Exception);
 
 uint32_t
 ClientError::get_errcode(const struct error *e)
@@ -155,10 +156,11 @@ ClientError::get_errcode(const struct error *e)
 		return ER_MEMORY_ISSUE;
 	if (type_cast(SystemError, e))
 		return ER_SYSTEM;
+	if (type_cast(XlogError, e))
+		return ER_XLOG;
 	return ER_PROC_LUA;
 }
 
-const struct type_info type_XlogError = make_type("XlogError", &type_Exception);
 
 struct error *
 BuildXlogError(const char *file, unsigned line, const char *format, ...)

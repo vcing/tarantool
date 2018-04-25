@@ -370,6 +370,9 @@ replicaset_sync(void);
 void
 replicaset_check_quorum(void);
 
+void
+replicaset_hash_free();
+
 #endif /* defined(__cplusplus) */
 
 #endif

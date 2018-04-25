@@ -47,11 +47,12 @@ sysview_space_bsize(struct space *space)
 }
 
 static int
-sysview_space_apply_initial_join_row(struct space *space,
-				     struct request *request)
+sysview_space_apply_join_row(struct space *space,
+				     struct request *request, bool initial)
 {
 	(void)space;
 	(void)request;
+	(void)initial;
 	unreachable();
 	return 0;
 }
@@ -165,7 +166,7 @@ sysview_space_check_format(struct space *space, struct tuple_format *format)
 static const struct space_vtab sysview_space_vtab = {
 	/* .destroy = */ sysview_space_destroy,
 	/* .bsize = */ sysview_space_bsize,
-	/* .apply_initial_join_row = */ sysview_space_apply_initial_join_row,
+	/* .apply_join_row = */ sysview_space_apply_join_row,
 	/* .execute_replace = */ sysview_space_execute_replace,
 	/* .execute_delete = */ sysview_space_execute_delete,
 	/* .execute_update = */ sysview_space_execute_update,

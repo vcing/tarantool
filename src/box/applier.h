@@ -115,6 +115,10 @@ struct applier {
 	 * waiting on resume_cond to be resumed (see applier_resume()).
 	 */
 	bool is_paused;
+	/**
+	 * Set if the applier needs to be rejoined.
+	 */
+	bool rejoin;
 	/** Condition variable signaled to resume the applier. */
 	struct fiber_cond resume_cond;
 	/** xstream to process rows during initial JOIN */

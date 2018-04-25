@@ -391,6 +391,15 @@ box_process1(struct request *request, box_tuple_t **result);
 int
 boxk(int type, uint32_t space_id, const char *format, ...);
 
+struct xstream;
+struct xrow_header;
+
+void
+apply_join_row(struct xstream *stream, struct xrow_header *row);
+
+void
+apply_rejoin_row(struct xstream *stream, struct xrow_header *row);
+
 #if defined(__cplusplus)
 } /* extern "C" */
 #endif /* defined(__cplusplus) */

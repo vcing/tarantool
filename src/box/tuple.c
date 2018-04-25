@@ -474,3 +474,11 @@ tuple_str(const struct tuple *tuple)
 		return "<failed to format tuple>";
 	return buf;
 }
+
+bool
+tuple_bequal(const struct tuple *a, const struct tuple *b)
+{
+	assert(a != NULL && b != NULL);
+	return a->bsize == b->bsize &&
+	memcmp(tuple_data(a), tuple_data(b), a->bsize) == 0;
+}

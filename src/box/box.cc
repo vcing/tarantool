@@ -313,15 +313,27 @@ wal_stream_create(struct wal_stream *ctx, size_t wal_max_rows)
 	ctx->yield = (wal_max_rows >> 4)  + 1;
 }
 
-static void
-apply_initial_join_row(struct xstream *stream, struct xrow_header *row)
+void
+apply_join_row(struct xstream *stream, struct xrow_header *row)
 {
 	(void) stream;
 	struct request request;
 	xrow_decode_dml_xc(row, &request, dml_request_key_map(row->type));
 	struct space *space = space_cache_find_xc(request.space_id);
 	/* no access checks here - applier always works with admin privs */
-	space_apply_initial_join_row_xc(space, &request);
+	space_apply_join_row_xc(space, &request, true);
+}
+
+
+void
+apply_rejoin_row(struct xstream *stream, struct xrow_header *row)
+{
+	(void) stream;
+	struct request request;
+	xrow_decode_dml_xc(row, &request, dml_request_key_map(row->type));
+	struct space *space = space_cache_find_xc(request.space_id);
+	/* no access checks here - applier always works with admin privs */
+	space_apply_join_row_xc(space, &request, false);
 }
 
 /* {{{ configuration bindings */
@@ -1741,7 +1753,7 @@ box_cfg_xc(void)
 	box_set_replication_connect_timeout();
 	box_set_replication_connect_quorum();
 	replication_sync_lag = box_check_replication_sync_lag();
-	xstream_create(&join_stream, apply_initial_join_row);
+	xstream_create(&join_stream, apply_join_row);
 	xstream_create(&subscribe_stream, apply_row);
 
 	struct vclock last_checkpoint_vclock;
@@ -1877,7 +1889,6 @@ box_cfg_xc(void)
 		box_listen();
 
 		title("orphan");
-
 		/*
 		 * Wait for the cluster to start up.
 		 *

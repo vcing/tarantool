@@ -225,7 +225,9 @@ txn_commit_stmt(struct txn *txn, struct request *request)
 	 *   doesn't find any rows
 	 */
 	if (!rlist_empty(&stmt->space->on_replace) &&
-	    stmt->space->run_triggers && (stmt->old_tuple || stmt->new_tuple)) {
+	    stmt->space->run_triggers && (stmt->old_tuple || stmt->new_tuple)
+	    && (!stmt->old_tuple || !stmt->new_tuple ||
+		!tuple_bequal(stmt->old_tuple, stmt->new_tuple))) {
 		if (trigger_run(&stmt->space->on_replace, txn) != 0)
 			goto fail;
 	}

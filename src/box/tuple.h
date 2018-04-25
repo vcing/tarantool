@@ -841,6 +841,11 @@ tuple_bless(struct tuple *tuple)
 ssize_t
 tuple_to_buf(const struct tuple *tuple, char *buf, size_t size);
 
+/**
+ * Check if tuples' data are equal.
+ */
+bool
+tuple_bequal(const struct tuple *a, const struct tuple *b);
 #if defined(__cplusplus)
 } /* extern "C" */
 
