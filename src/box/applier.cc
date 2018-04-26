@@ -375,7 +375,8 @@ applier_subscribe(struct applier *applier)
 	struct vclock remote_vclock_at_subscribe;
 
 	xrow_encode_subscribe_xc(&row, &REPLICASET_UUID, &INSTANCE_UUID,
-				 &replicaset.vclock);
+				 &replicaset.vclock, applier->feeder_uuids,
+				 applier->nfeeder_uuids);
 	coio_write_xrow(coio, &row);
 
 	if (applier->state == APPLIER_READY) {

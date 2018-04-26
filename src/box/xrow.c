@@ -803,19 +803,23 @@ int
 xrow_encode_subscribe(struct xrow_header *row,
 		      const struct tt_uuid *replicaset_uuid,
 		      const struct tt_uuid *instance_uuid,
-		      const struct vclock *vclock)
+		      const struct vclock *vclock,
+		      const struct tt_uuid *subscr_uuids,
+		      uint32_t nuuids)
 {
 	memset(row, 0, sizeof(*row));
 	uint32_t replicaset_size = vclock_size(vclock);
+	// TODO: what is replicaset_size in this case?
 	size_t size = XROW_BODY_LEN_MAX + replicaset_size *
 		(mp_sizeof_uint(UINT32_MAX) + mp_sizeof_uint(UINT64_MAX));
+	say_info("xrow_encode_subscribe: size = %llu", size); // TODO: remove
 	char *buf = (char *) region_alloc(&fiber()->gc, size);
 	if (buf == NULL) {
 		diag_set(OutOfMemory, size, "region_alloc", "buf");
 		return -1;
 	}
 	char *data = buf;
-	data = mp_encode_map(data, 4);
+	data = mp_encode_map(data, 5);
 	data = mp_encode_uint(data, IPROTO_CLUSTER_UUID);
 	data = xrow_encode_uuid(data, replicaset_uuid);
 	data = mp_encode_uint(data, IPROTO_INSTANCE_UUID);
@@ -827,6 +831,12 @@ xrow_encode_subscribe(struct xrow_header *row,
 	vclock_foreach(&it, replica) {
 		data = mp_encode_uint(data, replica.id);
 		data = mp_encode_uint(data, replica.lsn);
+	}
+	data = mp_encode_uint(data, IPROTO_SUBSCRIBE_UUIDS);
+	data = mp_encode_map(data, nuuids);
+	for (uint32_t i = 0; i < nuuids; ++i) {
+		data = mp_encode_uint(data, i);
+		data = xrow_encode_uuid(data, subscr_uuids + i);
 	}
 	data = mp_encode_uint(data, IPROTO_SERVER_VERSION);
 	data = mp_encode_uint(data, tarantool_version_id());
@@ -841,7 +851,8 @@ xrow_encode_subscribe(struct xrow_header *row,
 int
 xrow_decode_subscribe(struct xrow_header *row, struct tt_uuid *replicaset_uuid,
 		      struct tt_uuid *instance_uuid, struct vclock *vclock,
-		      uint32_t *version_id, bool *read_only)
+		      uint32_t *version_id, bool *read_only,
+		      struct tt_uuid *feeder_uuids, uint32_t *nuuids)
 {
 	if (row->bodycnt == 0) {
 		diag_set(ClientError, ER_INVALID_MSGPACK, "request body");
@@ -912,6 +923,24 @@ xrow_decode_subscribe(struct xrow_header *row, struct tt_uuid *replicaset_uuid,
 				return -1;
 			}
 			*read_only = mp_decode_bool(&d);
+			break;
+		case IPROTO_SUBSCRIBE_UUIDS:
+			if (feeder_uuids == NULL)
+				goto skip;
+			if (mp_typeof(*d) != MP_MAP) {
+			uuid_map_error:
+				diag_set(ClientError, ER_INVALID_MSGPACK,
+					 "invalid SUBSCRIBE_UUIDS");
+				return -1;
+			}
+			*nuuids = mp_decode_map(&d);
+			for (uint32_t i = 0; i < *nuuids; i++) {
+				if (mp_typeof(*d) != MP_UINT)
+					goto uuid_map_error;
+				uint32_t id = mp_decode_uint(&d);
+				if (xrow_decode_uuid(&d, feeder_uuids + id) != 0)
+					goto uuid_map_error;
+			}
 			break;
 		default: skip:
 			mp_next(&d); /* value */

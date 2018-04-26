@@ -75,6 +75,13 @@ relay_final_join(int fd, uint64_t sync, struct vclock *start_vclock,
 	         struct vclock *stop_vclock);
 
 /**
+ * Set up relay black list.
+ */
+void
+relay_set_black_list(struct relay *relay, const struct tt_uuid *feeder_uuids,
+		     int nuuids);
+
+/**
  * Subscribe a replica to updates.
  *
  * @return none.

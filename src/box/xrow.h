@@ -243,7 +243,9 @@ int
 xrow_encode_subscribe(struct xrow_header *row,
 		      const struct tt_uuid *replicaset_uuid,
 		      const struct tt_uuid *instance_uuid,
-		      const struct vclock *vclock);
+		      const struct vclock *vclock,
+		      const struct tt_uuid *subscr_uuids,
+		      uint32_t nuuids);
 
 /**
  * Decode SUBSCRIBE command.
@@ -260,7 +262,8 @@ xrow_encode_subscribe(struct xrow_header *row,
 int
 xrow_decode_subscribe(struct xrow_header *row, struct tt_uuid *replicaset_uuid,
 		      struct tt_uuid *instance_uuid, struct vclock *vclock,
-		      uint32_t *version_id, bool *read_only);
+		      uint32_t *version_id, bool *read_only,
+		      struct tt_uuid *feeder_uuids, uint32_t *nuuids);
 
 /**
  * Encode JOIN command.
@@ -285,7 +288,7 @@ static inline int
 xrow_decode_join(struct xrow_header *row, struct tt_uuid *instance_uuid)
 {
 	return xrow_decode_subscribe(row, NULL, instance_uuid, NULL, NULL,
-				     NULL);
+				     NULL, NULL, NULL);
 }
 
 /**
@@ -310,7 +313,8 @@ xrow_encode_vclock(struct xrow_header *row, const struct vclock *vclock);
 static inline int
 xrow_decode_vclock(struct xrow_header *row, struct vclock *vclock)
 {
-	return xrow_decode_subscribe(row, NULL, NULL, vclock, NULL, NULL);
+	return xrow_decode_subscribe(row, NULL, NULL, vclock, NULL, NULL,
+				     NULL, NULL);
 }
 
 /**
@@ -326,7 +330,8 @@ static inline int
 xrow_decode_request_vote(struct xrow_header *row, struct vclock *vclock,
 			 bool *read_only)
 {
-	return xrow_decode_subscribe(row, NULL, NULL, vclock, NULL, read_only);
+	return xrow_decode_subscribe(row, NULL, NULL, vclock, NULL, read_only,
+				     NULL, NULL);
 }
 
 /**
@@ -577,10 +582,11 @@ static inline void
 xrow_encode_subscribe_xc(struct xrow_header *row,
 			 const struct tt_uuid *replicaset_uuid,
 			 const struct tt_uuid *instance_uuid,
-			 const struct vclock *vclock)
+			 const struct vclock *vclock,
+			 const struct tt_uuid *subscr_uuids, uint32_t nuuids)
 {
 	if (xrow_encode_subscribe(row, replicaset_uuid, instance_uuid,
-				  vclock) != 0)
+				  vclock, subscr_uuids, nuuids) != 0)
 		diag_raise();
 }
 
@@ -589,10 +595,12 @@ static inline void
 xrow_decode_subscribe_xc(struct xrow_header *row,
 			 struct tt_uuid *replicaset_uuid,
 		         struct tt_uuid *instance_uuid, struct vclock *vclock,
-			 uint32_t *replica_version_id)
+			 uint32_t *replica_version_id,
+			 struct tt_uuid *feeder_uuids, uint32_t *nuuids)
 {
 	if (xrow_decode_subscribe(row, replicaset_uuid, instance_uuid,
-				  vclock, replica_version_id, NULL) != 0)
+				  vclock, replica_version_id, NULL,
+				  feeder_uuids, nuuids) != 0)
 		diag_raise();
 }
 

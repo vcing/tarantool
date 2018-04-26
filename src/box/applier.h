@@ -121,6 +121,10 @@ struct applier {
 	struct xstream *join_stream;
 	/** xstream to process rows during final JOIN and SUBSCRIBE */
 	struct xstream *subscribe_stream;
+	/** List of other replica UUIDs to fetch changes from */
+	struct tt_uuid feeder_uuids[VCLOCK_MAX];
+	/** Number of UUIDs to fetch changes from TODO: remove */
+	uint32_t nfeeder_uuids;
 };
 
 /**

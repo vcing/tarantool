@@ -131,6 +131,8 @@ struct relay {
 	struct stailq pending_gc;
 	/** Time when last row was sent to peer. */
 	double last_row_tm;
+	/** Do not send rows initiated from replicas from this list. */
+	int src_black_list[VCLOCK_MAX];
 
 	struct {
 		/* Align to prevent false-sharing with tx thread */
@@ -144,6 +146,18 @@ const struct vclock *
 relay_vclock(const struct relay *relay)
 {
 	return &relay->tx.vclock;
+}
+
+void
+relay_set_black_list(struct relay *relay, const struct tt_uuid *feeder_uuids,
+		     int nuuids) {
+	assert(relay != NULL); // TODO: always true?
+	for (int i = 0; i < VCLOCK_MAX; i++)
+		relay->src_black_list[i] = 1;
+	for (int i = 0; i < nuuids; i++) {
+		int id = replica_by_uuid(&feeder_uuids[i])->id;
+		relay->src_black_list[id] = 0;
+	}
 }
 
 static void
@@ -517,6 +531,7 @@ void
 relay_subscribe(int fd, uint64_t sync, struct replica *replica,
 		struct vclock *replica_clock, uint32_t replica_version_id)
 {
+	say_info("relay_subscribe: set up new relay");
 	assert(replica->id != REPLICA_ID_NIL);
 	/* Don't allow multiple relays for the same replica */
 	if (replica->relay != NULL) {
@@ -594,11 +609,15 @@ relay_send_row(struct xstream *stream, struct xrow_header *packet)
 	 * data was not written to WAL, so remote master can't recover
 	 * it). In the latter case packet's LSN is less than or equal to
 	 * local master's LSN at the moment it received 'SUBSCRIBE' request.
+	 * With src_black_list allows applier to subscribe to relay with a
+	 * list of ids from which applier wants to get changes (by default
+	 * from everyone).
 	 */
 	if (relay->replica == NULL ||
-	    packet->replica_id != relay->replica->id ||
-	    packet->lsn <= vclock_get(&relay->local_vclock_at_subscribe,
-				      packet->replica_id)) {
+	    ((packet->replica_id != relay->replica->id ||
+	      packet->lsn <= vclock_get(&relay->local_vclock_at_subscribe,
+					packet->replica_id)) &&
+	      relay->src_black_list[packet->replica_id] == 0)) {
 		relay_send(relay, packet);
 	}
 }

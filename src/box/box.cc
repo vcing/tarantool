@@ -1409,8 +1409,11 @@ box_process_subscribe(struct ev_io *io, struct xrow_header *header)
 	struct vclock replica_clock;
 	uint32_t replica_version_id;
 	vclock_create(&replica_clock);
+	struct tt_uuid feeder_uuids[VCLOCK_MAX];
+	uint32_t nuuids = 0;
 	xrow_decode_subscribe_xc(header, &replicaset_uuid, &replica_uuid,
-				 &replica_clock, &replica_version_id);
+				 &replica_clock, &replica_version_id,
+				 feeder_uuids, &nuuids);
 
 	/* Forbid connection to itself */
 	if (tt_uuid_is_equal(&replica_uuid, &INSTANCE_UUID))
@@ -1438,6 +1441,9 @@ box_process_subscribe(struct ev_io *io, struct xrow_header *header)
 			  tt_uuid_str(&replica_uuid),
 			  tt_uuid_str(&REPLICASET_UUID));
 	}
+	/* Set up relay filter, if specific UUIDs were in SUBSCRIBE request */
+	if (nuuids)
+		relay_set_black_list(replica->relay, feeder_uuids, nuuids);
 
 	/* Forbid replication with disabled WAL */
 	if (wal_mode() == WAL_NONE) {
