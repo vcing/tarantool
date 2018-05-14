@@ -344,6 +344,7 @@ struct Vdbe {
 	sqlite3 *db;		/* The database connection that owns this statement */
 	Vdbe *pPrev, *pNext;	/* Linked list of VDBEs with the same Vdbe.db */
 	Parse *pParse;		/* Parsing context used to create this Vdbe */
+	bool suppress;
 	ynVar nVar;		/* Number of entries in aVar[] */
 	u32 magic;		/* Magic number for sanity checking */
 	int nMem;		/* Number of memory locations currently allocated */
@@ -375,6 +376,7 @@ struct Vdbe {
 	 */
 
 	Op *aOp;		/* Space to hold the virtual machine's program */
+	Op *aInitOp;		/* Space to hold init section */
 	Mem *aMem;		/* The memory locations */
 	Mem **apArg;		/* Arguments to currently executing user function */
 	Mem *aColName;		/* Column names to return */
@@ -387,6 +389,7 @@ struct Vdbe {
 	i64 startTime;		/* Time when query started - used for profiling */
 #endif
 	int nOp;		/* Number of instructions in the program */
+	int nInitOp;		/* Number of instructions in the init section */
 	u16 nResColumn;		/* Number of columns in one row of the result set */
 	u8 errorAction;		/* Recovery action to do in case of an error */
 	bft expired:1;		/* True if the VM needs to be recompiled */
@@ -494,14 +497,14 @@ void sqlite3VdbeMemInit(Mem *, sqlite3 *, u32);
 void sqlite3VdbeMemSetNull(Mem *);
 void sqlite3VdbeMemSetZeroBlob(Mem *, int);
 int sqlite3VdbeMemMakeWriteable(Mem *);
-int sqlite3VdbeMemStringify(Mem *, u8);
+int sqlite3VdbeMemStringify(Mem *);
 i64 sqlite3VdbeIntValue(Mem *);
 int sqlite3VdbeMemIntegerify(Mem *);
 double sqlite3VdbeRealValue(Mem *);
 void sqlite3VdbeIntegerAffinity(Mem *);
 int sqlite3VdbeMemRealify(Mem *);
 int sqlite3VdbeMemNumerify(Mem *);
-void sqlite3VdbeMemCast(Mem *, u8);
+int sqlite3VdbeMemCast(Mem *, u8);
 int sqlite3VdbeMemFromBtree(BtCursor *, u32, u32, Mem *);
 void sqlite3VdbeMemRelease(Mem * p);
 int sqlite3VdbeMemFinalize(Mem *, FuncDef *);

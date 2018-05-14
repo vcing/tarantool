@@ -378,7 +378,7 @@ whereScanInit(WhereScan * pScan,	/* The WhereScan object being initialized */
 		if (iColumn == XN_EXPR) {
 			pScan->pIdxExpr = pIdx->aColExpr->a[j].pExpr;
 		} else if (iColumn >= 0) {
-			pScan->idxaff = pIdx->pTable->aCol[iColumn].affinity;
+			pScan->idxaff = pIdx->pTable->aCol[iColumn].typeDef.type;
 			pScan->coll = sql_index_collation(pIdx, j);
 			pScan->is_column_seen = true;
 		}

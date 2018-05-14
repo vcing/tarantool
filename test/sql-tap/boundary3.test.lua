@@ -26,7 +26,7 @@ test:do_test(
     "boundary3-1.1",
     function()
         return test:execsql([[
-            CREATE TABLE t1(rowid primary key, a,x);
+            CREATE TABLE t1(rowid  INT primary key, a FLOAT ,x TEXT );
             INSERT INTO t1(rowid,a,x) VALUES(-8388609,1,'ffffffffff7fffff');
             INSERT INTO t1(rowid,a,x) VALUES(-36028797018963969,2,'ff7fffffffffffff');
             INSERT INTO t1(rowid,a,x) VALUES(9223372036854775807,3,'7fffffffffffffff');
@@ -109,7 +109,7 @@ test:do_test(
     "boundary3-1.3",
     function()
         return test:execsql([[
-            CREATE TABLE t2(r primary key,a);
+            CREATE TABLE t2(r  REAL primary key,a REAL );
             INSERT INTO t2 SELECT rowid, a FROM t1;
             CREATE INDEX t2i1 ON t2(r);
             CREATE INDEX t2i2 ON t2(a);

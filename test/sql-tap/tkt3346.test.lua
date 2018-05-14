@@ -24,7 +24,7 @@ test:do_test(
     "tkt3346-1.1",
     function()
         return test:execsql [[
-            CREATE TABLE t1(id primary key, a,b);
+            CREATE TABLE t1(id  INT primary key, a INT ,b INT );
             INSERT INTO t1 VALUES(1, 2,'bob');
             INSERT INTO t1 VALUES(2, 1,'alice');
             INSERT INTO t1 VALUES(3, 3,'claire');
@@ -88,7 +88,7 @@ test:do_test(
 test:do_catchsql_test(
     "tkt3346-2.1",
     [[
-        CREATE TABLE t2(a primary key);
+        CREATE TABLE t2(a  INT primary key);
         INSERT INTO t2 VALUES(1);
 
         SELECT * FROM (SELECT a,b FROM t1 WHERE 1=x.a) AS x;

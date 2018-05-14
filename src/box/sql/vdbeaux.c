@@ -65,6 +65,8 @@ sqlite3VdbeCreate(Parse * pParse)
 	db->pVdbe = p;
 	p->magic = VDBE_MAGIC_INIT;
 	p->pParse = pParse;
+	p->suppress = false;
+	p->autoCommit = (char)box_txn() == 0 ? 1 : 0;
 	p->schema_ver = box_schema_version();
 	assert(pParse->aLabel == 0);
 	assert(pParse->nLabel == 0);
@@ -252,6 +254,8 @@ growOp3(Vdbe * p, int op, int p1, int p2, int p3)
 int
 sqlite3VdbeAddOp3(Vdbe * p, int op, int p1, int p2, int p3)
 {
+	if (p->suppress)
+		return 0;
 	int i;
 	VdbeOp *pOp;
 	struct session MAYBE_UNUSED *user_session;
@@ -379,7 +383,8 @@ sqlite3VdbeAddOp4(Vdbe * p,	/* Add the opcode to this VM */
 
 {
 	int addr = sqlite3VdbeAddOp3(p, op, p1, p2, p3);
-	sqlite3VdbeChangeP4(p, addr, zP4, p4type);
+	if (!p->suppress)
+		sqlite3VdbeChangeP4(p, addr, zP4, p4type);
 	return addr;
 }
 
@@ -436,6 +441,8 @@ sqlite3VdbeAddOp4Int(Vdbe * p,	/* Add the opcode to this VM */
 		     int p4)	/* The P4 operand as an integer */
 {
 	int addr = sqlite3VdbeAddOp3(p, op, p1, p2, p3);
+	if (p->suppress)
+		return addr;
 	if (p->db->mallocFailed == 0) {
 		VdbeOp *pOp = &p->aOp[addr];
 		pOp->p4type = P4_INT32;
@@ -448,6 +455,8 @@ int
 sqlite3VdbeAddOp4Ptr(Vdbe *p, int op, int p1, int p2, int p3, void *ptr)
 {
 	int addr = sqlite3VdbeAddOp3(p, op, p1, p2, p3);
+	if (p->suppress)
+		return addr;
 	VdbeOp *pOp = &p->aOp[addr];
 	pOp->p4type = P4_PTR;
 	pOp->p4.p = ptr;
@@ -801,6 +810,20 @@ sqlite3VdbeTakeOpArray(Vdbe * p, int *pnOp, int *pnMaxArg)
 	*pnOp = p->nOp;
 	p->aOp = 0;
 	return aOp;
+}
+
+VdbeOp *
+sqlite3VdbeAddOpMerge(Vdbe * p,	/* Add opcodes to the prepared statement */
+		      int nOp,	/* Number of opcodes to add */
+		      VdbeOp *aOp)	/* The opcodes to be added */
+{
+	assert(nOp > 0);
+	assert(p->magic == VDBE_MAGIC_INIT);
+	if (p->nOp + nOp > p->pParse->nOpAlloc && growOpArray(p, nOp)) {
+		return 0;
+	}
+	memcpy(p->aOp + p->nOp, aOp, sizeof(*aOp) * nOp);
+	return p->aOp + p->nOp;
 }
 
 /*
@@ -1191,6 +1214,8 @@ sql_vdbe_set_p4_key_def(struct Parse *parse, struct Index *idx)
 static void
 vdbeVComment(Vdbe * p, const char *zFormat, va_list ap)
 {
+	if (p->suppress)
+		return;
 	assert(p->nOp > 0 || p->aOp == 0);
 	assert(p->aOp == 0 || p->aOp[p->nOp - 1].zComment == 0
 	       || p->db->mallocFailed);

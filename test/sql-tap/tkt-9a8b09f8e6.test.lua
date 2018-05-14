@@ -72,7 +72,7 @@ test:do_execsql_test(
 test:do_execsql_test(
     1.5,
     [[
-        CREATE TABLE t5(id primary key, x, y);
+        CREATE TABLE t5(id  INT primary key, x INT , y INT );
         INSERT INTO t5 VALUES(1, '1', 'one');
         INSERT INTO t5 VALUES(2, 1, 'two');
         INSERT INTO t5 VALUES(3, '1.0', 'three');

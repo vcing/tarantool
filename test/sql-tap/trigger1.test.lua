@@ -202,7 +202,7 @@ test:do_catchsql_test(
 test:do_execsql_test(
     "trigger1-1.10",
     [[
-        create table t1(a int PRIMARY KEY,b);
+        create table t1(a int PRIMARY KEY,b INT);
         insert into t1 values(1,'a');
         insert into t1 values(2,'b');
         insert into t1 values(3,'c');
@@ -222,7 +222,7 @@ test:do_execsql_test(
 test:do_execsql_test(
     "trigger1-1.11",
     [[
-        create table t1(a int PRIMARY KEY,b);
+        create table t1(a int PRIMARY KEY,b INT);
         create table tt1(a int PRIMARY KEY);
         insert into t1 values(1,'a');
         insert into t1 values(2,'b');
@@ -245,7 +245,7 @@ test:do_execsql_test(
 test:do_catchsql_test(
     "trigger1-1.12",
     [[
-        create table t1(a int PRIMARY KEY,b);
+        create table t1(a int PRIMARY KEY,b INT);
         create trigger t1t instead of update on t1 for each row begin
           delete from t1 WHERE a=old.a+2;
         end;
@@ -378,7 +378,7 @@ test:do_catchsql_test(
 --   do_test trigger1-3.7 {
 --     execsql {
 --       DROP TABLE t2;
---       CREATE TABLE t2(x,y);
+--       CREATE TABLE t2(x INT,y INT);
 --       SELECT * FROM t2;
 --     }
 --   } {}
@@ -452,14 +452,14 @@ test:do_catchsql_test(
 --   } {3 4 7 8}
 -- } else {
 --   execsql {
---     CREATE TABLE t2(x,y);
+--     CREATE TABLE t2(x INT,y INT);
 --     DROP TABLE t1;
 --     INSERT INTO t2 VALUES(3, 4);
 --     INSERT INTO t2 VALUES(7, 8);
 --   }
 -- }
 test:execsql [[
-    CREATE TABLE t2(x int PRIMARY KEY,y);
+    CREATE TABLE t2(x int PRIMARY KEY,y INT);
     DROP TABLE t1;
     INSERT INTO t2 VALUES(3, 4);
     INSERT INTO t2 VALUES(7, 8);
@@ -586,8 +586,8 @@ test:do_execsql_test(
 -- MUST_WORK_TEST
 --     do_test trigger1-9.1 {
 --       execsql {
---         CREATE TABLE t3(a,b int PRIMARY KEY);
---         CREATE TABLE t4(x int PRIMARY KEY, b);
+--         CREATE TABLE t3(a INT,b int PRIMARY KEY);
+--         CREATE TABLE t4(x int PRIMARY KEY, b INT);
 --         CREATE TRIGGER r34 AFTER INSERT ON t3 BEGIN
 --           REPLACE INTO t4 VALUES(new.a,new.b);
 --         END;
@@ -605,8 +605,8 @@ test:do_execsql_test(
 --   } else {
 --     do_test trigger1-9.1 {
 --       execsql {
---         CREATE TABLE t3(a, b int PRIMARY KEY);
---         CREATE TABLE t4(x int PRIMARY KEY, b);
+--         CREATE TABLE t3(a INT, b int PRIMARY KEY);
+--         CREATE TABLE t4(x int PRIMARY KEY, b INT);
 --         CREATE TRIGGER r34 AFTER INSERT ON t3 BEGIN
 --           REPLACE INTO t4 VALUES(new.a,new.b);
 --         END;
@@ -632,7 +632,7 @@ test:do_execsql_test(
 -- #
 -- # Also verify that references within trigger programs are resolved at
 -- # statement compile time, not trigger installation time. This means, for
--- # example, that you can drop and re-create tables referenced by triggers.
+-- # example, that INT you can drop and re-create tables referenced by triggers.
 -- ifcapable tempdb&&attach {
 --   do_test trigger1-10.0 {
 --     forcedelete test2.db
@@ -643,10 +643,10 @@ test:do_execsql_test(
 --   } {}
 --   do_test trigger1-10.1 {
 --     execsql {
---       CREATE TABLE main.t4(a, b, c);
---       CREATE TABLE temp.t4(a, b, c);
---       CREATE TABLE aux.t4(a, b, c);
---       CREATE TABLE insert_log(db, a, b, c);
+--       CREATE TABLE main.t4(a, b INT, c INT);
+--       CREATE TABLE temp.t4(a, b INT, c INT);
+--       CREATE TABLE aux.t4(a, b INT, c INT);
+--       CREATE TABLE insert_log(db INT , a INT, b INT, c INT);
 --     }
 --   } {}
 --   do_test trigger1-10.2 {
@@ -707,7 +707,7 @@ test:do_execsql_test(
 --   # use them explicitly.
 --     execsql {
 --       DROP TABLE insert_log;
---       CREATE TABLE aux.insert_log(db, d, e, f);
+--       CREATE TABLE aux.insert_log(db, d INT, e INT, f INT);
 --     }
 --   } {}
 --   do_test trigger1-10.10 {
@@ -736,7 +736,7 @@ test:do_catchsql_test(
 -- MUST_WORK_TEST
 -- do_test trigger1-15.1 {
 --   execsql {
---     CREATE TABLE tA(a INTEGER PRIMARY KEY, b, c);
+--     CREATE TABLE tA(a INTEGER PRIMARY KEY, b INT, c INT);
 --     CREATE TRIGGER tA_trigger BEFORE UPDATE ON "tA" BEGIN SELECT 1; END;
 --     INSERT INTO tA VALUES(1, 2, 3);
 --   }
@@ -746,7 +746,7 @@ test:do_catchsql_test(
 --   catchsql { INSERT INTO tA VALUES('abc', 2, 3) }
 -- } {1 {datatype mismatch}}
 test:execsql [[
-    CREATE TABLE tA(a INTEGER PRIMARY KEY, b, c);
+    CREATE TABLE tA(a INTEGER PRIMARY KEY, b INT, c INT);
     CREATE TRIGGER tA_trigger BEFORE UPDATE ON tA BEGIN SELECT 1; END;
     INSERT INTO tA VALUES(1, 2, 3);
 ]]
@@ -759,7 +759,7 @@ test:do_test(
     "trigger1-16.1",
     function()
         test:execsql [[
-            CREATE TABLE t16(a int PRIMARY KEY,b,c);
+            CREATE TABLE t16(a int PRIMARY KEY,b INT,c INT);
             CREATE INDEX t16b ON t16(b);
         ]]
         return test:catchsql [[
@@ -877,7 +877,7 @@ test:do_catchsql_test(
 -- #
 -- do_execsql_test trigger1-17.0 {
 --   CREATE TABLE t17a(ii INT);
---   CREATE TABLE t17b(tt TEXT PRIMARY KEY, ss);
+--   CREATE TABLE t17b(tt TEXT PRIMARY KEY, ss INT);
 --   CREATE TRIGGER t17a_ai AFTER INSERT ON t17a BEGIN
 --     INSERT INTO t17b(tt) VALUES(new.ii);
 --   END;

@@ -574,7 +574,7 @@ sqlite3TreeViewExpr(TreeView * pView, const Expr * pExpr, u8 moreToFollow)
 #ifndef SQLITE_OMIT_TRIGGER
 	case TK_RAISE:{
 			const char *zType = "unk";
-			switch (pExpr->affinity) {
+/*FIXME			switch (pExpr->affinity) {
 			case ON_CONFLICT_ACTION_ROLLBACK:
 				zType = "rollback";
 				break;
@@ -587,7 +587,7 @@ sqlite3TreeViewExpr(TreeView * pView, const Expr * pExpr, u8 moreToFollow)
 			case ON_CONFLICT_ACTION_IGNORE:
 				zType = "ignore";
 				break;
-			}
+			}*/
 			sqlite3TreeViewLine(pView, "RAISE %s(%Q)", zType,
 					    pExpr->u.zToken);
 			break;

@@ -1481,6 +1481,7 @@ typedef struct TreeView TreeView;
 typedef struct Trigger Trigger;
 typedef struct TriggerPrg TriggerPrg;
 typedef struct TriggerStep TriggerStep;
+typedef struct TypeDef TypeDef;
 typedef struct UnpackedRecord UnpackedRecord;
 typedef struct Walker Walker;
 typedef struct WhereInfo WhereInfo;
@@ -1710,6 +1711,55 @@ struct sqlite3 {
 #define SQLITE_MAGIC_ZOMBIE   0x64cffc7f	/* Close with last statement close */
 
 /*
+ * Column affinity types.
+ *
+ * These used to have mnemonic name like 'i' for SQLITE_AFF_INTEGER and
+ * 't' for SQLITE_AFF_TEXT.  But we can save a little space and improve
+ * the speed a little by numbering the values consecutively.
+ *
+ * But rather than start with 0 or 1, we begin with 'A'.  That way,
+ * when multiple affinity types are concatenated into a string and
+ * used as the P4 operand, they will be more readable.
+ *
+ * Note also that the numeric types are grouped together so that testing
+ * for a numeric type is a single comparison.  And the BLOB type is first.
+ */
+#define SQLITE_AFF_BLOB     'A'
+#define SQLITE_AFF_TEXT     'B'
+#define SQLITE_AFF_NUMERIC  'C'
+#define SQLITE_AFF_INTEGER  'D'
+#define SQLITE_AFF_REAL     'E'
+
+#define sqlite3IsNumericAffinity(X)  ((X)>=SQLITE_AFF_NUMERIC)
+
+#define MAX_PRECISION 8
+#define MAX_SIZE 16
+
+struct NumericTypeDef {
+	long size;
+	long precision;
+	bool positive;
+};
+
+struct StringTypeDef {
+	long length;
+};
+
+struct TypeDef {
+	char type;
+	union {
+		struct NumericTypeDef n;
+		struct StringTypeDef s;
+	};
+};
+
+/*
+ * The SQLITE_AFF_MASK values masks off the significant bits of an
+ * affinity value.
+ */
+#define SQLITE_AFF_MASK     0x47
+
+/*
  * Each SQL function is defined by an instance of the following
  * structure.  For global built-in functions (ex: substr(), max(), count())
  * a pointer to this structure is held in the sqlite3BuiltinFunctions object.
@@ -1731,6 +1781,7 @@ struct FuncDef {
 		FuncDef *pHash;	/* Next with a different name but the same hash */
 		FuncDestructor *pDestructor;	/* Reference counted destructor function */
 	} u;
+	TypeDef typeDef;	/* Return type. */
 };
 
 /*
@@ -1814,30 +1865,30 @@ struct FuncDestructor {
  *     FuncDef.flags variable is set to the value passed as the flags
  *     parameter.
  */
-#define FUNCTION(zName, nArg, iArg, bNC, xFunc) \
+#define FUNCTION(zName, nArg, iArg, bNC, xFunc, type) \
   {nArg, SQLITE_FUNC_CONSTANT|(bNC*SQLITE_FUNC_NEEDCOLL), \
-   SQLITE_INT_TO_PTR(iArg), 0, xFunc, 0, #zName, {0} }
-#define VFUNCTION(zName, nArg, iArg, bNC, xFunc) \
+   SQLITE_INT_TO_PTR(iArg), 0, xFunc, 0, #zName, {0}, {type, {{0}}} }
+#define VFUNCTION(zName, nArg, iArg, bNC, xFunc, type) \
   {nArg, (bNC*SQLITE_FUNC_NEEDCOLL), \
-   SQLITE_INT_TO_PTR(iArg), 0, xFunc, 0, #zName, {0} }
-#define DFUNCTION(zName, nArg, iArg, bNC, xFunc) \
+   SQLITE_INT_TO_PTR(iArg), 0, xFunc, 0, #zName, {0}, {type, {{0}}} }
+#define DFUNCTION(zName, nArg, iArg, bNC, xFunc, type) \
   {nArg, SQLITE_FUNC_SLOCHNG|(bNC*SQLITE_FUNC_NEEDCOLL), \
-   SQLITE_INT_TO_PTR(iArg), 0, xFunc, 0, #zName, {0} }
-#define FUNCTION2(zName, nArg, iArg, bNC, xFunc, extraFlags) \
+   SQLITE_INT_TO_PTR(iArg), 0, xFunc, 0, #zName, {0}, { type, {{0}} } }
+#define FUNCTION2(zName, nArg, iArg, bNC, xFunc, extraFlags, type) \
   {nArg,SQLITE_FUNC_CONSTANT|(bNC*SQLITE_FUNC_NEEDCOLL)|extraFlags,\
-   SQLITE_INT_TO_PTR(iArg), 0, xFunc, 0, #zName, {0} }
+   SQLITE_INT_TO_PTR(iArg), 0, xFunc, 0, #zName, {0}, {type, {{0}}} }
 #define STR_FUNCTION(zName, nArg, pArg, bNC, xFunc) \
   {nArg, SQLITE_FUNC_SLOCHNG|(bNC*SQLITE_FUNC_NEEDCOLL), \
-   pArg, 0, xFunc, 0, #zName, }
-#define LIKEFUNC(zName, nArg, arg, flags) \
+   pArg, 0, xFunc, 0, #zName, {SQLITE_AFF_STRING, {0}}}
+#define LIKEFUNC(zName, nArg, arg, flags, type) \
   {nArg, SQLITE_FUNC_CONSTANT|flags, \
-   (void *)arg, 0, likeFunc, 0, #zName, {0} }
-#define AGGREGATE(zName, nArg, arg, nc, xStep, xFinal) \
+   (void *)arg, 0, likeFunc, 0, #zName, {0}, {type, {{0}}} }
+#define AGGREGATE(zName, nArg, arg, nc, xStep, xFinal, type) \
   {nArg, (nc*SQLITE_FUNC_NEEDCOLL), \
-   SQLITE_INT_TO_PTR(arg), 0, xStep,xFinal,#zName, {0}}
-#define AGGREGATE2(zName, nArg, arg, nc, xStep, xFinal, extraFlags) \
+   SQLITE_INT_TO_PTR(arg), 0, xStep,xFinal,#zName, {0}, {type, {{0}}}}
+#define AGGREGATE2(zName, nArg, arg, nc, xStep, xFinal, extraFlags, type) \
   {nArg, (nc*SQLITE_FUNC_NEEDCOLL)|extraFlags, \
-   SQLITE_INT_TO_PTR(arg), 0, xStep,xFinal,#zName, {0}}
+   SQLITE_INT_TO_PTR(arg), 0, xStep,xFinal,#zName, {0}, {type, {{0}}}}
 
 /*
  * All current savepoints are stored in a linked list starting at
@@ -1860,12 +1911,21 @@ struct Savepoint {
 #define SAVEPOINT_ROLLBACK   2
 
 /*
+ * A sort order can be either ASC or DESC.
+ */
+#define SQLITE_SO_ASC       0	/* Sort in ascending order */
+#define SQLITE_SO_DESC      1	/* Sort in ascending order */
+#define SQLITE_SO_UNDEFINED -1	/* No sort order specified */
+
+
+/*
  * information about each column of an SQL table is held in an instance
  * of this structure.
  */
 struct Column {
 	char *zName;		/* Name of this column */
 	enum field_type type;	/* Column type. */
+	Expr *pDflt;		/* Default value of this column */
 	/** Collating sequence. */
 	struct coll *coll;
 	/**
@@ -1873,38 +1933,17 @@ struct Column {
 	 * constraint.
 	 */
 	enum on_conflict_action notNull;
-	char affinity;		/* One of the SQLITE_AFF_... values */
+	TypeDef typeDef;		/* One of the SQLITE_AFF_... values */
 	u8 szEst;		/* Estimated size of value in this column. sizeof(INT)==1 */
 	u8 is_primkey;		/* Boolean propertie for being PK */
 };
 
 /*
- * Column affinity types.
- *
- * These used to have mnemonic name like 'i' for SQLITE_AFF_INTEGER and
- * 't' for SQLITE_AFF_TEXT.  But we can save a little space and improve
- * the speed a little by numbering the values consecutively.
- *
- * But rather than start with 0 or 1, we begin with 'A'.  That way,
- * when multiple affinity types are concatenated into a string and
- * used as the P4 operand, they will be more readable.
- *
- * Note also that the numeric types are grouped together so that testing
- * for a numeric type is a single comparison.  And the BLOB type is first.
+ * A sort order can be either ASC or DESC.
  */
-#define SQLITE_AFF_BLOB     'A'
-#define SQLITE_AFF_TEXT     'B'
-#define SQLITE_AFF_NUMERIC  'C'
-#define SQLITE_AFF_INTEGER  'D'
-#define SQLITE_AFF_REAL     'E'
-
-#define sqlite3IsNumericAffinity(X)  ((X)>=SQLITE_AFF_NUMERIC)
-
-/*
- * The SQLITE_AFF_MASK values masks off the significant bits of an
- * affinity value.
- */
-#define SQLITE_AFF_MASK     0x47
+#define SQLITE_SO_ASC       0	/* Sort in ascending order */
+#define SQLITE_SO_DESC      1	/* Sort in ascending order */
+#define SQLITE_SO_UNDEFINED -1	/* No sort order specified */
 
 /*
  * Additional bit values that can be ORed with an affinity without
@@ -2299,7 +2338,7 @@ typedef int ynVar;
  */
 struct Expr {
 	u8 op;			/* Operation performed by this node */
-	char affinity;		/* The affinity of the column or 0 if not a column */
+	TypeDef typeDef;		/* The affinity of the column or 0 if not a column */
 	u32 flags;		/* Various flags.  EP_* See below */
 	union {
 		char *zToken;	/* Token value. Zero terminated and dequoted */
@@ -2888,6 +2927,8 @@ struct Parse {
 	int nMem;		/* Number of memory cells used so far */
 	int nOpAlloc;		/* Number of slots allocated for Vdbe.aOp[] */
 	int szOpAlloc;		/* Bytes of memory space allocated for Vdbe.aOp[] */
+	int nInitOpAlloc;	/* Number of slots allocated for Vdbe.aInitOp[] */
+	int szInitOpAlloc;	/* Bytes of memory space allocated for Vdbe.aInitOp[] */
 	int ckBase;		/* Base register of data during check constraints */
 	int iSelfTab;		/* Table of an index whose exprs are being coded */
 	int iCacheLevel;	/* ColCache valid when aColCache[].iLevel<=iCacheLevel */
@@ -3466,7 +3507,7 @@ void sqlite3ClearTempRegCache(Parse *);
 #ifdef SQLITE_DEBUG
 int sqlite3NoTempsInRange(Parse *, int, int);
 #endif
-Expr *sqlite3ExprAlloc(sqlite3 *, int, const Token *, int);
+Expr *sqlite3ExprAlloc(sqlite3 *, int, const TypeDef *, const Token *, int);
 Expr *sqlite3Expr(sqlite3 *, int, const char *);
 Expr *sqlite3ExprInteger(sqlite3 *, int);
 void sqlite3ExprAttachSubtrees(sqlite3 *, Expr *, Expr *, Expr *);
@@ -3502,7 +3543,7 @@ void sqlite3SelectAddColumnTypeAndCollation(Parse *, Table *, Select *);
 Table *sqlite3ResultSetOfSelect(Parse *, Select *);
 Index *sqlite3PrimaryKeyIndex(Table *);
 void sqlite3StartTable(Parse *, Token *, int);
-void sqlite3AddColumn(Parse *, Token *, Token *);
+void sqlite3AddColumn(Parse *, Token *, TypeDef *);
 void sqlite3AddNotNull(Parse *, int);
 void sqlite3AddPrimaryKey(Parse *, ExprList *, int, int, enum sort_order);
 void sqlite3AddCheckConstraint(Parse *, Expr *);
@@ -3847,6 +3888,8 @@ u64 sqlite3LogEstToInt(LogEst);
 VList *sqlite3VListAdd(sqlite3 *, VList *, const char *, int, int);
 const char *sqlite3VListNumToName(VList *, int);
 int sqlite3VListNameToNum(VList *, const char *, int);
+
+int sqlite3TokenToLong(Token *, long *);
 
 /*
  * Routines to read and write variable-length integers.  These used to

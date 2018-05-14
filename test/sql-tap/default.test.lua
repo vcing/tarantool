@@ -75,12 +75,12 @@ test:do_execsql_test(
 	[[
 	CREATE TABLE t4(
 	rowid INTEGER PRIMARY KEY AUTOINCREMENT, 
-	c DEFAULT 'abc'
+	c TEXT DEFAULT 'abc'
 	);
 	PRAGMA table_info(t4);
 	]], {
 	-- <default-2.1>
-	0,"ROWID","integer",1,"",1,1,"C","scalar",0,"'abc'",0
+	0,"ROWID","integer",1,"",1,1,"C","string",0,"'abc'",0
 	-- </default-2.1>
 })
 
@@ -91,7 +91,7 @@ test:do_execsql_test(
 	PRAGMA table_info(t4);
 	]], {
 	-- <default-2.2>
-	0,"ROWID","integer",1,"",1,1,"C","scalar",0,"'abc'",0
+	0,"ROWID","integer",1,"",1,1,"C","string",0,"'abc'",0
 	-- </default-2.2>
 })
 
@@ -103,11 +103,11 @@ test:do_execsql_test(
 	CREATE TABLE t3(
 	a INTEGER PRIMARY KEY AUTOINCREMENT,
 	b INT DEFAULT 12345 UNIQUE NOT NULL CHECK( b>=0 AND b<99999 ),
-	c VARCHAR(123,456) DEFAULT 'hello' NOT NULL ON CONFLICT REPLACE,
-	d REAL,
-	e FLOATING POINT(5,10) DEFAULT 4.36,
-	f NATIONAL CHARACTER(15), --COLLATE RTRIM,
-	g LONG INTEGER DEFAULT( 3600*12 )
+	c VARCHAR(123) DEFAULT 'hello' NOT NULL ON CONFLICT REPLACE,
+	d FLOAT,
+	e NUMERIC(10, 5) DEFAULT 4.36,
+	f CHAR(15), --COLLATE RTRIM,
+	g INTEGER DEFAULT( 3600*12 )
 	);
 	INSERT INTO t3 VALUES(null, 5, 'row1', '5.25', 'xyz', 321, '432');
 	SELECT a, typeof(a), b, typeof(b), c, typeof(c), 

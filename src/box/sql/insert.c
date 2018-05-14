@@ -100,7 +100,7 @@ sqlite3IndexAffinityStr(sqlite3 * db, Index * pIdx)
 		for (n = 0; n < nColumn; n++) {
 			i16 x = pIdx->aiColumn[n];
 			if (x >= 0) {
-				pIdx->zColAff[n] = pTab->aCol[x].affinity;
+				pIdx->zColAff[n] = pTab->aCol[x].typeDef.type;
 			} else {
 				char aff;
 				assert(x == XN_EXPR);
@@ -153,7 +153,7 @@ sqlite3TableAffinity(Vdbe * v, Table * pTab, int iReg)
 		}
 
 		for (i = 0; i < pTab->nCol; i++) {
-			zColAff[i] = pTab->aCol[i].affinity;
+			zColAff[i] = pTab->aCol[i].typeDef.type;
 		}
 		do {
 			zColAff[i--] = 0;
@@ -1806,7 +1806,7 @@ xferOptimization(Parse * pParse,	/* Parser context */
 	for (i = 0; i < pDest->nCol; i++) {
 		Column *pDestCol = &pDest->aCol[i];
 		Column *pSrcCol = &pSrc->aCol[i];
-		if (pDestCol->affinity != pSrcCol->affinity) {
+		if (pDestCol->typeDef.type != pSrcCol->typeDef.type) {
 			return 0;	/* Affinity must be the same on all columns */
 		}
 		if (sql_column_collation(pDest, i) !=

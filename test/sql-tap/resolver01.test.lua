@@ -33,8 +33,8 @@ test:plan(27)
 test:do_catchsql_test(
     "resolver01-1.1",
     [[
-        CREATE TABLE t1(x primary key, y); INSERT INTO t1 VALUES(11,22);
-        CREATE TABLE t2(y primary key, z); INSERT INTO t2 VALUES(33,44);
+        CREATE TABLE t1(x  INT primary key, y INT ); INSERT INTO t1 VALUES(11,22);
+        CREATE TABLE t2(y  INT primary key, z INT ); INSERT INTO t2 VALUES(33,44);
         SELECT 1 AS y FROM t1, t2 ORDER BY y;
     ]], {
         -- <resolver01-1.1>
@@ -55,7 +55,7 @@ test:do_catchsql_test(
 test:do_catchsql_test(
     "resolver01-1.3",
     [[
-        CREATE TABLE t3(x primary key,y); INSERT INTO t3 VALUES(11,44),(33,22);
+        CREATE TABLE t3(x  INT primary key,y INT ); INSERT INTO t3 VALUES(11,44),(33,22);
         SELECT x AS y FROM t3 ORDER BY y;
     ]], {
         -- <resolver01-1.3>
@@ -261,7 +261,7 @@ test:do_execsql_test(
         INSERT INTO t5 VALUES('ax');
         INSERT INTO t5 VALUES('bx');
         INSERT INTO t5 VALUES('cy');
-        SELECT count(*), substr(m,2,1) AS m FROM t5 GROUP BY m ORDER BY 1, 2;
+        SELECT  INT count(*), substr INT (m,2,1) AS m FROM t5 GROUP BY m ORDER BY 1, 2;
     ]], {
         -- <resolver01-5.1>
         1, "x", 1, "x", 1, "y"
@@ -310,7 +310,7 @@ test:do_execsql_test(
 test:do_execsql_test(
     "resolver01-6.1",
     [[
-        CREATE TABLE t61(name primary key);
+        CREATE TABLE t61(name  INT primary key);
         SELECT min(name) FROM t61 GROUP BY lower(name);
     ]], {
         -- <resolver01-6.1>
@@ -331,7 +331,7 @@ test:do_execsql_test(
 test:do_execsql_test(
     "resolver01-6.3",
     [[
-        CREATE TABLE t63(id primary key, name);
+        CREATE TABLE t63(id  INT primary key, name INT );
         INSERT INTO t63 VALUES (1, NULL);
         INSERT INTO t63 VALUES (2, 'abc');
         SELECT count(),

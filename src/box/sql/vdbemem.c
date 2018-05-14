@@ -267,8 +267,7 @@ sqlite3VdbeMemNulTerminate(Mem * pMem)
  * are converted using sqlite3_snprintf().  Converting a BLOB to a string
  * is a no-op.
  *
- * Existing representations MEM_Int and MEM_Real are invalidated if
- * bForce is true but are retained if bForce is false.
+ * Existing representations MEM_Int and MEM_Real are invalidated.
  *
  * A MEM_Null value will never be passed to this function. This function is
  * used for converting values to text for returning to the user (i.e. via
@@ -277,13 +276,21 @@ sqlite3VdbeMemNulTerminate(Mem * pMem)
  * user and the latter is an internal programming error.
  */
 int
-sqlite3VdbeMemStringify(Mem * pMem, u8 bForce)
+sqlite3VdbeMemStringify(Mem * pMem)
 {
 	int fg = pMem->flags;
 	const int nByte = 32;
 
+	if (fg & MEM_Str)
+		return SQLITE_OK;
+	if (fg & MEM_Blob) {
+		//TODO: hack, blobs should be decoded but not casted
+		pMem->flags |= MEM_Str | MEM_Term;
+		pMem->flags &= ~(MEM_Blob);
+		return SQLITE_OK;
+	}
+
 	assert(!(fg & MEM_Zero));
-	assert(!(fg & (MEM_Str | MEM_Blob)));
 	assert(fg & (MEM_Int | MEM_Real));
 	assert(EIGHT_BYTE_ALIGNMENT(pMem));
 
@@ -298,8 +305,7 @@ sqlite3VdbeMemStringify(Mem * pMem, u8 bForce)
 	}
 	pMem->n = sqlite3Strlen30(pMem->z);
 	pMem->flags |= MEM_Str | MEM_Term;
-	if (bForce)
-		pMem->flags &= ~(MEM_Int | MEM_Real);
+	pMem->flags &= ~(MEM_Int | MEM_Real);
 	return SQLITE_OK;
 }
 
@@ -458,7 +464,9 @@ sqlite3VdbeIntValue(Mem * pMem)
 		return pMem->u.i;
 	} else if (flags & MEM_Real) {
 		return doubleToInt64(pMem->u.r);
-	} else if (flags & (MEM_Str | MEM_Blob)) {
+	} else if (flags & MEM_Blob) {
+		return 0;
+	} else if (flags & MEM_Str) {
 		i64 value = 0;
 		assert(pMem->z || pMem->n == 0);
 		sqlite3Atoi64(pMem->z, &value, pMem->n);
@@ -529,8 +537,22 @@ int
 sqlite3VdbeMemIntegerify(Mem * pMem)
 {
 	assert(EIGHT_BYTE_ALIGNMENT(pMem));
-
-	pMem->u.i = sqlite3VdbeIntValue(pMem);
+	i64 value = 0;
+	if (pMem->flags & (MEM_Int | MEM_Null)) {
+		return SQLITE_OK;
+	}
+	if (pMem->flags & MEM_Real) {
+		if (pMem->u.r >= LARGEST_INT64 ||
+		    pMem->u.r <= SMALLEST_INT64)
+			return SQLITE_MISMATCH;
+		value = (i64)pMem->u.r;
+	} else if (pMem->flags & MEM_Str) {
+		assert(pMem->z || pMem->n == 0);
+		if (sqlite3Atoi64(pMem->z, &value, pMem->n) != 0)
+			return SQLITE_MISMATCH;
+	} else
+		return SQLITE_MISMATCH;
+	pMem->u.i = value;
 	MemSetTypeFlag(pMem, MEM_Int);
 	return SQLITE_OK;
 }
@@ -543,9 +565,20 @@ int
 sqlite3VdbeMemRealify(Mem * pMem)
 {
 	assert(EIGHT_BYTE_ALIGNMENT(pMem));
-
-	pMem->u.r = sqlite3VdbeRealValue(pMem);
+	double value;
+	if (pMem->flags & (MEM_Real | MEM_Null)) {
+		return SQLITE_OK;
+	}
+	if (pMem->flags & MEM_Int) {
+		value = pMem->u.i;
+	} else if (pMem->flags & MEM_Str) {
+		assert(!pMem->z || pMem->n == 0);
+		if (sqlite3AtoF(pMem->z, &value, pMem->n))
+			return SQLITE_MISMATCH;
+	} else
+		return SQLITE_MISMATCH;
 	MemSetTypeFlag(pMem, MEM_Real);
+	pMem->u.r = value;
 	return SQLITE_OK;
 }
 
@@ -553,26 +586,22 @@ sqlite3VdbeMemRealify(Mem * pMem)
  * Convert pMem so that it has types MEM_Real or MEM_Int or both.
  * Invalidate any prior representations.
  *
- * Every effort is made to force the conversion, even if the input
- * is a string that does not look completely like a number.  Convert
- * as much of the string as we can and ignore the rest.
+ * TODO: this should be refactored after numeric support
  */
 int
 sqlite3VdbeMemNumerify(Mem * pMem)
 {
-	if ((pMem->flags & (MEM_Int | MEM_Real | MEM_Null)) == 0) {
-		assert((pMem->flags & (MEM_Blob | MEM_Str)) != 0);
-		if (0 == sqlite3Atoi64(pMem->z, &pMem->u.i, pMem->n)) {
-			MemSetTypeFlag(pMem, MEM_Int);
-		} else {
-			pMem->u.r = sqlite3VdbeRealValue(pMem);
-			MemSetTypeFlag(pMem, MEM_Real);
+	if (pMem->flags & (MEM_Int | MEM_Real | MEM_Null))
+		return SQLITE_OK;
+	if (pMem->flags & MEM_Str) {
+		if (sqlite3VdbeMemIntegerify(pMem) == SQLITE_OK)
+			return SQLITE_OK;
+		if (sqlite3VdbeMemRealify(pMem) == SQLITE_OK) {
 			sqlite3VdbeIntegerAffinity(pMem);
+			return SQLITE_OK;
 		}
 	}
-	assert((pMem->flags & (MEM_Int | MEM_Real | MEM_Null)) != 0);
-	pMem->flags &= ~(MEM_Str | MEM_Blob | MEM_Zero);
-	return SQLITE_OK;
+	return SQLITE_MISMATCH;
 }
 
 /*
@@ -582,47 +611,29 @@ sqlite3VdbeMemNumerify(Mem * pMem)
  * affinity even if that results in loss of data.  This routine is
  * used (for example) to implement the SQL "cast()" operator.
  */
-void
+int
 sqlite3VdbeMemCast(Mem * pMem, u8 aff)
 {
 	if (pMem->flags & MEM_Null)
-		return;
+		return SQLITE_OK;
 	switch (aff) {
-	case SQLITE_AFF_BLOB:{	/* Really a cast to BLOB */
-			if ((pMem->flags & MEM_Blob) == 0) {
-				sqlite3ValueApplyAffinity(pMem, SQLITE_AFF_TEXT);
-				assert(pMem->flags & MEM_Str
-				       || pMem->db->mallocFailed);
-				if (pMem->flags & MEM_Str)
-					MemSetTypeFlag(pMem, MEM_Blob);
-			} else {
-				pMem->flags &= ~(MEM_TypeMask & ~MEM_Blob);
-			}
-			break;
+	case SQLITE_AFF_BLOB:{
+		return pMem->flags & MEM_Blob ? SQLITE_OK : SQLITE_MISMATCH;
 		}
 	case SQLITE_AFF_NUMERIC:{
-			sqlite3VdbeMemNumerify(pMem);
-			break;
+		return sqlite3VdbeMemNumerify(pMem);
 		}
 	case SQLITE_AFF_INTEGER:{
-			sqlite3VdbeMemIntegerify(pMem);
-			break;
+		return sqlite3VdbeMemIntegerify(pMem);
 		}
 	case SQLITE_AFF_REAL:{
-			sqlite3VdbeMemRealify(pMem);
-			break;
+		return sqlite3VdbeMemRealify(pMem);
 		}
-	default:{
-			assert(aff == SQLITE_AFF_TEXT);
-			assert(MEM_Str == (MEM_Blob >> 3));
-			pMem->flags |= (pMem->flags & MEM_Blob) >> 3;
-			sqlite3ValueApplyAffinity(pMem, SQLITE_AFF_TEXT);
-			assert(pMem->flags & MEM_Str || pMem->db->mallocFailed);
-			pMem->flags &=
-			    ~(MEM_Int | MEM_Real | MEM_Blob | MEM_Zero);
-			break;
+	case SQLITE_AFF_TEXT:{
+		return sqlite3VdbeMemStringify(pMem);
 		}
 	}
+	return SQLITE_MISMATCH;
 }
 
 /*
@@ -1011,7 +1022,19 @@ valueToText(sqlite3_value * pVal)
 		pVal->flags |= MEM_Str;
 		sqlite3VdbeMemNulTerminate(pVal);	/* IMP: R-31275-44060 */
 	} else {
-		sqlite3VdbeMemStringify(pVal, 0);
+		const int nByte = 32;
+		if (sqlite3VdbeMemClearAndResize(pVal, nByte)) {
+			return 0;
+		}
+		if (pVal->flags & MEM_Int) {
+			sqlite3_snprintf(nByte, pVal->z, "%lld", pVal->u.i);
+		} else {
+			assert(pVal->flags & MEM_Real);
+			sqlite3_snprintf(nByte, pVal->z, "%!.15g", pVal->u.r);
+		}
+		pVal->n = sqlite3Strlen30(pVal->z);
+		pVal->flags |= MEM_Str | MEM_Term;
+
 		assert(0 == (1 & SQLITE_PTR_TO_INT(pVal->z)));
 	}
 	return pVal->z;
@@ -1262,8 +1285,9 @@ valueFromExpr(sqlite3 * db,	/* The database connection */
 		rc = valueFromExpr(db, pExpr->pLeft, aff, ppVal, pCtx);
 		testcase(rc != SQLITE_OK);
 		if (*ppVal) {
-			sqlite3VdbeMemCast(*ppVal, aff);
-			sqlite3ValueApplyAffinity(*ppVal, affinity);
+			rc = sqlite3VdbeMemCast(*ppVal, aff);
+			if (rc == SQLITE_OK)
+				sqlite3ValueApplyAffinity(*ppVal, affinity);
 		}
 		return rc;
 	}
@@ -1421,7 +1445,7 @@ void
 sqlite3AnalyzeFunctions(void)
 {
 	static FuncDef aAnalyzeTableFuncs[] = {
-		FUNCTION(sqlite_record, 1, 0, 0, recordFunc),
+		FUNCTION(sqlite_record, 1, 0, 0, recordFunc, 0),
 	};
 	sqlite3InsertBuiltinFuncs(aAnalyzeTableFuncs,
 				  ArraySize(aAnalyzeTableFuncs));

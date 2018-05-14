@@ -28,7 +28,7 @@ test:do_test(
     "tkt2927-1.1",
     function()
         return test:execsql [[
-            CREATE TABLE t1(a primary key, b);
+            CREATE TABLE t1(a  INT primary key, b INT );
             INSERT INTO t1 VALUES(1,11);
             INSERT INTO t1 VALUES(2,22);
             INSERT INTO t1 VALUES(3,33);

@@ -1,8 +1,8 @@
 test_run = require('test_run').new()
 
 -- Initializing some things.
-box.sql.execute("CREATE TABLE t1(id PRIMARY KEY, a);")
-box.sql.execute("CREATE TABLE t2(id PRIMARY KEY, a);")
+box.sql.execute("CREATE TABLE t1(id INT PRIMARY KEY, a INT);")
+box.sql.execute("CREATE TABLE t2(id INT PRIMARY KEY, a INT);")
 box.sql.execute("CREATE INDEX i1 ON t1(a);")
 box.sql.execute("CREATE INDEX i1 ON t2(a);")
 box.sql.execute("INSERT INTO t1 VALUES(1, 2);")
@@ -28,8 +28,8 @@ box.sql.execute("DROP TABLE t2;")
 
 -- Same test but dropping an INDEX ON t2.
 
-box.sql.execute("CREATE TABLE t1(id PRIMARY KEY, a);")
-box.sql.execute("CREATE TABLE t2(id PRIMARY KEY, a);")
+box.sql.execute("CREATE TABLE t1(id INT PRIMARY KEY, a INT);")
+box.sql.execute("CREATE TABLE t2(id INT PRIMARY KEY, a INT);")
 box.sql.execute("CREATE INDEX i1 ON t1(a);")
 box.sql.execute("CREATE INDEX i1 ON t2(a);")
 box.sql.execute("INSERT INTO t1 VALUES(1, 2);")

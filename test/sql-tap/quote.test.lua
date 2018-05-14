@@ -27,7 +27,7 @@ test:do_catchsql_test(
     "quote-1.0",
     [[
         --- CREATE TABLE '@abc' ( '#xyz' int PRIMARY KEY, '!pqr' text );
-        CREATE TABLE "abc5_" ( "#xyz" int PRIMARY KEY, "!pqr" text );
+        CREATE TABLE "abc5_" ( " INT #xyz" int PRIMARY KEY, " INT !pqr" text );
     ]], {
         -- <quote-1.0>
         0

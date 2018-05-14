@@ -187,14 +187,6 @@ vdbeTakeBranch(int iSrcLine, u8 I, u8 M)
 #endif
 
 /*
- * Convert the given register into a string if it isn't one
- * already. Return non-zero if a malloc() fails.
- */
-#define Stringify(P)						\
-	if(((P)->flags&(MEM_Str|MEM_Blob))==0 && sqlite3VdbeMemStringify(P,0)) \
-	{ goto no_mem; }
-
-/*
  * An ephemeral string value (signified by the MEM_Ephem flag) contains
  * a pointer to a dynamically allocated string where some other entity
  * is responsible for deallocating that string.  Because the register
@@ -344,7 +336,7 @@ applyAffinity(
 		 */
 		if (0==(pRec->flags&MEM_Str)) { /*OPTIMIZATION-IF-FALSE*/
 			if ((pRec->flags&(MEM_Real|MEM_Int))) {
-				sqlite3VdbeMemStringify(pRec, 1);
+				sqlite3VdbeMemStringify(pRec);
 			}
 		}
 		pRec->flags &= ~(MEM_Real|MEM_Int);
@@ -1494,8 +1486,7 @@ case OP_Concat: {           /* same as TK_CONCAT, in1, in2, out3 */
 		break;
 	}
 	if (ExpandBlob(pIn1) || ExpandBlob(pIn2)) goto no_mem;
-	Stringify(pIn1);
-	Stringify(pIn2);
+	//TODO: Assert args are strings
 	nByte = pIn1->n + pIn2->n;
 	if (nByte>db->aLimit[SQLITE_LIMIT_LENGTH]) {
 		goto too_big;
@@ -1946,9 +1937,10 @@ case OP_Cast: {                  /* in1 */
 	pIn1 = &aMem[pOp->p1];
 	memAboutToChange(p, pIn1);
 	rc = ExpandBlob(pIn1);
-	sqlite3VdbeMemCast(pIn1, pOp->p2);
-	UPDATE_MAX_BLOBSIZE(pIn1);
 	if (rc) goto abort_due_to_error;
+	rc = sqlite3VdbeMemCast(pIn1, pOp->p2);
+	if (rc) goto abort_due_to_error;
+	UPDATE_MAX_BLOBSIZE(pIn1);
 	break;
 }
 #endif /* SQLITE_OMIT_CAST */
@@ -2127,7 +2119,7 @@ case OP_Ge: {             /* same as TK_GE, jump, in1, in3 */
 			if ((flags1 & MEM_Str)==0 && (flags1 & (MEM_Int|MEM_Real))!=0) {
 				testcase( pIn1->flags & MEM_Int);
 				testcase( pIn1->flags & MEM_Real);
-				sqlite3VdbeMemStringify(pIn1, 1);
+				sqlite3VdbeMemStringify(pIn1);
 				testcase( (flags1&MEM_Dyn) != (pIn1->flags&MEM_Dyn));
 				flags1 = (pIn1->flags & ~MEM_TypeMask) | (flags1 & MEM_TypeMask);
 				assert(pIn1!=pIn3);
@@ -2135,7 +2127,7 @@ case OP_Ge: {             /* same as TK_GE, jump, in1, in3 */
 			if ((flags3 & MEM_Str)==0 && (flags3 & (MEM_Int|MEM_Real))!=0) {
 				testcase( pIn3->flags & MEM_Int);
 				testcase( pIn3->flags & MEM_Real);
-				sqlite3VdbeMemStringify(pIn3, 1);
+				sqlite3VdbeMemStringify(pIn3);
 				testcase( (flags3&MEM_Dyn) != (pIn3->flags&MEM_Dyn));
 				flags3 = (pIn3->flags & ~MEM_TypeMask) | (flags3 & MEM_TypeMask);
 			}

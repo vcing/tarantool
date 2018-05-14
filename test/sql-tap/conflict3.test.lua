@@ -31,8 +31,8 @@ test:do_execsql_test(
     [[
         CREATE TABLE t1(
           a INTEGER PRIMARY KEY ON CONFLICT REPLACE, 
-          b UNIQUE ON CONFLICT IGNORE,
-          c UNIQUE ON CONFLICT FAIL
+          b  INT UNIQUE ON CONFLICT IGNORE,
+          c  INT UNIQUE ON CONFLICT FAIL
         );
         INSERT INTO t1(a,b,c) VALUES(1,2,3), (2,3,4);
         SELECT a,b,c FROM t1 ORDER BY a;
@@ -86,8 +86,8 @@ test:do_execsql_test(
         DROP TABLE t1;
         CREATE TABLE t1(
           a INT PRIMARY KEY ON CONFLICT REPLACE, 
-          b UNIQUE ON CONFLICT IGNORE,
-          c UNIQUE ON CONFLICT FAIL
+          b  INT UNIQUE ON CONFLICT IGNORE,
+          c  INT UNIQUE ON CONFLICT FAIL
         );
         INSERT INTO t1(a,b,c) VALUES(1,2,3), (2,3,4);
         SELECT a,b,c FROM t1 ORDER BY a;
@@ -141,8 +141,8 @@ test:do_execsql_test(
         DROP TABLE t1;
         CREATE TABLE t1(
           a INT PRIMARY KEY ON CONFLICT REPLACE, 
-          b UNIQUE ON CONFLICT IGNORE,
-          c UNIQUE ON CONFLICT FAIL
+          b  INT UNIQUE ON CONFLICT IGNORE,
+          c  INT UNIQUE ON CONFLICT FAIL
         );
         INSERT INTO t1(a,b,c) VALUES(1,2,3), (2,3,4);
         SELECT a,b,c FROM t1 ORDER BY a;
@@ -195,8 +195,8 @@ test:do_execsql_test(
     [[
         DROP TABLE t1;
         CREATE TABLE t1(
-          b UNIQUE ON CONFLICT IGNORE,
-          c UNIQUE ON CONFLICT FAIL,
+          b  INT UNIQUE ON CONFLICT IGNORE,
+          c  INT UNIQUE ON CONFLICT FAIL,
           a INT PRIMARY KEY ON CONFLICT REPLACE
         );
         INSERT INTO t1(a,b,c) VALUES(1,2,3), (2,3,4);
@@ -250,9 +250,9 @@ test:do_execsql_test(
     [[
         DROP TABLE t1;
         CREATE TABLE t1(
-          b UNIQUE ON CONFLICT IGNORE,
+          b  INT UNIQUE ON CONFLICT IGNORE,
           a INT PRIMARY KEY ON CONFLICT REPLACE,
-          c UNIQUE ON CONFLICT FAIL
+          c  INT UNIQUE ON CONFLICT FAIL
         );
         INSERT INTO t1(a,b,c) VALUES(1,2,3), (2,3,4);
         SELECT a,b,c FROM t1 ORDER BY a;
@@ -305,9 +305,9 @@ test:do_execsql_test(
     [[
         DROP TABLE t1;
         CREATE TABLE t1(
-          c UNIQUE ON CONFLICT FAIL,
+          c  INT UNIQUE ON CONFLICT FAIL,
           a INT PRIMARY KEY ON CONFLICT REPLACE,
-          b UNIQUE ON CONFLICT IGNORE
+          b  INT UNIQUE ON CONFLICT IGNORE
         );
         INSERT INTO t1(a,b,c) VALUES(1,2,3), (2,3,4);
         SELECT a,b,c FROM t1 ORDER BY a;
@@ -360,9 +360,9 @@ test:do_execsql_test(
     [[
         DROP TABLE t1;
         CREATE TABLE t1(
-          a UNIQUE ON CONFLICT REPLACE, 
+          a  INT UNIQUE ON CONFLICT REPLACE, 
           b INTEGER PRIMARY KEY ON CONFLICT IGNORE,
-          c UNIQUE ON CONFLICT FAIL
+          c  INT UNIQUE ON CONFLICT FAIL
         );
         INSERT INTO t1(a,b,c) VALUES(1,2,3), (2,3,4);
         SELECT a,b,c FROM t1 ORDER BY a;
@@ -415,9 +415,9 @@ test:do_execsql_test(
     [[
         DROP TABLE t1;
         CREATE TABLE t1(
-          a UNIQUE ON CONFLICT REPLACE, 
+          a  INT UNIQUE ON CONFLICT REPLACE, 
           b INT PRIMARY KEY ON CONFLICT IGNORE,
-          c UNIQUE ON CONFLICT FAIL
+          c  INT UNIQUE ON CONFLICT FAIL
         );
         INSERT INTO t1(a,b,c) VALUES(1,2,3), (2,3,4);
         SELECT a,b,c FROM t1 ORDER BY a;
@@ -470,9 +470,9 @@ test:do_execsql_test(
     [[
         DROP TABLE t1;
         CREATE TABLE t1(
-          a UNIQUE ON CONFLICT REPLACE, 
+          a  INT UNIQUE ON CONFLICT REPLACE, 
           b INT PRIMARY KEY ON CONFLICT IGNORE,
-          c UNIQUE ON CONFLICT FAIL
+          c  INT UNIQUE ON CONFLICT FAIL
         );
         INSERT INTO t1(a,b,c) VALUES(1,2,3), (2,3,4);
         SELECT a,b,c FROM t1 ORDER BY a;
@@ -525,8 +525,8 @@ test:do_execsql_test(
     [[
         DROP TABLE t1;
         CREATE TABLE t1(
-          a UNIQUE ON CONFLICT REPLACE, 
-          b UNIQUE ON CONFLICT IGNORE,
+          a  INT UNIQUE ON CONFLICT REPLACE, 
+          b  INT UNIQUE ON CONFLICT IGNORE,
           c INTEGER PRIMARY KEY ON CONFLICT FAIL
         );
         INSERT INTO t1(a,b,c) VALUES(1,2,3), (2,3,4);
@@ -580,9 +580,9 @@ test:do_execsql_test(
     [[
         DROP TABLE t1;
         CREATE TABLE t1(
-          a UNIQUE ON CONFLICT REPLACE, 
-          b UNIQUE ON CONFLICT IGNORE,
-          c PRIMARY KEY ON CONFLICT FAIL
+          a  INT UNIQUE ON CONFLICT REPLACE, 
+          b  INT UNIQUE ON CONFLICT IGNORE,
+          c  INT PRIMARY KEY ON CONFLICT FAIL
         );
         INSERT INTO t1(a,b,c) VALUES(1,2,3), (2,3,4);
         SELECT a,b,c FROM t1 ORDER BY a;

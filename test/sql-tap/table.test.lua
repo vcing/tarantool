@@ -24,7 +24,7 @@ test:do_execsql_test(
     "table-1.1",
     [[
         CREATE TABLE test1 (
-          one varchar(10) primary key,
+          one  INT varchar(10) primary key,
           two text
         )
     ]], {
@@ -102,7 +102,7 @@ test:do_test(
 test:do_test(
     "table-1.12",
     function()
-        return test:execsql [[CREATE TABLE test1("f1 ho" int primary key)]]
+        return test:execsql [[CREATE TABLE test1("f1  INT ho" int primary key)]]
         --execsql {SELECT name as "X" FROM sqlite_master WHERE type!='meta'}
     end, {
         -- <table-1.12>
@@ -128,7 +128,7 @@ test:do_test(
     "table-2.1",
     function()
         test:execsql "CREATE TABLE TEST2(one text primary key)"
-        return test:catchsql "CREATE TABLE test2(id primary key, two text default 'hi')"
+        return test:catchsql "CREATE TABLE test2(id INT primary key, two text default 'hi')"
     end, {
         -- <table-2.1>
         1, "table TEST2 already exists"
@@ -148,7 +148,7 @@ test:do_test(
 test:do_catchsql_test(
     "table-2.1d",
     [[
-        CREATE TABLE IF NOT EXISTS test2(x primary key,y)
+        CREATE TABLE IF NOT EXISTS test2(x primary key,y INT)
     ]], {
         -- <table-2.1d>
         0
@@ -180,9 +180,9 @@ test:do_execsql_test(
 test:do_test(
     "table-2.2a",
     function()
-        test:execsql "CREATE TABLE test2(id primary key, one text)"
+        test:execsql "CREATE TABLE test2(id INT primary key, one text)"
         return test:execsql "CREATE INDEX test3 ON test2(one)"
-        --catchsql {CREATE TABLE test3(id primary key, two text)}
+        --catchsql {CREATE TABLE test3(id INT primary key, two text)}
     end, {
         -- <table-2.2a>
         
@@ -227,9 +227,9 @@ test:do_test(
 -- Create a table with many field names
 --
 local big_table = [[CREATE TABLE big(
-  f1 varchar(20),
-  f2 char(10),
-  f3 varchar(30) primary key,
+  f1  INT varchar(20),
+  f2  INT char(10),
+  f3  INT varchar(30) primary key,
   f4 text,
   f5 text,
   f6 text,
@@ -263,7 +263,7 @@ test:do_test(
 test:do_catchsql_test(
     "table-3.2",
     [[
-        CREATE TABLE BIG(xyz foo primary key)
+        CREATE TABLE BIG(xyz INT foo primary key)
     ]], {
         -- <table-3.2>
         1, "table BIG already exists"
@@ -273,7 +273,7 @@ test:do_catchsql_test(
 test:do_catchsql_test(
     "table-3.3",
     [[
-        CREATE TABLE biG(xyz foo primary key)
+        CREATE TABLE biG(xyz INT foo primary key)
     ]], {
         -- <table-3.3>
         1, "table BIG already exists"
@@ -283,7 +283,7 @@ test:do_catchsql_test(
 test:do_catchsql_test(
     "table-3.4",
     [[
-        CREATE TABLE bIg(xyz foo primary key)
+        CREATE TABLE bIg(xyz INT foo primary key)
     ]], {
         -- <table-3.4>
         1, "table BIG already exists"
@@ -293,7 +293,7 @@ test:do_catchsql_test(
 -- do_test table-3.5 {
 --   db close
 --   sqlite3 db test.db
---   set v [catch {execsql {CREATE TABLE Big(xyz foo)}} msg]
+--   set v [catch {execsql {CREATE TABLE Big(xyz INT foo)}} msg]
 --   lappend v $msg
 -- } {1 {table Big already exists}}
 test:do_test(
@@ -317,7 +317,7 @@ test:do_test(
     "table-4.1",
     function()
         for i = 1, 100, 1 do
-            local sql = "CREATE TABLE "..string.format("test%03d", i).." (id primary key, "
+            local INT sql = "CREATE TABLE "..string.format("test%03d", i).." (id INT primary key,  "
             for k = 1, i-1, 1 do
                 sql = sql .. "field"..k.." text,"
             end
@@ -426,11 +426,11 @@ if (0 > 0)
             forcedelete("test.db")
             sqlite3("db", "test.db")
             return test:execsql [[
-                CREATE TABLE t0(a,b);
+                CREATE TABLE t0(a INT ,b INT);
                 CREATE INDEX t ON t0(a);
-                UPDATE sqlite_master SET sql='CREATE TABLE a.b(a UNIQUE';
+                UPDATE sqlite_master SET sql='CREATE TABLE a.b(a INT UNIQUE';
                 --BEGIN;
-                --CREATE TABLE t1(x);
+                --CREATE TABLE t1(x INT);
                 --ROLLBACK;
                 DROP TABLE IF EXISTS t99;
             ]]
@@ -489,14 +489,14 @@ test:do_catchsql_test(
     "table-7.1",
     [=[
         CREATE TABLE weird(
-          id primary key,
-          "desc" text,
-          "asc" text,
+          id  INT primary key,
+          "desc INT " text,
+          "asc INT " text,
           key int,
-          "14_vac" boolean,
-          fuzzy_dog_12 varchar(10),
+          "14_vac INT " boolean,
+          fuzzy_dog_12  INT varchar(10),
           beginn blob,
-          endd clob
+          endd  INT clob
         )
     ]=], {
         -- <table-7.1>
@@ -528,7 +528,7 @@ test:do_execsql2_test(
 test:do_execsql_test(
     "table-7.3",
     [[
-        CREATE TABLE savepoint_t(release_t primary key);
+        CREATE TABLE savepoint_t(release_t INT primary key);
         INSERT INTO savepoint_t(release_t) VALUES(10);
         UPDATE savepoint_t SET release_t = 5;
         SELECT release_t FROM savepoint_t;
@@ -545,14 +545,14 @@ test:do_execsql2_test(
     [=[
         --CREATE TABLE t2 AS SELECT * FROM weird;
         CREATE TABLE t2(
-          id primary key,
-          "desc" text,
-          "asc" text,
+          id  INT primary key,
+          "desc INT " text,
+          "asc INT " text,
           key int,
-          "14_vac" boolean,
-          fuzzy_dog_12 varchar(10),
+          "14_vac INT " boolean,
+          fuzzy_dog_12  INT varchar(10),
           beginn blob,
-          endd clob
+          endd  INT clob
         );
         INSERT INTO t2 SELECT * from weird;
         SELECT * FROM t2;
@@ -577,25 +577,25 @@ test:do_execsql2_test(
 -- )}}
 -- do_test table-8.2 {
 --   execsql {
---     CREATE TABLE "t3""xyz"(a,b,c);
+--     CREATE TABLE "t3""xyz"(a INT,b INT,c INT);
 --     INSERT INTO [t3"xyz] VALUES(1,2,3);
 --     SELECT * FROM [t3"xyz];
 --   }
 -- } {1 2 3}
 -- do_test table-8.3 {
 --   execsql2 {
---     CREATE TABLE [t4"abc] AS SELECT count(*) as cnt, max(b+c) FROM [t3"xyz];
+--     CREATE TABLE [t4"abc] AS SELECT count(*) as cnt, max (b+c) FROM [t3"xyz];
 --     SELECT * FROM [t4"abc];
 --   }
 -- } {cnt 1 max(b+c) 5}
 -- # Update for v3: The declaration type of anything except a column is now a
 -- # NULL pointer, so the created table has no column types. (Changed result
--- # from {{CREATE TABLE 't4"abc'(cnt NUMERIC,"max(b+c)" NUMERIC)}}).
+-- # from {{CREATE TABLE 't4"abc'(cnt NUMERIC, "max(b+c)" NUMERIC)}}).
 -- do_test table-8.3.1 {
 --   execsql {
 --     SELECT sql FROM sqlite_master WHERE name='t4"abc'
 --   }
--- } {{CREATE TABLE "t4""abc"(cnt,"max(b+c)")}}
+-- } {{CREATE TABLE "t4""abc"(cnt INT , "max INT (b+c)")}}
 -- ifcapable tempdb {
 --   do_test table-8.4 {
 --     execsql2 {
@@ -638,11 +638,11 @@ test:do_catchsql_test(
 -- } {1 {no such table: no_such_table}}
 -- do_test table-8.9 {
 --   execsql {
---     CREATE TABLE t10("col.1" [char.3]);
+--     CREATE TABLE t10("col INT .1" [char.3]);
 --     CREATE TABLE t11 AS SELECT * FROM t10;
 --     SELECT sql FROM sqlite_master WHERE name = 't11';
 --   }
--- } {{CREATE TABLE t11("col.1" TEXT)}}
+-- } {{CREATE TABLE t11("col INT .1" TEXT)}}
 -- do_test table-8.10 {
 --   execsql {
 --     CREATE TABLE t12(
@@ -671,7 +671,7 @@ test:do_catchsql_test(
 test:do_catchsql_test(
     "table-9.1",
     [[
-        CREATE TABLE t6(a primary key,b,a);
+        CREATE TABLE t6(a INT primary key,b INT,a INT);
     ]], {
         -- <table-9.1>
         1, "duplicate column name: A"
@@ -681,7 +681,7 @@ test:do_catchsql_test(
 test:do_catchsql_test(
     "table-9.2",
     [[
-        CREATE TABLE t6(a varchar(100) primary key, b blob, a integer);
+        CREATE TABLE t6(a  INT varchar(100) primary key, b blob, a integer);
     ]], {
         -- <table-9.2>
         1, "duplicate column name: A"
@@ -694,12 +694,12 @@ test:do_catchsql_test(
     "table-10.1",
     [[
         -- there is no t4 table
-        --CREATE TABLE t6(a REFERENCES t4(a) NOT NULL primary key);
-        CREATE TABLE t6(a REFERENCES t2(id) NOT NULL primary key);
+        --CREATE TABLE t6(a INT REFERENCES t4(a) NOT NULL primary key);
+        CREATE TABLE t6(a INT REFERENCES t2(id) NOT NULL primary key);
         INSERT INTO t6 VALUES(NULL);
     ]], {
         -- <table-10.1>
-        1, "NOT NULL constraint failed: T6.A"
+        1, "NOT  INT NULL constraint failed: T6.A"
         -- </table-10.1>
     })
 
@@ -707,7 +707,7 @@ test:do_catchsql_test(
     "table-10.2",
     [[
         DROP TABLE t6;
-        CREATE TABLE t6(a REFERENCES t4(a) MATCH PARTIAL primary key);
+        CREATE TABLE t6(a INT REFERENCES t4(a) MATCH PARTIAL primary key);
     ]], {
         -- <table-10.2>
         0
@@ -718,7 +718,7 @@ test:do_catchsql_test(
     "table-10.3",
     [[
         DROP TABLE t6;
-        CREATE TABLE t6(a REFERENCES t4 MATCH FULL ON DELETE SET NULL NOT NULL primary key);
+        CREATE TABLE t6(a INT REFERENCES t4 MATCH FULL ON DELETE SET NULL NOT NULL primary key);
     ]], {
         -- <table-10.3>
         0
@@ -729,7 +729,7 @@ test:do_catchsql_test(
     "table-10.4",
     [[
         DROP TABLE t6;
-        CREATE TABLE t6(a REFERENCES t4 MATCH FULL ON UPDATE SET DEFAULT DEFAULT 1 primary key);
+        CREATE TABLE t6(a INT REFERENCES t4 MATCH FULL ON UPDATE SET DEFAULT DEFAULT 1 primary key);
     ]], {
         -- <table-10.4>
         0
@@ -740,7 +740,7 @@ test:do_catchsql_test(
     "table-10.5",
     [[
         DROP TABLE t6;
-        CREATE TABLE t6(a NOT NULL NOT DEFERRABLE INITIALLY IMMEDIATE primary key);
+        CREATE TABLE t6(a INT NOT NULL NOT DEFERRABLE INITIALLY IMMEDIATE primary key);
     ]], {
         -- <table-10.5>
         0
@@ -751,7 +751,7 @@ test:do_catchsql_test(
     "table-10.6",
     [[
         DROP TABLE t6;
-        CREATE TABLE t6(a NOT NULL DEFERRABLE INITIALLY DEFERRED primary key);
+        CREATE TABLE t6(a INT NOT NULL DEFERRABLE INITIALLY DEFERRED primary key);
     ]], {
         -- <table-10.6>
         0
@@ -762,7 +762,7 @@ test:do_catchsql_test(
     "table-10.7",
     [[
         DROP TABLE t6;
-        CREATE TABLE t6(a primary key,
+        CREATE TABLE t6(a INT primary key,
           FOREIGN KEY (a) REFERENCES t4(b) DEFERRABLE INITIALLY DEFERRED
         );
     ]], {
@@ -775,7 +775,7 @@ test:do_catchsql_test(
     "table-10.8",
     [[
         DROP TABLE t6;
-        CREATE TABLE t6(a primary key,b,c,
+        CREATE TABLE t6(a INT primary key,b INT,c INT,
           FOREIGN KEY (b,c) REFERENCES t4(x,y) MATCH PARTIAL
             ON UPDATE SET NULL ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
         );
@@ -789,7 +789,7 @@ test:do_catchsql_test(
     "table-10.9",
     [[
         DROP TABLE t6;
-        CREATE TABLE t6(a primary key,b,c,
+        CREATE TABLE t6(a INT primary key,b INT,c INT,
           FOREIGN KEY (b,c) REFERENCES t4(x)
         );
     ]], {
@@ -803,7 +803,7 @@ test:do_test(
     function()
         test:catchsql "DROP TABLE t6"
         return test:catchsql [[
-            CREATE TABLE t6(a primary key,b,c,
+            CREATE TABLE t6(a INT primary key,b INT,c INT,
               FOREIGN KEY (b,c) REFERENCES t4(x,y,z)
             );
         ]]
@@ -818,7 +818,7 @@ test:do_test(
     function()
         test:catchsql "DROP TABLE t6"
         return test:catchsql [[
-            CREATE TABLE t6(a,b, c REFERENCES t4(x,y));
+            CREATE TABLE t6(a INT,b INT, c INT REFERENCES t4(x,y INT ));
         ]]
     end, {
         -- <table-10.11>
@@ -831,7 +831,7 @@ test:do_test(
     function()
         test:catchsql "DROP TABLE t6"
         return test:catchsql [[
-            CREATE TABLE t6(a,b,c,
+            CREATE TABLE t6(a INT,b INT,c INT,
               FOREIGN KEY (b,x) REFERENCES t4(x,y)
             );
         ]]
@@ -846,7 +846,7 @@ test:do_test(
     function()
         test:catchsql "DROP TABLE t6"
         return test:catchsql [[
-            CREATE TABLE t6(a,b,c,
+            CREATE TABLE t6(a INT,b INT,c INT,
               FOREIGN KEY (x,b) REFERENCES t4(x,y)
             );
         ]]
@@ -895,16 +895,16 @@ test:do_execsql_test(
         -- </table-11.2>
     })
 
--- # Test that when creating a table using CREATE TABLE AS, column types are
+-- # Test that when creating a table using CREATE TABLE AS, column INT types are
 -- # assigned correctly for (SELECT ...) and 'x AS y' expressions.
 -- do_test table-12.1 {
 --   ifcapable subquery {
 --     execsql {
---       CREATE TABLE t8 AS SELECT b, h, a as i, (SELECT f FROM t7) as j FROM t7;
+--       CREATE TABLE t8 AS SELECT b, h INT, a INT as i, (SELECT f FROM t7) as j FROM t7;
 --     }
 --   } else {
 --     execsql {
---       CREATE TABLE t8 AS SELECT b, h, a as i, f as j FROM t7;
+--       CREATE TABLE t8 AS SELECT b, h INT, a INT as i, f INT as j FROM t7;
 --     }
 --   }
 -- } {}
@@ -912,7 +912,7 @@ test:do_execsql_test(
 --   execsql {
 --     SELECT sql FROM sqlite_master WHERE tbl_name = 't8'
 --   }
--- } {{CREATE TABLE t8(b NUM,h,i INT,j)}}
+-- } {{CREATE TABLE t8(b INT NUM,h INT,i INT,j INT)}}
 ----------------------------------------------------------------------
 -- Test cases table-13.*
 --
@@ -980,7 +980,7 @@ test:do_test(
     function()
         local rc = pcall(function()
             test:execsql("SELECT * FROM tablet8 LIMIT 1")
-            test:execsql("CREATE TABLE t9(a primary key, b, c)")
+            test:execsql("CREATE TABLE t9(a INT primary key, b INT, c INT)")
             end)
         rc = rc == true and 0 or 1
         return { rc }
@@ -1034,7 +1034,7 @@ end
 --       ATTACH 'test2.db' as aux;
 --     }
 --     db eval {SELECT * FROM tablet8 LIMIT 1} {} {
---       db eval {CREATE TABLE aux.t1(a, b, c)}
+--       db eval {CREATE TABLE aux.t1(a, b INT, c INT)}
 --     }
 --   } {}
 --   # On the other hand, it should be impossible to drop a table when any VMs 
@@ -1062,7 +1062,7 @@ test:do_test(
     function()
         --test:execsql "BEGIN"
         for i = 0, 2000-1, 1 do
-            test:execsql("CREATE TABLE tbl"..i.." (a primary key, b, c)")
+            test:execsql("CREATE TABLE tbl"..i.." (a primary key, b INT, c INT)")
         end
         --return test:execsql "COMMIT"
         return
@@ -1090,7 +1090,7 @@ test:do_test(
 -- # Ticket 3a88d85f36704eebe134f7f48aebf00cd6438c1a (2014-08-05)
 -- # The following SQL script segfaults while running the INSERT statement:
 -- #
--- #    CREATE TABLE t1(x DEFAULT(max(1)));
+-- #    CREATE TABLE t1(x INT DEFAULT(max(1)));
 -- #    INSERT INTO t1(rowid) VALUES(1);
 -- #
 -- # The problem appears to be the use of an aggregate function as part of
@@ -1099,7 +1099,7 @@ test:do_test(
 -- # and reported on the sqlite-users@sqlite.org mailing list by Zsbán Ambrus. 
 -- #
 -- do_execsql_test table-16.1 {
---   CREATE TABLE t16(x DEFAULT(max(1)));
+--   CREATE TABLE t16(x INT DEFAULT(max(1)));
 --   INSERT INTO t16(x) VALUES(123);
 --   SELECT rowid, x FROM t16;
 -- } {1 123}
@@ -1108,25 +1108,25 @@ test:do_test(
 -- } {1 {unknown function: max()}}
 -- do_execsql_test table-16.3 {
 --   DROP TABLE t16;
---   CREATE TABLE t16(x DEFAULT(abs(1)));
+--   CREATE TABLE t16(x INT DEFAULT(abs(1)));
 --   INSERT INTO t16(rowid) VALUES(4);
 --   SELECT rowid, x FROM t16;
 -- } {4 1}
 -- do_catchsql_test table-16.4 {
 --   DROP TABLE t16;
---   CREATE TABLE t16(x DEFAULT(avg(1)));
+--   CREATE TABLE t16(x INT DEFAULT(avg(1)));
 --   INSERT INTO t16(rowid) VALUES(123);
 --   SELECT rowid, x FROM t16;
 -- } {1 {unknown function: avg()}}
 -- do_catchsql_test table-16.5 {
 --   DROP TABLE t16;
---   CREATE TABLE t16(x DEFAULT(count()));
+--   CREATE TABLE t16(x INT DEFAULT(count()));
 --   INSERT INTO t16(rowid) VALUES(123);
 --   SELECT rowid, x FROM t16;
 -- } {1 {unknown function: count()}}
 -- do_catchsql_test table-16.6 {
 --   DROP TABLE t16;
---   CREATE TABLE t16(x DEFAULT(group_concat('x',',')));
+--   CREATE TABLE t16(x INT DEFAULT(group_concat('x',',')));
 --   INSERT INTO t16(rowid) VALUES(123);
 --   SELECT rowid, x FROM t16;
 -- } {1 {unknown function: group_concat()}}
@@ -1182,7 +1182,7 @@ test:do_test(
             table.insert(columns, "c"..i)
         end
         columns = table.concat(columns, ",")
-        test:execsql("CREATE TABLE t(c primary key, "..columns..")")
+        test:execsql("CREATE TABLE t(c INT primary key, " INT ..columns..")")
         return
     end, {
     -- <table-15.1>

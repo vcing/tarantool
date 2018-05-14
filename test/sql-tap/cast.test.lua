@@ -906,7 +906,7 @@ test:do_test(
     "cast-4.1",
     function()
         return test:execsql [[
-            CREATE TABLE t1(a primary key);
+            CREATE TABLE t1(a  INT primary key);
             INSERT INTO t1 VALUES('abc');
             SELECT a, CAST(a AS integer) FROM t1;
         ]]

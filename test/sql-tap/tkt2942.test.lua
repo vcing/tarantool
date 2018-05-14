@@ -35,7 +35,7 @@ test:plan(4)
 test:do_execsql_test(
     "tkt2942.1",
     [[
-        create table t1(id primary key, num int);
+        create table t1(id  INT primary key, num int);
         insert into t1 values (1, 2);
         insert into t1 values (2, 1);
         insert into t1 values (3, 3);

@@ -3,7 +3,7 @@ test = require("sqltester")
 test:plan(8)
 
 for _, table_count in ipairs({30, 31}) do
-    -- Clean up, create tables, add entries
+    -- Clean up, create tables, add INT entries
     for i = 1,table_count do
         -- First table for uniform triggers check
         drop_string = 'DROP TABLE IF EXISTS t' .. i .. ';'

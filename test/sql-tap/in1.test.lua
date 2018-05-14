@@ -25,7 +25,7 @@ test:do_test(
     "in-1.0",
     function()
         test:execsql [[
-            CREATE TABLE t1(a PRIMARY KEY, b);
+            CREATE TABLE t1(a  INT PRIMARY KEY, b INT );
             BEGIN;
         ]]
         -- for _ in X(0, "X!for", [=[["set i 1","$i<=10","incr i"]]=]) do
@@ -327,7 +327,7 @@ test:do_execsql_test(
 test:do_execsql_test(
     "in-6.1",
     [[
-        CREATE TABLE ta(a INTEGER PRIMARY KEY, b);
+        CREATE TABLE ta(a INTEGER PRIMARY KEY, b INT );
         INSERT INTO ta VALUES(1,1);
         INSERT INTO ta VALUES(2,2);
         INSERT INTO ta VALUES(3,3);
@@ -346,7 +346,7 @@ test:do_execsql_test(
 test:do_execsql_test(
     "in-6.2",
     [[
-        CREATE TABLE tb(a INTEGER PRIMARY KEY, b);
+        CREATE TABLE tb(a INTEGER PRIMARY KEY, b INT );
         INSERT INTO tb VALUES(1,1);
         INSERT INTO tb VALUES(2,2);
         INSERT INTO tb VALUES(3,3);
@@ -625,7 +625,7 @@ test:do_catchsql_test(
 test:do_execsql_test(
     "in-11.1",
     [[
-        CREATE TABLE t6(a PRIMARY KEY,b NUMERIC);
+        CREATE TABLE t6(a  INT PRIMARY KEY,b NUMERIC);
         INSERT INTO t6 VALUES(1,2);
         INSERT INTO t6 VALUES(2,3);
         SELECT * FROM t6 WHERE b IN (2);
@@ -702,8 +702,8 @@ test:do_test(
 test:do_execsql_test(
     "in-12.1",
     [[
-        CREATE TABLE t2(a PRIMARY KEY, b, c);
-        CREATE TABLE t3(a PRIMARY KEY, b, c);
+        CREATE TABLE t2(a  INT PRIMARY KEY, b INT , c INT );
+        CREATE TABLE t3(a  INT PRIMARY KEY, b INT , c INT );
     ]], {
         -- <in-12.1>
         
@@ -913,7 +913,7 @@ test:do_test(
 test:do_execsql_test(
     "in-13.2",
     [[
-        CREATE TABLE t7(id primary key, a, b, c NOT NULL);
+        CREATE TABLE t7(id  INT primary key, a INT , b INT , c  INT NOT NULL);
         INSERT INTO t7 VALUES(1, 1,    1, 1);
         INSERT INTO t7 VALUES(2, 2,    2, 2);
         INSERT INTO t7 VALUES(3, 3,    3, 3);

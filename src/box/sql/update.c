@@ -85,12 +85,12 @@ sqlite3ColumnDefault(Vdbe * v, Table * pTab, int i, int iReg)
 			expr = space->def->fields[i].default_value_expr;
 		sqlite3ValueFromExpr(sqlite3VdbeDb(v),
 				     expr,
-				     pCol->affinity, &pValue);
+				     pCol->typeDef.type, &pValue);
 		if (pValue) {
 			sqlite3VdbeAppendP4(v, pValue, P4_MEM);
 		}
 #ifndef SQLITE_OMIT_FLOATING_POINT
-		if (pTab->aCol[i].affinity == SQLITE_AFF_REAL) {
+		if (pTab->aCol[i].typeDef.type == SQLITE_AFF_REAL) {
 			sqlite3VdbeAddOp1(v, OP_RealAffinity, iReg);
 		}
 #endif

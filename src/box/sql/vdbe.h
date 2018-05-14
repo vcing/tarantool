@@ -233,6 +233,9 @@ void sqlite3VdbeVerifyNoResultRow(Vdbe * p);
 #define sqlite3VdbeVerifyNoMallocRequired(A,B)
 #define sqlite3VdbeVerifyNoResultRow(A)
 #endif
+VdbeOp *sqlite3VdbeAddOpMerge(Vdbe * p,	/* Add opcodes to the prepared statement */
+			      int nOp,	/* Number of opcodes to add */
+			      VdbeOp *aOp);	/* The opcodes to be added */
 VdbeOp *sqlite3VdbeAddOpList(Vdbe *, int nOp, VdbeOpList const *aOp,
 			     int iLineno);
 void sqlite3VdbeAddParseSchema2Op(Vdbe * p, int, int);

@@ -1,6 +1,6 @@
 #!/usr/bin/env tarantool
 test = require("sqltester")
-test:plan(14750)
+test:plan(14749)
 
 --!./tcltestrunner.lua
 -- 2010 July 16
@@ -934,7 +934,7 @@ test:do_execsql_test(
 -- # clause in a table column definition.
 -- #
 -- do_execsql_test e_expr-9.24 {
---   CREATE TABLE t24(a COLLATE NOCASE, b);
+--   CREATE TABLE t24(a TEXT COLLATE NOCASE, b INT);
 --   INSERT INTO t24 VALUES('aaa', 1);
 --   INSERT INTO t24 VALUES('bbb', 2);
 --   INSERT INTO t24 VALUES('ccc', 3);
@@ -1483,7 +1483,7 @@ end
 --   CREATE TABLE dbname.tblname(cname);
 -- }
 test:execsql [[
-    CREATE TABLE tblname(cname PRIMARY KEY);
+    CREATE TABLE tblname(cname INT PRIMARY KEY);
 ]]
 local function glob(args)
     return 1
@@ -3343,7 +3343,7 @@ evalcount = 0
 test:do_execsql_test(
     "e_expr-26.1.1",
     [[
-        CREATE TABLE t2(x PRIMARY KEY, w1, r1, w2, r2, r3);
+        CREATE TABLE t2(x INT PRIMARY KEY, w1 INT, r1 TEXT, w2 INT, r2 TEXT, r3 TEXT);
         INSERT INTO t2 VALUES(1, 1, 'R1', 2, 'R2', 'R3');
         INSERT INTO t2 VALUES(2, 1, 'R1', 2, 'R2', 'R3');
         INSERT INTO t2 VALUES(3, 1, 'R1', 2, 'R2', 'R3');
@@ -3605,7 +3605,7 @@ do_expr_test("e_expr-32.2.4", [[
 test:do_execsql_test(
     "e_expr-34.1",
     [[
-        CREATE TABLE t1(id PRIMARY KEY, a, b);
+        CREATE TABLE t1(id INT PRIMARY KEY, a INT, b INT);
         INSERT INTO t1 VALUES(1, 1, 2);
         INSERT INTO t1 VALUES(2, NULL, 2);
         INSERT INTO t1 VALUES(3, 1, NULL);
@@ -3700,10 +3700,9 @@ test:catchsql "DROP TABLE t22;"
 test:do_execsql_test(
     "e_expr-35.0",
     [[
-        CREATE TABLE t22(a PRIMARY KEY, b);
+        CREATE TABLE t22(a TEXT PRIMARY KEY, b TEXT);
         INSERT INTO t22 VALUES('one', 'two');
         INSERT INTO t22 VALUES('three', NULL);
-        INSERT INTO t22 VALUES(4, 5.0);
     ]], {
         -- <e_expr-35.0>
         
@@ -3719,14 +3718,11 @@ test:do_execsql_test(
 --
 do_expr_test("e_expr-35.1.1", " (SELECT 35)   ", "integer", 35)
 do_expr_test("e_expr-35.1.2", " (SELECT NULL) ", "null", "")
-do_expr_test("e_expr-35.1.3", " (SELECT count(*) FROM t22) ", "integer", 3)
+do_expr_test("e_expr-35.1.3", " (SELECT count(*) FROM t22) ", "integer", 2)
 do_expr_test("e_expr-35.1.4", " (SELECT 4 FROM t22) ", "integer", 4)
 do_expr_test("e_expr-35.1.5", [[ 
   (SELECT b FROM t22 UNION SELECT a+1 FROM t22)
 ]], "null", "")
-do_expr_test("e_expr-35.1.6", [[ 
-  (SELECT a FROM t22 UNION SELECT COALESCE(b, 55) FROM t22 ORDER BY 1)
-]], "integer", 4)
 -- EVIDENCE-OF: R-46899-53765 A SELECT used as a scalar quantity must
 -- return a result set with a single column.
 --
@@ -3759,7 +3755,7 @@ end
 test:do_execsql_test(
     "e_expr-36.3.1",
     [[
-        CREATE TABLE t4(x PRIMARY KEY, y);
+        CREATE TABLE t4(x INT PRIMARY KEY, y TEXT);
         INSERT INTO t4 VALUES(1, 'one');
         INSERT INTO t4 VALUES(2, 'two');
         INSERT INTO t4 VALUES(3, 'three');

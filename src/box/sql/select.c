@@ -1515,7 +1515,24 @@ columnTypeImpl(NameContext * pNC, Expr * pExpr,
 #endif
 	       u8 * pEstWidth)
 {
-	enum field_type column_type = FIELD_TYPE_SCALAR;
+	enum field_type column_type;
+	switch (pExpr->typeDef.type) {
+	case SQLITE_AFF_INTEGER:
+		column_type = FIELD_TYPE_INTEGER;
+		break;
+	case SQLITE_AFF_REAL:
+	case SQLITE_AFF_NUMERIC:
+		column_type = FIELD_TYPE_NUMBER;
+		break;
+	case SQLITE_AFF_TEXT:
+		column_type = FIELD_TYPE_STRING;
+		break;
+	case SQLITE_AFF_BLOB:
+		column_type = FIELD_TYPE_SCALAR;
+		break;
+	default:
+		column_type = FIELD_TYPE_SCALAR;
+	}
 	int j;
 	u8 estWidth = 1;
 #ifdef SQLITE_ENABLE_COLUMN_METADATA
@@ -1866,11 +1883,9 @@ sqlite3SelectAddColumnTypeAndCollation(Parse * pParse,		/* Parsing contexts */
 		p = a[i].pExpr;
 		type = columnType(&sNC, p, 0, 0, 0, &pCol->szEst);
 		szAll += pCol->szEst;
-		pCol->affinity = sqlite3ExprAffinity(p);
+		pCol->typeDef = p->typeDef;
 		pCol->type = type;
 
-		if (pCol->affinity == 0)
-			pCol->affinity = SQLITE_AFF_BLOB;
 		bool unused;
 		struct coll *coll = sql_expr_coll(pParse, p, &unused);
 		if (coll != NULL && pCol->coll == NULL)

@@ -28,11 +28,11 @@ test:do_test(
     "tkt3791-1.1",
     function()
         return test:execsql [[
-            CREATE TABLE t1(x primary key, y DEFAULT(datetime('now')));
+            CREATE TABLE t1(x  INT primary key, y  INT DEFAULT(datetime('now')));
             INSERT INTO t1(x) VALUES(1);
-            SELECT x, length(y) FROM t1;
+            SELECT  INT x, length INT (y) FROM t1;
         ]]
-    end, {
+    end INT , {
         -- <tkt3791-1.1>
         1, 19
         -- </tkt3791-1.1>

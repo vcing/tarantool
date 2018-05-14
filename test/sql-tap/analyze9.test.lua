@@ -95,7 +95,7 @@ test:do_execsql_test(
     2.1,
     [[
         DROP TABLE IF EXISTS t1;
-        CREATE TABLE t1(a PRIMARY KEY, b);
+        CREATE TABLE t1(a  INT PRIMARY KEY, b INT );
         INSERT INTO t1 VALUES('some text', 14);
         INSERT INTO t1 VALUES(22.0, 'some text');
         CREATE INDEX i1 ON t1(a, b);
@@ -112,7 +112,7 @@ test:do_execsql_test(
     3.1,
     [[
         DROP TABLE IF EXISTS t1;
-        CREATE TABLE t2(id INTEGER PRIMARY KEY AUTOINCREMENT, a, b);
+        CREATE TABLE t2(id INTEGER PRIMARY KEY AUTOINCREMENT, a INT , b INT );
         CREATE INDEX i2 ON t2(a, b);
     ]])
 
@@ -194,7 +194,7 @@ test:do_execsql_test(
     3.4,
     [[
         DROP TABLE IF EXISTS t1;
-        CREATE TABLE t1(a INTEGER PRIMARY KEY, b, c);
+        CREATE TABLE t1(a INTEGER PRIMARY KEY, b INT , c INT );
         INSERT INTO t1 VALUES(1, 1, 'one-a');
         INSERT INTO t1 VALUES(11, 1, 'one-b');
         INSERT INTO t1 VALUES(21, 1, 'one-c');
@@ -228,7 +228,7 @@ test:do_execsql_test(
     [[
         DROP TABLE IF EXISTS t1;
         DROP TABLE IF EXISTS t2;
-        CREATE TABLE t1(id INTEGER PRIMARY KEY AUTOINCREMENT, a, b, c);
+        CREATE TABLE t1(id INTEGER PRIMARY KEY AUTOINCREMENT, a INT , b INT , c INT );
         CREATE INDEX i1 ON t1(c, b, a);
     ]])
 
@@ -344,7 +344,7 @@ test:do_test(
     function()
         test:execsql([[
             DROP TABLE IF EXISTS t1;
-            CREATE TABLE t1(o,t INTEGER PRIMARY KEY);
+            CREATE TABLE t1(o INT ,t INTEGER PRIMARY KEY);
             CREATE INDEX i1 ON t1(o);
         ]])
         for i = 0, 9999, 10 do
@@ -378,7 +378,7 @@ test:do_execsql_test(
     6.1,
     [[
         DROP TABLE IF EXISTS t1;
-        CREATE TABLE t1(id INTEGER PRIMARY KEY AUTOINCREMENT, a, b);
+        CREATE TABLE t1(id INTEGER PRIMARY KEY AUTOINCREMENT, a INT , b INT );
         CREATE INDEX i1 ON t1(a);
         CREATE INDEX i2 ON t1(b);
         INSERT INTO t1 VALUES(null, 1, 1);
@@ -387,7 +387,7 @@ test:do_execsql_test(
         INSERT INTO t1 VALUES(null, 4, 4);
         INSERT INTO t1 VALUES(null, 5, 5);
         ANALYZE;
-        CREATE TABLE x1(tbl, idx, neq, nlt, ndlt, sample, PRIMARY KEY(tbl, idx, sample)); 
+        CREATE TABLE x1(tbl INT , idx INT , neq INT , nlt INT , ndlt INT , sample INT , PRIMARY KEY(tbl, idx, sample)); 
         INSERT INTO x1 SELECT * FROM "_sql_stat4";
         DELETE FROM "_sql_stat4";
         INSERT INTO "_sql_stat4" SELECT * FROM x1;
@@ -408,7 +408,7 @@ test:do_execsql_test(
     7.1,
     [[
         DROP TABLE IF EXISTS t1;
-        CREATE TABLE t1(id INTEGER PRIMARY KEY AUTOINCREMENT, a, b);
+        CREATE TABLE t1(id INTEGER PRIMARY KEY AUTOINCREMENT, a INT , b INT );
         CREATE INDEX i1 ON t1(a, b);
         INSERT INTO t1 VALUES(null, 1, 1);
         INSERT INTO t1 VALUES(null, 2, 2);
@@ -479,7 +479,7 @@ test:do_execsql_test(
     8.1,
     [[
         DROP TABLE IF EXISTS t1;
-        CREATE TABLE t1(id PRIMARY KEY, x TEXT);
+        CREATE TABLE t1(id  INT PRIMARY KEY, x TEXT);
         CREATE INDEX i1 ON t1(x);
         INSERT INTO t1 VALUES(1, '1');
         INSERT INTO t1 VALUES(2, '2');
@@ -506,7 +506,7 @@ test:do_execsql_test(
 --     9.1,
 --     [[
 --         DROP TABLE IF EXISTS t1;
---         CREATE TABLE t1(id INTEGER PRIMARY KEY AUTOINCREMENT, a, b, c, d, e);
+--         CREATE TABLE t1(id INTEGER PRIMARY KEY AUTOINCREMENT, a INT , b INT , c INT , d INT , e INT );
 --         CREATE INDEX i1 ON t1(a, b, c, d);
 --         CREATE INDEX i2 ON t1(e);
 --     ]])
@@ -577,7 +577,7 @@ test:do_execsql_test(
     "10.1.1",
     [[
         DROP TABLE IF EXISTS t3;
-        CREATE TABLE t3(id INTEGER PRIMARY KEY AUTOINCREMENT, a, b);
+        CREATE TABLE t3(id INTEGER PRIMARY KEY AUTOINCREMENT, a INT , b INT );
         CREATE INDEX t3a ON t3(a);
         CREATE INDEX t3b ON t3(b);
     ]])
@@ -625,7 +625,7 @@ test:do_execsql_test(
     "10.2.1",
     [[
         DROP TABLE IF EXISTS t3;
-        CREATE TABLE t3(id INTEGER PRIMARY KEY AUTOINCREMENT, x, a, b);
+        CREATE TABLE t3(id INTEGER PRIMARY KEY AUTOINCREMENT, x INT , a INT , b INT );
         CREATE INDEX t3a ON t3(x, a);
         CREATE INDEX t3b ON t3(x, b);
     ]])
@@ -676,7 +676,7 @@ test:do_execsql_test(
 test:do_execsql_test(
     "11.0",
     [[
-        CREATE TABLE t4(id INTEGER PRIMARY KEY AUTOINCREMENT, a COLLATE "unicode_ci", b);
+        CREATE TABLE t4(id INTEGER PRIMARY KEY AUTOINCREMENT, a  INT COLLATE "unicode_ci", b INT );
         CREATE INDEX t4a ON t4(a);
         CREATE INDEX t4b ON t4(b);
     ]], {
@@ -727,7 +727,7 @@ test:do_execsql_test(
     "11.4",
     [[
         DROP TABLE IF EXISTS t4;
-        CREATE TABLE t4(id INTEGER PRIMARY KEY AUTOINCREMENT, a, b);
+        CREATE TABLE t4(id INTEGER PRIMARY KEY AUTOINCREMENT, a INT , b INT );
         CREATE INDEX t4a ON t4(a COLLATE "unicode_ci");
         CREATE INDEX t4b ON t4(b);
     ]], {
@@ -788,7 +788,7 @@ test:do_execsql_test(
     "12.0",
     [[
         DROP TABLE IF EXISTS t4;
-        CREATE TABLE t4(id INTEGER PRIMARY KEY AUTOINCREMENT, x, a COLLATE "unicode_ci", b);
+        CREATE TABLE t4(id INTEGER PRIMARY KEY AUTOINCREMENT, x INT , a  INT COLLATE "unicode_ci", b INT );
         CREATE INDEX t4a ON t4(x, a);
         CREATE INDEX t4b ON t4(x, b);
     ]], {
@@ -839,7 +839,7 @@ test:do_execsql_test(
     "12.4",
     [[
         DROP TABLE IF EXISTS t4;
-        CREATE TABLE t4(id INTEGER PRIMARY KEY AUTOINCREMENT, x, a, b);
+        CREATE TABLE t4(id INTEGER PRIMARY KEY AUTOINCREMENT, x INT , a INT , b INT );
         CREATE INDEX t4a ON t4(x, a COLLATE "unicode_ci");
         CREATE INDEX t4b ON t4(x, b);
     ]], {
@@ -904,7 +904,7 @@ test:do_test(
     13.1,
     function()
         test:execsql("DROP TABLE IF EXISTS t1;")
-        test:execsql("CREATE TABLE t1(id INTEGER PRIMARY KEY AUTOINCREMENT, a, b, c, d);")
+        test:execsql("CREATE TABLE t1(id INTEGER PRIMARY KEY AUTOINCREMENT, a INT , b INT , c INT , d INT );")
         test:execsql("CREATE INDEX i1 ON t1(a);")
         test:execsql("CREATE INDEX i2 ON t1(b, c);")
         local a = 0
@@ -971,7 +971,7 @@ test:do_test(
     14.1,
     function()
         test:execsql("DROP TABLE IF EXISTS t1")
-        test:execsql("CREATE TABLE t1(id INTEGER PRIMARY KEY AUTOINCREMENT, a, b INTEGER, c)")
+        test:execsql("CREATE TABLE t1(id INTEGER PRIMARY KEY AUTOINCREMENT, a INT , b INTEGER, c INT )")
         for i = 0, 100 do
             local c = i % 3
             test:execsql(string.format(" INSERT INTO t1 VALUES(null, 'ott', %s, %s) ", i, c))
@@ -1015,7 +1015,7 @@ test:do_execsql_test(
     15.1,
     [[
         DROP TABLE IF EXISTS x1;
-        CREATE TABLE x1(a PRIMARY KEY, b, UNIQUE(a, b));
+        CREATE TABLE x1(a  INT PRIMARY KEY, b INT , UNIQUE(a, b));
         INSERT INTO x1 VALUES(1, 2);
         INSERT INTO x1 VALUES(3, 4);
         INSERT INTO x1 VALUES(5, 6);
@@ -1110,7 +1110,7 @@ test:do_test(
     function()
         test:execsql([[
             DROP TABLE IF EXISTS t1;
-            CREATE TABLE t1(id INTEGER PRIMARY KEY AUTOINCREMENT, a, b, c, d);
+            CREATE TABLE t1(id INTEGER PRIMARY KEY AUTOINCREMENT, a INT , b INT , c INT , d INT );
             CREATE INDEX i1 ON t1(a, b) WHERE d IS NOT NULL;
             INSERT INTO t1 VALUES(null, -1, -1, -1, NULL);
             INSERT INTO t1 SELECT null, 2*a,2*b,2*c,d FROM t1;
@@ -1189,7 +1189,7 @@ test:do_test(
     function()
         test:execsql([[
             DROP TABLE IF EXISTS t1;
-            CREATE TABLE t1(a PRIMARY KEY, b);
+            CREATE TABLE t1(a  INT PRIMARY KEY, b INT );
             CREATE INDEX i1 ON t1(a, b);
         ]])
         for i = 0, 8 do
@@ -1218,7 +1218,7 @@ test:do_test(
             DROP TABLE IF EXISTS t1;
             DROP TABLE IF EXISTS x1;
             DROP TABLE IF EXISTS t3;
-            CREATE TABLE t1(id INTEGER PRIMARY KEY AUTOINCREMENT, a,b,c,d);
+            CREATE TABLE t1(id INTEGER PRIMARY KEY AUTOINCREMENT, a INT ,b INT ,c INT ,d INT );
             CREATE INDEX i1 ON t1(a,b,c,d);
         ]])
         for i = 0, 23 do
@@ -1255,7 +1255,7 @@ test:do_execsql_test(
     21.0,
     [[
         DROP TABLE IF EXISTS t2;
-        CREATE TABLE t2(id INTEGER PRIMARY KEY AUTOINCREMENT, a, b);
+        CREATE TABLE t2(id INTEGER PRIMARY KEY AUTOINCREMENT, a INT , b INT );
         CREATE INDEX i2 ON t2(a);
     ]])
 
@@ -1299,7 +1299,7 @@ test:do_execsql_test(
     22.0,
     [[
         DROP TABLE IF EXISTS t3;
-        CREATE TABLE t3(a, b, c, d, PRIMARY KEY(a, b));
+        CREATE TABLE t3(a INT , b INT , c INT , d INT , PRIMARY KEY(a, b));
     ]])
 
 test:do_execsql_test(
@@ -1351,7 +1351,7 @@ test:do_execsql_test(
     23.0,
     [[
         DROP TABLE IF EXISTS t4;
-        CREATE TABLE t4(a COLLATE "unicode_ci", b, c, d, e, f, PRIMARY KEY(c, b, a));
+        CREATE TABLE t4(a  INT COLLATE "unicode_ci", b INT , c INT , d INT , e INT , f INT , PRIMARY KEY(c, b, a));
         CREATE INDEX i41 ON t4(e);
         CREATE INDEX i42 ON t4(f);
 
@@ -1387,7 +1387,7 @@ test:do_execsql_test(
 test:do_execsql_test(
     24.0,
     [[
-        CREATE TABLE t5(c, d, b, e, a, PRIMARY KEY(a, b, c));
+        CREATE TABLE t5(c INT , d INT , b INT , e INT , a INT , PRIMARY KEY(a, b, c));
         WITH data(a, b, c, d, e) AS (SELECT 'z', 'y', 0, 0, 0 UNION ALL 
             SELECT a, CASE WHEN b='y' THEN 'n' ELSE 'y' END, c+1, e/250, e+1 FROM data WHERE e<1000) 
                 INSERT INTO t5(a, b, c, d, e) SELECT * FROM data;
@@ -1440,7 +1440,7 @@ test:do_execsql_test(
     [[
         DROP TABLE IF EXISTS t6;
         DROP TABLE IF EXISTS ints;
-        CREATE TABLE t6(id INTEGER PRIMARY KEY AUTOINCREMENT, a, b);
+        CREATE TABLE t6(id INTEGER PRIMARY KEY AUTOINCREMENT, a INT , b INT );
         WITH ints(i,j) AS (SELECT 1,1 UNION ALL SELECT i+1,j+1 FROM ints WHERE i<100) 
             INSERT INTO t6 SELECT null,* FROM ints;
         CREATE INDEX aa ON t6(a);
@@ -1512,7 +1512,7 @@ test:do_test(
     function()
         test:execsql([[
             DROP TABLE IF EXISTS t1;
-            CREATE TABLE t1(id INTEGER PRIMARY KEY AUTOINCREMENT, x, y, z);
+            CREATE TABLE t1(id INTEGER PRIMARY KEY AUTOINCREMENT, x INT , y INT , z INT );
             CREATE INDEX t1xy ON t1(x, y);
             CREATE INDEX t1z ON t1(z);
         ]])
@@ -1598,7 +1598,7 @@ test:do_execsql_test(
     "26.2.1",
     [[
         DROP TABLE IF EXISTS t1;
-        CREATE TABLE t1(id INTEGER PRIMARY KEY AUTOINCREMENT, x, y, z);
+        CREATE TABLE t1(id INTEGER PRIMARY KEY AUTOINCREMENT, x INT , y INT , z INT );
         CREATE INDEX i1 ON t1(x, y);
         CREATE INDEX i2 ON t1(z);
 
