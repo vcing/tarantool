@@ -38,7 +38,7 @@
 #include "small/small.h"
 
 #include "tuple_update.h"
-#include "coll_cache.h"
+#include "coll_id_cache.h"
 
 static struct mempool tuple_iterator_pool;
 static struct small_alloc runtime_alloc;
@@ -207,7 +207,7 @@ tuple_init(field_name_hash_f hash)
 
 	box_tuple_last = NULL;
 
-	if (coll_cache_init() != 0)
+	if (coll_id_cache_init() != 0)
 		return -1;
 
 	return 0;
@@ -260,7 +260,7 @@ tuple_free(void)
 
 	tuple_format_free();
 
-	coll_cache_destroy();
+	coll_id_cache_destroy();
 }
 
 box_tuple_format_t *
