@@ -2970,7 +2970,7 @@ sql_create_index(struct Parse *parse, struct Token *token,
 		sqlite3TokenInit(&prevCol, pTab->aCol[pTab->nCol - 1].zName);
 		col_list = sqlite3ExprListAppend(parse, 0,
 						 sqlite3ExprAlloc(db, TK_ID,
-								  &prevCol, 0));
+								  0, &prevCol, 0));
 		if (col_list == NULL)
 			goto exit_create_index;
 		assert(col_list->nExpr == 1);

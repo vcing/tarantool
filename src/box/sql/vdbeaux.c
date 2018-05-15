@@ -66,7 +66,6 @@ sqlite3VdbeCreate(Parse * pParse)
 	p->magic = VDBE_MAGIC_INIT;
 	p->pParse = pParse;
 	p->suppress = false;
-	p->autoCommit = (char)box_txn() == 0 ? 1 : 0;
 	p->schema_ver = box_schema_version();
 	assert(pParse->aLabel == 0);
 	assert(pParse->nLabel == 0);
