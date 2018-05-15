@@ -3799,18 +3799,15 @@ case OP_NextSequenceId: {
  */
 case OP_NextIdEphemeral: {
 	VdbeCursor *pC;
-	int p2;
 	pC = p->apCsr[pOp->p1];
-	p2 = pOp->p2;
 	pOut = &aMem[pOp->p3];
 
 	assert(pC->uc.pCursor->curFlags & BTCF_TEphemCursor);
 
-	rc = tarantoolSqlite3EphemeralGetMaxId(pC->uc.pCursor, p2,
-					       (uint64_t *) &pOut->u.i);
-	if (rc) goto abort_due_to_error;
+	static uint64_t EPHEMERAL_ROWID = 0;
+	EPHEMERAL_ROWID ++;
 
-	pOut->u.i += 1;
+	pOut->u.i = EPHEMERAL_ROWID;
 	pOut->flags = MEM_Int;
 	break;
 }

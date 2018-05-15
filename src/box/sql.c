@@ -1621,37 +1621,6 @@ sql_debug_info(struct info_handler *h)
 	info_end(h);
 }
 
-/*
- * Extract maximum integer value from ephemeral space.
- * If index is empty - return 0 in max_id and success status.
- *
- * @param pCur Cursor pointing to ephemeral space.
- * @param fieldno Number of field from fetching tuple.
- * @param[out] max_id Fetched max value.
- *
- * @retval 0 on success, -1 otherwise.
- */
-int tarantoolSqlite3EphemeralGetMaxId(BtCursor *pCur, uint32_t fieldno,
-				       uint64_t *max_id)
-{
-	struct space *ephem_space = pCur->space;
-	assert(ephem_space);
-	struct index *primary_index = *ephem_space->index;
-
-	struct tuple *tuple;
-	if (index_max(primary_index, NULL, 0, &tuple) != 0) {
-		return SQL_TARANTOOL_ERROR;
-	}
-	if (tuple == NULL) {
-		*max_id = 0;
-		return SQLITE_OK;
-	}
-	if (tuple_field_u64(tuple, fieldno, max_id) == -1)
-		return SQL_TARANTOOL_ERROR;
-
-	return SQLITE_OK;
-}
-
 int
 tarantoolSqlNextSeqId(uint64_t *max_id)
 {
