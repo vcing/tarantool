@@ -131,6 +131,8 @@ struct relay {
 	struct stailq pending_gc;
 	/** Time when last row was sent to peer. */
 	double last_row_tm;
+	/** Relay sync state. */
+	enum relay_state state;
 
 	struct {
 		/* Align to prevent false-sharing with tx thread */
@@ -139,6 +141,12 @@ struct relay {
 		struct vclock vclock;
 	} tx;
 };
+
+enum relay_state
+relay_get_state(const struct relay *relay)
+{
+	return relay->state;
+}
 
 const struct vclock *
 relay_vclock(const struct relay *relay)
@@ -153,32 +161,63 @@ relay_send_initial_join_row(struct xstream *stream, struct xrow_header *row);
 static void
 relay_send_row(struct xstream *stream, struct xrow_header *row);
 
-static void
-relay_create(struct relay *relay, int fd, uint64_t sync,
-	     void (*stream_write)(struct xstream *, struct xrow_header *))
+struct relay *
+relay_new(struct replica *replica)
 {
-	memset(relay, 0, sizeof(*relay));
-	xstream_create(&relay->stream, stream_write);
-	coio_create(&relay->io, fd);
-	relay->sync = sync;
+	struct relay *relay = (struct relay *) calloc(1, sizeof(struct relay));
+	if (relay == NULL) {
+		diag_set(OutOfMemory, sizeof(struct relay), "malloc",
+			  "struct relay");
+		return NULL;
+	}
+	relay->replica = replica;
 	fiber_cond_create(&relay->reader_cond);
 	diag_create(&relay->diag);
 	stailq_create(&relay->pending_gc);
+	relay->state = RELAY_OFF;
+	return relay;
 }
 
 static void
-relay_destroy(struct relay *relay)
+relay_start(struct relay *relay, int fd, uint64_t sync,
+	     void (*stream_write)(struct xstream *, struct xrow_header *))
+{
+	xstream_create(&relay->stream, stream_write);
+	/*
+	 * Clear the diagnostics at start, in case it has the old
+	 * error message which we keep around to display in
+	 * box.info.replication.
+	 */
+	diag_clear(&relay->diag);
+	coio_create(&relay->io, fd);
+	relay->sync = sync;
+	relay->state = RELAY_FOLLOW;
+}
+
+static void
+relay_stop(struct relay *relay)
 {
 	struct relay_gc_msg *gc_msg, *next_gc_msg;
 	stailq_foreach_entry_safe(gc_msg, next_gc_msg,
 				  &relay->pending_gc, in_pending) {
 		free(gc_msg);
 	}
+	stailq_create(&relay->pending_gc);
 	if (relay->r != NULL)
 		recovery_delete(relay->r);
+	relay->r = NULL;
+	relay->state = RELAY_STOPPED;
+}
+
+void
+relay_delete(struct relay *relay)
+{
+	if (relay->state == RELAY_FOLLOW)
+		relay_stop(relay);
 	fiber_cond_destroy(&relay->reader_cond);
 	diag_destroy(&relay->diag);
 	TRASH(relay);
+	free(relay);
 }
 
 static void
@@ -199,11 +238,13 @@ relay_set_cord_name(int fd)
 void
 relay_initial_join(int fd, uint64_t sync, struct vclock *vclock)
 {
-	struct relay relay;
-	relay_create(&relay, fd, sync, relay_send_initial_join_row);
-	assert(relay.stream.write != NULL);
-	engine_join_xc(vclock, &relay.stream);
-	relay_destroy(&relay);
+	struct relay *relay = relay_new(NULL);
+	if (relay == NULL)
+		diag_raise();
+	relay_start(relay, fd, sync, relay_send_initial_join_row);
+	engine_join_xc(vclock, &relay->stream);
+	relay_stop(relay);
+	relay_delete(relay);
 }
 
 int
@@ -222,22 +263,23 @@ relay_final_join_f(va_list ap)
 }
 
 void
-relay_final_join(int fd, uint64_t sync, struct vclock *start_vclock,
-	         struct vclock *stop_vclock)
+relay_final_join(struct replica *replica, int fd, uint64_t sync,
+		 struct vclock *start_vclock, struct vclock *stop_vclock)
 {
-	struct relay relay;
-	relay_create(&relay, fd, sync, relay_send_row);
-	relay.r = recovery_new(cfg_gets("wal_dir"),
+	struct relay *relay = replica->relay;
+	assert(relay->state == RELAY_OFF);
+	relay_start(relay, fd, sync, relay_send_row);
+	relay->r = recovery_new(cfg_gets("wal_dir"),
 			       cfg_geti("force_recovery"),
 			       start_vclock);
-	vclock_copy(&relay.stop_vclock, stop_vclock);
+	vclock_copy(&relay->stop_vclock, stop_vclock);
 
-	int rc = cord_costart(&relay.cord, "final_join",
-			      relay_final_join_f, &relay);
+	int rc = cord_costart(&relay->cord, "final_join",
+			      relay_final_join_f, relay);
 	if (rc == 0)
-		rc = cord_cojoin(&relay.cord);
+		rc = cord_cojoin(&relay->cord);
 
-	relay_destroy(&relay);
+	relay_stop(relay);
 
 	if (rc != 0)
 		diag_raise();
@@ -502,7 +544,7 @@ relay_subscribe_f(va_list ap)
 		    NULL, NULL, cbus_process);
 	cbus_endpoint_destroy(&relay->endpoint, cbus_process);
 	if (!diag_is_empty(&relay->diag)) {
-		/* An error has occured while ACKs of xlog reading */
+		/* An error has occurred while reading ACKs of xlog. */
 		diag_move(&relay->diag, diag_get());
 	}
 	struct errinj *inj = errinj(ERRINJ_RELAY_EXIT_DELAY, ERRINJ_DOUBLE);
@@ -514,16 +556,16 @@ relay_subscribe_f(va_list ap)
 
 /** Replication acceptor fiber handler. */
 void
-relay_subscribe(int fd, uint64_t sync, struct replica *replica,
+relay_subscribe(struct replica *replica, int fd, uint64_t sync,
 		struct vclock *replica_clock, uint32_t replica_version_id)
 {
 	assert(replica->id != REPLICA_ID_NIL);
+	struct relay *relay = replica->relay;
 	/* Don't allow multiple relays for the same replica */
-	if (replica->relay != NULL) {
+	if (relay->state == RELAY_FOLLOW) {
 		tnt_raise(ClientError, ER_CFG, "replication",
 			  "duplicate connection with the same replica UUID");
 	}
-
 	/*
 	 * Register the replica with the garbage collector
 	 * unless it has already been registered by initial
@@ -537,24 +579,21 @@ relay_subscribe(int fd, uint64_t sync, struct replica *replica,
 			diag_raise();
 	}
 
-	struct relay relay;
-	relay_create(&relay, fd, sync, relay_send_row);
-	relay.r = recovery_new(cfg_gets("wal_dir"),
-			       cfg_geti("force_recovery"),
-			       replica_clock);
-	vclock_copy(&relay.tx.vclock, replica_clock);
-	relay.version_id = replica_version_id;
-	relay.replica = replica;
-	replica_set_relay(replica, &relay);
-	vclock_copy(&relay.local_vclock_at_subscribe, &replicaset.vclock);
+	vclock_copy(&relay->local_vclock_at_subscribe, &replicaset.vclock);
+	relay_start(relay, fd, sync, relay_send_row);
+	relay->r = recovery_new(cfg_gets("wal_dir"),
+			        cfg_geti("force_recovery"),
+			        replica_clock);
+	vclock_copy(&relay->tx.vclock, replica_clock);
+	relay->version_id = replica_version_id;
 
-	int rc = cord_costart(&relay.cord, tt_sprintf("relay_%p", &relay),
-			      relay_subscribe_f, &relay);
+	int rc = cord_costart(&relay->cord, tt_sprintf("relay_%p", relay),
+			      relay_subscribe_f, relay);
 	if (rc == 0)
-		rc = cord_cojoin(&relay.cord);
+		rc = cord_cojoin(&relay->cord);
 
-	replica_clear_relay(replica);
-	relay_destroy(&relay);
+	relay_stop(relay);
+	replica_on_relay_stop(replica);
 
 	if (rc != 0)
 		diag_raise();
@@ -595,8 +634,7 @@ relay_send_row(struct xstream *stream, struct xrow_header *packet)
 	 * it). In the latter case packet's LSN is less than or equal to
 	 * local master's LSN at the moment it received 'SUBSCRIBE' request.
 	 */
-	if (relay->replica == NULL ||
-	    packet->replica_id != relay->replica->id ||
+	if (packet->replica_id != relay->replica->id ||
 	    packet->lsn <= vclock_get(&relay->local_vclock_at_subscribe,
 				      packet->replica_id)) {
 		relay_send(relay, packet);
