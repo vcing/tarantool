@@ -1183,8 +1183,8 @@ whereRangeSkipScanEst(Parse * pParse,		/* Parsing & code generating context */
 		int i;
 		int nDiff;
 		for (i = 0; rc == SQLITE_OK && i < p->nSample; i++) {
-			rc = sqlite3Stat4Column(db, p->aSample[i].p,
-						p->aSample[i].n, nEq, &pVal);
+			rc = sqlite3Stat4Column(db, p->aSample[i].p, nEq,
+						&pVal);
 			if (rc == SQLITE_OK && p1) {
 				int res = sqlite3MemCompare(p1, pVal, pColl);
 				if (res >= 0)

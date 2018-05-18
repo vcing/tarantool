@@ -1589,7 +1589,7 @@ sqlite3Stat4ValueFromExpr(Parse * pParse,	/* Parse context */
 }
 
 /*
- * Extract the iCol-th column from the nRec-byte record in pRec.  Write
+ * Extract the iCol-th column from the record in pRec.  Write
  * the column value into *ppVal.  If *ppVal is initially NULL then a new
  * sqlite3_value object is allocated.
  *
@@ -1599,44 +1599,27 @@ sqlite3Stat4ValueFromExpr(Parse * pParse,	/* Parse context */
 int
 sqlite3Stat4Column(sqlite3 * db,	/* Database handle */
 		   const void *pRec,	/* Pointer to buffer containing record */
-		   int nRec,	/* Size of buffer pRec in bytes */
 		   int iCol,	/* Column to extract */
 		   sqlite3_value ** ppVal	/* OUT: Extracted value */
     )
 {
-	u32 t;			/* a column type code */
-	int nHdr;		/* Size of the header in the record */
-	int iHdr;		/* Next unread header byte */
-	int iField;		/* Next unread data byte */
-	int szField = 0;	/* Size of the current data field */
 	int i;			/* Column index */
-	u8 *a = (u8 *) pRec;	/* Typecast byte array */
+	const char *a = (const char *) pRec;	/* Typecast byte array */
 	Mem *pMem = *ppVal;	/* Write result into this Mem object */
-
-	assert(iCol > 0);
-	iHdr = getVarint32(a, nHdr);
-	if (nHdr > nRec || iHdr >= nHdr)
+	assert(iCol >= 0);
+	assert(mp_typeof(a[0]) == MP_ARRAY);
+	int n_col = mp_decode_array(&a);
+	if (n_col <= iCol)
 		return SQLITE_CORRUPT_BKPT;
-	iField = nHdr;
-	for (i = 0; i <= iCol; i++) {
-		iHdr += getVarint32(&a[iHdr], t);
-		testcase(iHdr == nHdr);
-		testcase(iHdr == nHdr + 1);
-		if (iHdr > nHdr)
-			return SQLITE_CORRUPT_BKPT;
-		szField = sqlite3VdbeSerialTypeLen(t);
-		iField += szField;
+	for (i = 0; i < iCol; i++) {
+		mp_next(&a);
 	}
-	testcase(iField == nRec);
-	testcase(iField == nRec + 1);
-	if (iField > nRec)
-		return SQLITE_CORRUPT_BKPT;
 	if (pMem == 0) {
 		pMem = *ppVal = sqlite3ValueNew(db);
 		if (pMem == 0)
 			return SQLITE_NOMEM_BKPT;
 	}
-	sqlite3VdbeSerialGet(&a[iField - szField], t, pMem);
+	sqlite3VdbeMsgpackGet((const unsigned char *) a, pMem);
 	return SQLITE_OK;
 }
 
