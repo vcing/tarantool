@@ -245,9 +245,6 @@ c:close()
 s:drop()
 ---
 ...
-box.schema.user.revoke('guest', 'read,write,execute', 'universe')
----
-...
 --
 -- Ensure can not push in background.
 --
@@ -267,4 +264,192 @@ ok, err
 ---
 - null
 - Session 'background' does not support push()
+...
+--
+-- Async iterable pushes.
+--
+c = netbox.connect(box.cfg.listen)
+---
+...
+cond = fiber.cond()
+---
+...
+test_run:cmd("setopt delimiter ';'")
+---
+- true
+...
+function do_pushes()
+    for i = 1, 5 do
+        box.session.push(i + 100)
+        cond:wait()
+    end
+    return true
+end;
+---
+...
+test_run:cmd("setopt delimiter ''");
+---
+- true
+...
+-- Can not combine callback and async mode.
+ok, err = pcall(c.call, c, 'do_pushes', {}, {is_async = true, on_push = function() end})
+---
+...
+assert(not ok)
+---
+- true
+...
+assert(err:find('use future:pairs()') ~= nil)
+---
+- true
+...
+future = c:call('do_pushes', {}, {is_async = true})
+---
+...
+-- Try to ignore pushes.
+while not future:wait_result(0.01) do cond:signal() end
+---
+...
+future:result()
+---
+- [true]
+...
+-- Even if pushes are ignored, they still are available via pairs.
+messages = {}
+---
+...
+keys = {}
+---
+...
+for i, message in future:pairs() do table.insert(messages, message) table.insert(keys, i) end
+---
+...
+messages
+---
+- - 101
+  - 102
+  - 103
+  - 104
+  - 105
+  - [true]
+...
+keys
+---
+- - 1
+  - 2
+  - 3
+  - 4
+  - 5
+  - 6
+...
+-- Test timeouts inside `for`. Even if a timeout is got, a user
+-- can continue iteration making as many attempts to get a message
+-- as he wants.
+future = c:call('do_pushes', {}, {is_async = true})
+---
+...
+messages = {}
+---
+...
+keys = {}
+---
+...
+err_count = 0
+---
+...
+test_run:cmd("setopt delimiter ';'")
+---
+- true
+...
+for i, message in future:pairs(0.01) do
+    if i == nil then
+        err_count = err_count + 1
+        assert(message.code == box.error.TIMEOUT)
+        if err_count % 2 == 0 then
+            cond:signal()
+        end
+    else
+        table.insert(messages, message)
+        table.insert(keys, i)
+    end
+end;
+---
+...
+test_run:cmd("setopt delimiter ''");
+---
+- true
+...
+-- Messages and keys are got in the correct order and with no
+-- duplicates regardless of big timeout count.
+messages
+---
+- - 101
+  - 102
+  - 103
+  - 104
+  - 105
+  - [true]
+...
+keys
+---
+- - 1
+  - 2
+  - 3
+  - 4
+  - 5
+  - 6
+...
+err_count
+---
+- 10
+...
+-- Test non-timeout error.
+s = box.schema.create_space('test')
+---
+...
+pk = s:create_index('pk')
+---
+...
+s:replace{1}
+---
+- [1]
+...
+function do_push_and_duplicate() box.session.push(100) s:insert{1} end
+---
+...
+future = c:call('do_push_and_duplicate', {}, {is_async = true})
+---
+...
+future:wait_result(1000)
+---
+- null
+- Duplicate key exists in unique index 'pk' in space 'test'
+...
+messages = {}
+---
+...
+keys = {}
+---
+...
+for i, message in future:pairs() do table.insert(messages, message) table.insert(keys, i) end
+---
+...
+messages
+---
+- - 100
+  - Duplicate key exists in unique index 'pk' in space 'test'
+...
+keys
+---
+- - 1
+  - null
+...
+s:drop()
+---
+...
+c:close()
+---
+...
+box.schema.user.revoke('guest', 'read,write,execute', 'universe')
+---
 ...
