@@ -2125,7 +2125,6 @@ struct Index {
 	/** Array of collation identifiers. */
 	uint32_t *coll_id_array;
 	Expr *pPartIdxWhere;	/* WHERE clause for partial indices */
-	ExprList *aColExpr;	/* Column expressions */
 	int tnum;		/* DB Page containing root of this index */
 	u16 nColumn;		/* Number of columns stored in the index */
 	u8 onError;		/* ON_CONFLICT_ACTION_ABORT, _IGNORE, _REPLACE,
@@ -2169,11 +2168,6 @@ index_field_tuple_est(struct Index *idx, uint32_t field);
 /* Return true if index X is a UNIQUE index */
 #define IsUniqueIndex(X)      (((X)->idxType == SQLITE_IDXTYPE_UNIQUE) || \
 				((X)->idxType == SQLITE_IDXTYPE_PRIMARYKEY))
-
-/* The Index.aiColumn[] values are normally positive integer.  But
- * there are some negative values that have special meaning:
- */
-#define XN_EXPR      (-2)	/* Indexed column is an expression */
 
 #ifdef DEFAULT_TUPLE_COUNT
 #undef DEFAULT_TUPLE_COUNT

@@ -252,7 +252,6 @@ static void
 freeIndex(sqlite3 * db, Index * p)
 {
 	sql_expr_free(db, p->pPartIdxWhere, false);
-	sqlite3ExprListDelete(db, p->aColExpr);
 	sqlite3DbFree(db, p->zColAff);
 	sqlite3DbFree(db, p);
 }
@@ -3016,8 +3015,7 @@ sql_create_index(struct Parse *parse, struct Token *token,
 
 	/* Analyze the list of expressions that form the terms of the index and
 	 * report any errors.  In the common case where the expression is exactly
-	 * a table column, store that column in aiColumn[].  For general expressions,
-	 * populate pIndex->aColExpr and store XN_EXPR (-2) in aiColumn[].
+	 * a table column, store that column in aiColumn[].
 	 *
 	 * TODO: Issue a warning if two or more columns of the index are identical.
 	 * TODO: Issue a warning if the table primary key is used as part of the
@@ -3912,17 +3910,13 @@ sqlite3UniqueConstraint(Parse * pParse,	/* Parsing context */
 	Table *pTab = pIdx->pTable;
 
 	sqlite3StrAccumInit(&errMsg, pParse->db, 0, 0, 200);
-	if (pIdx->aColExpr) {
-		sqlite3XPrintf(&errMsg, "index '%q'", pIdx->zName);
-	} else {
-		for (j = 0; j < pIdx->nColumn; j++) {
-			char *zCol;
-			assert(pIdx->aiColumn[j] >= 0);
-			zCol = pTab->def->fields[pIdx->aiColumn[j]].name;
-			if (j)
-				sqlite3StrAccumAppend(&errMsg, ", ", 2);
-			sqlite3XPrintf(&errMsg, "%s.%s", pTab->def->name, zCol);
-		}
+	for (j = 0; j < pIdx->nColumn; j++) {
+		char *zCol;
+		assert(pIdx->aiColumn[j] >= 0);
+		zCol = pTab->def->fields[pIdx->aiColumn[j]].name;
+		if (j)
+			sqlite3StrAccumAppend(&errMsg, ", ", 2);
+		sqlite3XPrintf(&errMsg, "%s.%s", pTab->def->name, zCol);
 	}
 	zErr = sqlite3StrAccumFinish(&errMsg);
 	sqlite3HaltConstraint(pParse,
