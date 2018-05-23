@@ -183,6 +183,16 @@ sql_table_delete_from(struct Parse *parse, struct SrcList *tab_list,
 		struct NameContext nc;
 		memset(&nc, 0, sizeof(nc));
 		nc.pParse = parse;
+		if (tab_list->a[0].pTab == NULL) {
+			struct Table *t = malloc(sizeof(struct Table));
+			if (t == NULL) {
+				sqlite3OomFault(parse->db);
+				goto delete_from_cleanup;
+			}
+			assert(space != NULL);
+			t->def = space->def;
+			tab_list->a[0].pTab = t;
+		}
 		nc.pSrcList = tab_list;
 		if (sqlite3ResolveExprNames(&nc, where))
 			goto delete_from_cleanup;
@@ -196,7 +206,7 @@ sql_table_delete_from(struct Parse *parse, struct SrcList *tab_list,
 		 * is held in ephemeral table, there is no PK for
 		 * it, so columns should be loaded manually.
 		 */
-		struct Index *pk = NULL;
+		struct key_def *pk_def = NULL;
 		int reg_pk = parse->nMem + 1;
 		int pk_len;
 		int eph_cursor = parse->nTab++;
@@ -207,13 +217,17 @@ sql_table_delete_from(struct Parse *parse, struct SrcList *tab_list,
 			sqlite3VdbeAddOp2(v, OP_OpenTEphemeral,
 					  eph_cursor, pk_len);
 		} else {
-			pk = sqlite3PrimaryKeyIndex(table);
-			assert(pk != NULL);
-			pk_len = index_column_count(pk);
+			assert(space->index_count > 0);
+			pk_def = key_def_dup(space->index[0]->def->key_def);
+			if(pk_def == NULL) {
+				sqlite3OomFault(parse->db);
+				goto delete_from_cleanup;
+			}
+			pk_len = pk_def->part_count;
 			parse->nMem += pk_len;
-			sqlite3VdbeAddOp2(v, OP_OpenTEphemeral, eph_cursor,
-					  pk_len);
-			sql_vdbe_set_p4_key_def(parse, pk);
+			sqlite3VdbeAddOp4(v, OP_OpenTEphemeral, eph_cursor,
+					  pk_len, 0,
+					  (char *)pk_def, P4_KEYDEF);
 		}
 
 		/* Construct a query to find the primary key for
@@ -252,11 +266,9 @@ sql_table_delete_from(struct Parse *parse, struct SrcList *tab_list,
 		/* Extract the primary key for the current row */
 		if (!is_view) {
 			for (int i = 0; i < pk_len; i++) {
-				assert(pk->aiColumn[i] >= 0);
 				sqlite3ExprCodeGetColumnOfTable(v, table->def,
 								tab_cursor,
-								pk->
-								aiColumn[i],
+								pk_def->parts[i].fieldno,
 								reg_pk + i);
 			}
 		} else {
@@ -287,10 +299,14 @@ sql_table_delete_from(struct Parse *parse, struct SrcList *tab_list,
 			 * key.
 			 */
 			key_len = 0;
-			const char *zAff = is_view ? NULL :
-					  sqlite3IndexAffinityStr(parse->db, pk);
+			const char *aff = NULL;
+			struct Index *pk = sqlite3PrimaryKeyIndex(table);
+			if (pk != NULL) {
+				aff = is_view ? NULL :
+					sqlite3IndexAffinityStr(parse->db, pk);
+			}
 			sqlite3VdbeAddOp4(v, OP_MakeRecord, reg_pk, pk_len,
-					  reg_key, zAff, pk_len);
+					  reg_key, aff, pk_len);
 			/* Set flag to save memory allocating one
 			 * by malloc.
 			 */
@@ -325,8 +341,14 @@ sql_table_delete_from(struct Parse *parse, struct SrcList *tab_list,
 					  (void *)space, P4_SPACEPTR);
 			sqlite3VdbeAddOp3(v, OP_OpenWrite, tab_cursor,
 					  table->tnum, space_ptr_reg);
-			sql_vdbe_set_p4_key_def(parse, pk);
-			VdbeComment((v, "%s", pk->zName));
+			struct key_def *def = key_def_dup(pk_def);
+			if (def == NULL) {
+				sqlite3OomFault(parse->db);
+				goto delete_from_cleanup;
+			}
+			sqlite3VdbeAppendP4(v, def, P4_KEYDEF);
+
+			VdbeComment((v, "%s", space->index[0]->def->name));
 
 			if (one_pass == ONEPASS_MULTI)
 				sqlite3VdbeJumpHere(v, iAddrOnce);
@@ -339,7 +361,7 @@ sql_table_delete_from(struct Parse *parse, struct SrcList *tab_list,
 		if (one_pass != ONEPASS_OFF) {
 			/* OP_Found will use an unpacked key. */
 			assert(key_len == pk_len);
-			assert(pk != NULL || table->pSelect != NULL);
+			assert(pk_def != NULL || table->pSelect != NULL);
 			sqlite3VdbeAddOp4Int(v, OP_NotFound, tab_cursor,
 					     addr_bypass, reg_key, key_len);
 
