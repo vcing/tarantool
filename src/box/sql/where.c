@@ -391,6 +391,34 @@ whereScanInit(WhereScan * pScan,	/* The WhereScan object being initialized */
 	return whereScanNext(pScan);
 }
 
+static WhereTerm *
+sql_where_scan_init(struct WhereScan *scan, struct WhereClause *clause,
+		    int cursor, int column, uint32_t op_mask,
+		    struct space_def *space_def, struct key_def *key_def)
+{
+	scan->pOrigWC = scan->pWC = clause;
+	scan->pIdxExpr = NULL;
+	scan->idxaff = 0;
+	scan->coll = NULL;
+	scan->is_column_seen = false;
+	if (key_def != NULL) {
+		int j = column;
+		column = key_def->parts[j].fieldno;
+		if (column >= 0) {
+			scan->idxaff = space_def->fields[column].affinity;
+			scan->coll = key_def->parts[column].coll;
+			scan->is_column_seen = true;
+		}
+	}
+	scan->opMask = op_mask;
+	scan->k = 0;
+	scan->aiCur[0] = cursor;
+	scan->aiColumn[0] = column;
+	scan->nEquiv = 1;
+	scan->iEquiv = 1;
+	return whereScanNext(scan);
+}
+
 /*
  * Search for a term in the WHERE clause that is of the form "X <op> <expr>"
  * where X is a reference to the iColumn of table iCur or of index pIdx
@@ -429,6 +457,36 @@ sqlite3WhereFindTerm(WhereClause * pWC,	/* The WHERE clause to be searched */
 	WhereScan scan;
 
 	p = whereScanInit(&scan, pWC, iCur, iColumn, op, pIdx);
+	op &= WO_EQ | WO_IS;
+	while (p) {
+		if ((p->prereqRight & notReady) == 0) {
+			if (p->prereqRight == 0 && (p->eOperator & op) != 0) {
+				testcase(p->eOperator & WO_IS);
+				return p;
+			}
+			if (pResult == 0)
+				pResult = p;
+		}
+		p = whereScanNext(&scan);
+	}
+	return pResult;
+}
+
+WhereTerm *
+sql_where_find_term(WhereClause * pWC,	/* The WHERE clause to be searched */
+		    int iCur,		/* Cursor number of LHS */
+		    int iColumn,	/* Column number of LHS */
+		    Bitmask notReady,	/* RHS must not overlap with this mask */
+		    u32 op,		/* Mask of WO_xx values describing operator */
+		    struct space_def *space_def,
+		    struct key_def *key_def)	/* Must be compatible with this index, if not NULL */
+{
+	WhereTerm *pResult = 0;
+	WhereTerm *p;
+	WhereScan scan;
+
+	p = sql_where_scan_init(&scan, pWC, iCur, iColumn, op, space_def,
+				key_def);
 	op &= WO_EQ | WO_IS;
 	while (p) {
 		if ((p->prereqRight & notReady) == 0) {
@@ -4055,7 +4113,7 @@ wherePathSolver(WhereInfo * pWInfo, LogEst nRowEst)
  * general-purpose query planner.
  */
 static int
-whereShortCut(WhereLoopBuilder * pBuilder)
+sql_where_shortcut(struct WhereLoopBuilder *builder)
 {
 	WhereInfo *pWInfo;
 	struct SrcList_item *pItem;
@@ -4064,20 +4122,22 @@ whereShortCut(WhereLoopBuilder * pBuilder)
 	WhereLoop *pLoop;
 	int iCur;
 	int j;
-	Table *pTab;
-	Index *pIdx;
 
-	pWInfo = pBuilder->pWInfo;
+	pWInfo = builder->pWInfo;
 	if (pWInfo->wctrlFlags & WHERE_OR_SUBCLAUSE)
 		return 0;
 	assert(pWInfo->pTabList->nSrc >= 1);
 	pItem = pWInfo->pTabList->a;
-	pTab = pItem->pTab;
+	struct space_def *space_def = pItem->pTab->def;
+	assert(space_def != NULL);
+	struct space *space = space_cache_find(space_def->id);
+	assert(space != NULL);
+
 	if (pItem->fg.isIndexedBy)
 		return 0;
 	iCur = pItem->iCursor;
 	pWC = &pWInfo->sWC;
-	pLoop = pBuilder->pNew;
+	pLoop = builder->pNew;
 	pLoop->wsFlags = 0;
 	pLoop->nSkip = 0;
 	pTerm = sqlite3WhereFindTerm(pWC, iCur, -1, 0, WO_EQ | WO_IS, 0);
@@ -4090,21 +4150,23 @@ whereShortCut(WhereLoopBuilder * pBuilder)
 		/* TUNING: Cost of a PK lookup is 10 */
 		pLoop->rRun = 33;	/* 33==sqlite3LogEst(10) */
 	} else {
-		for (pIdx = pTab->pIndex; pIdx; pIdx = pIdx->pNext) {
+		for (uint32_t i = 0; i < space->index_count; ++i) {
+			struct index_def *idx_def = space->index[i]->def;
 			int opMask;
-			int nIdxCol = index_column_count(pIdx);
+			int nIdxCol = idx_def->key_def->part_count;
 			assert(pLoop->aLTermSpace == pLoop->aLTerm);
-			if (!index_is_unique(pIdx)
-			    || pIdx->pPartIdxWhere != 0
+			if (!idx_def->opts.is_unique
+			    /* || pIdx->pPartIdxWhere != 0 */
 			    || nIdxCol > ArraySize(pLoop->aLTermSpace)
 			    )
-				continue;
-			opMask = index_is_unique_not_null(pIdx) ?
-				 (WO_EQ | WO_IS) : WO_EQ;
+				continue;			        
+			opMask = idx_def->opts.is_unique &&
+				  !idx_def->key_def->is_nullable ?
+				  (WO_EQ | WO_IS) : WO_EQ;
 			for (j = 0; j < nIdxCol; j++) {
-				pTerm =
-				    sqlite3WhereFindTerm(pWC, iCur, j, 0,
-							 opMask, pIdx);
+				pTerm = sql_where_find_term(pWC, iCur, j, 0,
+							    opMask, space_def,
+							    idx_def->key_def);
 				if (pTerm == 0)
 					break;
 				testcase(pTerm->eOperator & WO_IS);
@@ -4116,7 +4178,8 @@ whereShortCut(WhereLoopBuilder * pBuilder)
 					 WHERE_INDEXED | WHERE_IDX_ONLY;
 			pLoop->nLTerm = j;
 			pLoop->nEq = j;
-			pLoop->pIndex = pIdx;
+			pLoop->pIndex = NULL;
+			pLoop->index_def = idx_def;
 			/* TUNING: Cost of a unique index lookup is 15 */
 			pLoop->rRun = 39;	/* 39==sqlite3LogEst(15) */
 			break;
@@ -4432,7 +4495,7 @@ sqlite3WhereBegin(Parse * pParse,	/* The parser context */
 	}
 #endif
 
-	if (nTabList != 1 || whereShortCut(&sWLB) == 0) {
+	if (nTabList != 1 || sql_where_shortcut(&sWLB) == 0) {
 		rc = whereLoopAddAll(&sWLB);
 		if (rc)
 			goto whereBeginError;
@@ -4595,13 +4658,18 @@ sqlite3WhereBegin(Parse * pParse,	/* The parser context */
 		}
 		if (pLoop->wsFlags & WHERE_INDEXED) {
 			Index *pIx = pLoop->pIndex;
+			struct index_def *idx_def = pLoop->index_def;
+			struct space *space = space_cache_find(pTabItem->pTab->def->id);
 			int iIndexCur;
 			int op = OP_OpenRead;
+			assert(pIx != NULL  || idx_def != NULL);
 			/* iAuxArg is always set if to a positive value if ONEPASS is possible */
 			assert(iAuxArg != 0
 			       || (pWInfo->
 				   wctrlFlags & WHERE_ONEPASS_DESIRED) == 0);
-			if (IsPrimaryKeyIndex(pIx)
+			bool is_primary = (pIx != NULL && IsPrimaryKeyIndex(pIx)) ||
+					   (idx_def->iid == 0);
+			if (is_primary
 			    && (wctrlFlags & WHERE_OR_SUBCLAUSE) != 0) {
 				/* This is one term of an OR-optimization using
 				 * the PRIMARY KEY.  No need for a separate index
@@ -4609,13 +4677,13 @@ sqlite3WhereBegin(Parse * pParse,	/* The parser context */
 				iIndexCur = pLevel->iTabCur;
 				op = 0;
 			} else if (pWInfo->eOnePass != ONEPASS_OFF) {
-				Index *pJ = pTabItem->pTab->pIndex;
-				iIndexCur = iAuxArg;
-				assert(wctrlFlags & WHERE_ONEPASS_DESIRED);
-				while (ALWAYS(pJ) && pJ != pIx) {
-					iIndexCur++;
-					pJ = pJ->pNext;
+				for(uint32_t i = 0; i < space->index_count; ++i) {
+					if (space->index[i]->def == idx_def) {
+						iIndexCur = iAuxArg + i;
+						break;
+					}
 				}
+				assert(wctrlFlags & WHERE_ONEPASS_DESIRED);
 				op = OP_OpenWrite;
 				pWInfo->aiCurOnePass[1] = iIndexCur;
 			} else if (iAuxArg
@@ -4626,11 +4694,17 @@ sqlite3WhereBegin(Parse * pParse,	/* The parser context */
 				iIndexCur = pParse->nTab++;
 			}
 			pLevel->iIdxCur = iIndexCur;
-			assert(pIx->pSchema == pTab->pSchema);
 			assert(iIndexCur >= 0);
 			if (op) {
-				emit_open_cursor(pParse, iIndexCur, pIx->tnum);
-				sql_vdbe_set_p4_key_def(pParse, pIx);
+				if (pIx != NULL) {
+					emit_open_cursor(pParse, iIndexCur,
+							 pTab->tnum);
+					sql_vdbe_set_p4_key_def(pParse, pIx);
+				} else {
+					sql_emit_open_cursor(pParse, iIndexCur,
+							     idx_def->iid,
+							     space);
+				}
 				if ((pLoop->wsFlags & WHERE_CONSTRAINT) != 0
 				    && (pLoop->
 					wsFlags & (WHERE_COLUMN_RANGE |

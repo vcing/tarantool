@@ -1175,21 +1175,16 @@ bool
 space_is_view(Table *table) {
 	assert(table != NULL);
 	uint32_t space_id = SQLITE_PAGENO_TO_SPACEID(table->tnum);
-	struct space *space = space_by_id(space_id);
-	assert(space != NULL);
-	return space->def->opts.is_view;
+	if (space_id > 0) {
+		struct space *space = space_by_id(space_id);
+		assert(space != NULL);
+		return space->def->opts.is_view;
+	} else {
+		assert(table->def != NULL);
+		return table->def->opts.is_view;
+	}
 }
 
-/**
- * Create cursor which will be positioned to the space/index.
- * It makes space lookup and loads pointer to it into register,
- * which is passes to OP_OpenWrite as an argument.
- *
- * @param parse_context Parse context.
- * @param cursor Number of cursor to be created.
- * @param entity_id Encoded space and index ids.
- * @retval address of last opcode.
- */
 int
 emit_open_cursor(Parse *parse_context, int cursor, int entity_id)
 {
@@ -1204,6 +1199,19 @@ emit_open_cursor(Parse *parse_context, int cursor, int entity_id)
 				 space_ptr_reg);
 }
 
+int
+sql_emit_open_cursor(struct Parse *parse, int cursor, int index_id, struct space *space)
+{
+	assert(space != NULL);
+	Vdbe *vdbe = parse->pVdbe;
+	int space_ptr_reg = ++parse->nMem;
+	sqlite3VdbeAddOp4(vdbe, OP_LoadPtr, 0, space_ptr_reg, 0, (void*)space,
+			  P4_SPACEPTR);
+	return sqlite3VdbeAddOp4(vdbe, OP_OpenWrite, cursor, index_id,
+				 space_ptr_reg,
+				 (char*)space->index[index_id]->def->key_def,
+				 P4_KEYDEF);
+}
 /*
  * Generate code that will increment the schema cookie.
  *

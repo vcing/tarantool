@@ -3574,8 +3574,36 @@ enum sort_order
 sql_index_column_sort_order(Index *idx, uint32_t column);
 
 void sqlite3EndTable(Parse *, Token *, Token *, Select *);
+
+/**
+ * DEPRECATED. All calls to be replaced w/ sql_emit_open_cursor.
+ * Create cursor which will be positioned to the space/index.
+ * It makes space lookup and loads pointer to it into register,
+ * which is passes to OP_OpenWrite as an argument.
+ *
+ * @param parse_context Parse context.
+ * @param cursor Number of cursor to be created.
+ * @param entity_id Encoded space and index ids.
+ * @retval address of last opcode.
+ */
 int
 emit_open_cursor(Parse *, int, int);
+
+/**
+ * Create cursor which will be positioned to the space/index.
+ * It makes space lookup and loads pointer to it into register,
+ * which is passes to OP_OpenWrite as an argument.
+ *
+ * @param parse_context Parse context.
+ * @param cursor Number of cursor to be created.
+ * @param index_id Encoded index id (encoding is void actually, so
+ *        pas it as is). In future will be replaced with pointer
+ *        to struct index.
+ * @retval address of last opcode.
+ */
+int
+sql_emit_open_cursor(struct Parse *parse, int cursor, int index_id,
+		     struct space *space);
 
 int sqlite3ParseUri(const char *, const char *, unsigned int *,
 		    sqlite3_vfs **, char **, char **);
