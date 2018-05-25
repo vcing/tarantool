@@ -245,11 +245,8 @@ vy_mem_commit_stmt(struct vy_mem *mem, const struct tuple *stmt)
 	/* The statement must be from a lsregion. */
 	assert(!vy_stmt_is_refable(stmt));
 	int64_t lsn = vy_stmt_lsn(stmt);
-	if (mem->min_lsn == INT64_MAX)
-		mem->min_lsn = lsn;
-	assert(mem->min_lsn <= lsn);
-	if (mem->max_lsn < lsn)
-		mem->max_lsn = lsn;
+	mem->min_lsn = MIN(mem->min_lsn, lsn);
+	mem->max_lsn = MAX(mem->max_lsn, lsn);
 	mem->version++;
 }
 
