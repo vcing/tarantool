@@ -470,7 +470,7 @@ findIndexCol(Parse * pParse,	/* Parse context */
 	for (int i = 0; i < pList->nExpr; i++) {
 		Expr *p = sqlite3ExprSkipCollate(pList->a[i].pExpr);
 		if (p->op == TK_COLUMN &&
-		    p->iColumn == pIdx->aiColumn[iCol] &&
+		    p->iColumn == (int) pIdx->def->key_def->parts[iCol].fieldno &&
 		    p->iTable == iBase) {
 			bool is_found;
 			uint32_t id;
@@ -2859,6 +2859,19 @@ whereLoopAddBtree(WhereLoopBuilder * pBuilder,	/* WHERE clause information */
 		sPk.aiRowLogEst = aiRowEstPk;
 		sPk.onError = ON_CONFLICT_ACTION_REPLACE;
 		sPk.pTable = pTab;
+
+		struct key_def *key_def = key_def_new(1);
+		key_def_set_part(key_def, 0, 0, pTab->def->fields[0].type,
+				 ON_CONFLICT_ACTION_ABORT,
+				 NULL, COLL_NONE, SORT_ORDER_ASC);
+
+		struct index_opts index_opts = index_opts_default;
+
+		sPk.def =
+			index_def_new(pTab->def->id, 0, "primary",
+				      sizeof("primary") - 1, TREE,
+				      &index_opts, key_def, NULL);
+
 		aiRowEstPk[0] = sql_space_tuple_log_count(pTab);
 		aiRowEstPk[1] = 0;
 		pFirst = pSrc->pTab->pIndex;
@@ -4115,7 +4128,7 @@ whereShortCut(WhereLoopBuilder * pBuilder)
 	} else {
 		for (pIdx = pTab->pIndex; pIdx; pIdx = pIdx->pNext) {
 			int opMask;
-			int nIdxCol = index_column_count(pIdx);
+			int nIdxCol = pIdx->def->key_def->part_count;
 			assert(pLoop->aLTermSpace == pLoop->aLTerm);
 			if (!index_is_unique(pIdx)
 			    || pIdx->pPartIdxWhere != 0
@@ -4793,7 +4806,7 @@ sqlite3WhereEnd(WhereInfo * pWInfo)
 		if (pLevel->addrSkip) {
 			sqlite3VdbeGoto(v, pLevel->addrSkip);
 			VdbeComment((v, "next skip-scan on %s",
-				     pLoop->pIndex->zName));
+				     pLoop->pIndex->def->name));
 			sqlite3VdbeJumpHere(v, pLevel->addrSkip);
 			sqlite3VdbeJumpHere(v, pLevel->addrSkip - 2);
 		}

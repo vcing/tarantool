@@ -251,6 +251,8 @@ sqlite3LocateIndex(sqlite3 * db, const char *zName, const char *zTable)
 static void
 freeIndex(sqlite3 * db, Index * p)
 {
+	if (p->def != NULL)
+		index_def_delete(p->def);
 	sql_expr_free(db, p->pPartIdxWhere, false);
 	sqlite3ExprListDelete(db, p->aColExpr);
 	sqlite3DbFree(db, p->zColAff);
@@ -1120,25 +1122,9 @@ struct coll *
 sql_index_collation(Index *idx, uint32_t column, uint32_t *coll_id)
 {
 	assert(idx != NULL);
-	uint32_t space_id = SQLITE_PAGENO_TO_SPACEID(idx->pTable->tnum);
-	struct space *space = space_by_id(space_id);
-
-	assert(column < idx->nColumn);
-	/*
-	 * If space is still under construction, or it is
-	 * an ephemeral space, then fetch collation from
-	 * SQL internal structure.
-	 */
-	if (space == NULL) {
-		assert(column < idx->nColumn);
-		*coll_id = idx->coll_id_array[column];
-		return idx->coll_array[column];
-	}
-
-	struct key_def *key_def = sql_index_key_def(idx);
-	assert(key_def != NULL && key_def->part_count >= column);
-	*coll_id = key_def->parts[column].coll_id;
-	return key_def->parts[column].coll;
+	assert(idx->def != NULL);
+	*coll_id = idx->def->key_def->parts[column].coll_id;
+	return idx->def->key_def->parts[column].coll;
 }
 
 enum sort_order
@@ -2810,14 +2796,152 @@ bool
 index_is_unique(Index *idx)
 {
 	assert(idx != NULL);
-	uint32_t space_id = SQLITE_PAGENO_TO_SPACEID(idx->tnum);
-	uint32_t index_id = SQLITE_PAGENO_TO_INDEXID(idx->tnum);
-	struct space *space = space_by_id(space_id);
-	assert(space != NULL);
-	struct index *tnt_index = space_index(space, index_id);
-	assert(tnt_index != NULL);
+	assert(idx->def != NULL);
+	return idx->def->opts.is_unique;
+}
 
-	return tnt_index->def->opts.is_unique;
+uint32_t
+get_new_iid(Index *indexes)
+{
+	uint32_t max_iid = 0;
+	Index *idx;
+
+	if (indexes == NULL)
+		return 0;
+
+	for (idx = indexes; idx; idx = idx->pNext)
+		max_iid = idx->def->iid > max_iid ? idx->def->iid : max_iid;
+
+	return max_iid + 1;
+}
+
+void
+append(struct region *r, const char *str, char **sql_arr, int idx, int total_sql_str_size)
+{
+	sql_arr[idx] = region_alloc(r, strlen(str));
+	strcpy(sql_arr[idx], str);
+	total_sql_str_size += strlen(str);
+}
+
+char *
+create_sql(const char *idx_name, struct space_def *space_def, ExprList *expr_list)
+{
+	struct region *r = &fiber()->gc;
+	/*
+	 * CREATE_INDEX_ + INDEX_NAME + _ON_ + TABLE_NAME + _(
+	 */
+	uint32_t sql_parts_count = 5;
+	Expr *column_expr;
+	for (uint32_t i = 0; i < (uint32_t) expr_list->nExpr; i++){
+		column_expr = sqlite3ExprSkipCollate(expr_list->a[i].pExpr);
+		sql_parts_count += expr_list->a[i].pExpr == column_expr ? 2 : 4;
+	}
+
+	size_t total_sql_str_size = 0;
+
+	char **sql = region_alloc(r, sizeof(char*) * sql_parts_count);
+
+	char *CREATE_INDEX = "CREATE INDEX ";
+	append(r, CREATE_INDEX, sql, 0, total_sql_str_size);
+	append(r, idx_name, sql, 1, total_sql_str_size);
+
+	char *ON = " ON ";
+	append(r, ON, sql, 2, total_sql_str_size);
+
+	char *name = space_def->name;
+	append(r, name, sql, 3, total_sql_str_size);
+	append(r, " (", sql, 4, total_sql_str_size);
+
+	Expr *collation_expr;
+	uint32_t sql_idx = 5;
+	for (int i = 0; i < expr_list->nExpr; i++){
+		column_expr = sqlite3ExprSkipCollate(expr_list->a[i].pExpr);
+		collation_expr = expr_list->a[i].pExpr == column_expr ?
+				 NULL : expr_list->a[i].pExpr;
+
+		name = space_def->fields[column_expr->iColumn].name;
+
+		if (collation_expr == NULL){
+			append(r, name, sql, sql_idx, total_sql_str_size);
+			sql_idx++;
+
+			append(r, ", ", sql, sql_idx, total_sql_str_size);
+			sql_idx++;
+
+		} else {
+			append(r, name, sql, sql_idx, total_sql_str_size);
+			sql_idx++;
+
+			char *COLLATE = " COLLATE ";
+			append(r, COLLATE, sql, sql_idx, total_sql_str_size);
+			sql_idx++;
+
+			char *coll_name = collation_expr->u.zToken;
+			append(r, coll_name, sql, sql_idx, total_sql_str_size);
+			sql_idx++;
+
+			append(r, ", ", sql, sql_idx, total_sql_str_size);
+			sql_idx++;
+		}
+	}
+
+	// fix last ", " with ")\0"
+	strcpy(sql[sql_idx - 1], ")\0");
+	char *res = region_join(r, total_sql_str_size);
+	return res;
+}
+
+void
+set_index_def(Parse *parse, Index *index, Table *table,
+				   const char *name,
+				   uint32_t name_len, int on_error,
+				   ExprList *expr_list, u8 idx_type)
+{
+	struct space_def *space_def = table->def;
+	uint32_t iid = SQLITE_PAGENO_TO_INDEXID(index->tnum);
+	struct index_opts opts;
+	index_opts_create(&opts);
+	opts.stat = NULL;
+	opts.is_unique = on_error != ON_CONFLICT_ACTION_NONE;
+
+	struct key_def *key_def = key_def_new(expr_list->nExpr);
+
+	if (idx_type == SQLITE_IDXTYPE_APPDEF) {
+		opts.sql = create_sql(name, table->def, expr_list);
+	}
+
+	int i = 0;
+	Expr *column_expr;
+	Expr *collation_expr;
+	for (i = 0; i < expr_list->nExpr; i++) {
+		column_expr = sqlite3ExprSkipCollate(expr_list->a[i].pExpr);
+		collation_expr = expr_list->a[i].pExpr == column_expr ?
+				 NULL : expr_list->a[i].pExpr;
+
+		uint32_t fieldno = column_expr->iColumn;
+
+		uint32_t coll_id;
+		struct coll *coll;
+		if (collation_expr != NULL)
+			coll = sql_get_coll_seq(parse, collation_expr->u.zToken,&coll_id);
+		else
+			coll = sql_column_collation(space_def, fieldno, &coll_id);
+
+		key_def_set_part(key_def, i, fieldno,
+				space_def->fields[fieldno].type,
+				space_def->fields[fieldno].nullable_action,
+				coll, coll_id, SORT_ORDER_ASC);
+	}
+
+	struct key_def *pk_key_def;
+	if (idx_type == SQLITE_IDXTYPE_APPDEF) {
+		pk_key_def = table->pIndex->def->key_def;
+	} else {
+		pk_key_def = NULL;
+	}
+
+	index->def = index_def_new(space_def->id, iid, name, name_len,
+			     TREE, &opts, key_def, pk_key_def);
 }
 
 void
@@ -2982,6 +3106,14 @@ sql_create_index(struct Parse *parse, struct Token *token,
 	 * Allocate the index structure.
 	 */
 	nName = sqlite3Strlen30(zName);
+
+	if (nName > BOX_NAME_MAX) {
+		sqlite3ErrorMsg(parse,
+				"%s.%s exceeds indexes' names length limit",
+				pTab->def->name, zName);
+		goto exit_create_index;
+	}
+
 	pIndex = sqlite3AllocateIndexObject(db, col_list->nExpr,
 					    nName + nExtra + 1, &zExtra);
 	if (db->mallocFailed) {
@@ -3068,6 +3200,11 @@ sql_create_index(struct Parse *parse, struct Token *token,
 		 */
 		pIndex->sort_order[i] = SORT_ORDER_ASC;
 	}
+
+	set_index_def(parse, pIndex, pTab, zName,
+		      nName, on_error, col_list,
+		      idx_type);
+
 	if (pTab == parse->pNewTable) {
 		/* This routine has been called to create an automatic index as a
 		 * result of a PRIMARY KEY or UNIQUE clause on a column definition, or
@@ -3133,6 +3270,7 @@ sql_create_index(struct Parse *parse, struct Token *token,
 				}
 				if (idx_type == SQLITE_IDXTYPE_PRIMARYKEY)
 					pIdx->idxType = idx_type;
+
 				goto exit_create_index;
 			}
 		}
@@ -3141,6 +3279,7 @@ sql_create_index(struct Parse *parse, struct Token *token,
 	/* Link the new Index structure to its table and to the other
 	 * in-memory database structures.
 	 */
+
 	assert(parse->nErr == 0);
 	if (db->init.busy) {
 		Index *p;
@@ -3254,16 +3393,8 @@ uint32_t
 index_column_count(const Index *idx)
 {
 	assert(idx != NULL);
-	uint32_t space_id = SQLITE_PAGENO_TO_SPACEID(idx->tnum);
-	struct space *space = space_by_id(space_id);
-	/* It is impossible to find an ephemeral space by id. */
-	if (space == NULL)
-		return idx->nColumn;
-
-	uint32_t index_id = SQLITE_PAGENO_TO_INDEXID(idx->tnum);
-	struct index *index = space_index(space, index_id);
-	assert(index != NULL);
-	return index->def->key_def->part_count;
+	assert(idx->def != NULL);
+	return idx->def->key_def->part_count;
 }
 
 /** Return true if given index is unique and not nullable. */
@@ -3271,15 +3402,8 @@ bool
 index_is_unique_not_null(const Index *idx)
 {
 	assert(idx != NULL);
-	uint32_t space_id = SQLITE_PAGENO_TO_SPACEID(idx->tnum);
-	struct space *space = space_by_id(space_id);
-	assert(space != NULL);
-
-	uint32_t index_id = SQLITE_PAGENO_TO_INDEXID(idx->tnum);
-	struct index *index = space_index(space, index_id);
-	assert(index != NULL);
-	return (index->def->opts.is_unique &&
-		!index->def->key_def->is_nullable);
+	assert(idx->def != NULL);
+	return (idx->def->key_def->is_nullable && idx->def->opts.is_unique);
 }
 
 void

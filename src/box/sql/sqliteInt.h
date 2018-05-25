@@ -2124,6 +2124,7 @@ struct Index {
 				 * or _NONE
 				 */
 	unsigned idxType:2;	/* 1==UNIQUE, 2==PRIMARY KEY, 0==CREATE INDEX */
+    	struct index_def *def;
 };
 
 /**
