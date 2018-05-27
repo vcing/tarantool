@@ -731,7 +731,7 @@ vy_task_dump_complete(struct vy_scheduler *scheduler, struct vy_task *task)
 		goto delete_mems;
 	}
 
-	assert(new_run->info.min_lsn > lsm->dump_lsn);
+	assert(new_run->info.min_lsn >= lsm->dump_lsn);
 	assert(new_run->info.max_lsn <= dump_lsn);
 
 	/*
