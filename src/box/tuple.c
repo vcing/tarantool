@@ -58,6 +58,12 @@ struct tuple *box_tuple_last;
 
 struct tuple_format *tuple_format_runtime;
 
+/**
+ * All bigrefs of tuples
+ * \sa tuple_ref
+ */
+struct tuple_bigrefs bigrefs;
+
 static void
 runtime_tuple_delete(struct tuple_format *format, struct tuple *tuple);
 
@@ -210,6 +216,16 @@ tuple_init(field_name_hash_f hash)
 		       sizeof(struct tuple_iterator));
 
 	box_tuple_last = NULL;
+
+	bigrefs.size = 0;
+	bigrefs.capacity = TUPLE_BIGREF_MIN_CAPACITY;
+	bigrefs.refs = (uint32_t *) malloc(bigrefs.capacity * sizeof(uint32_t));
+	if (bigrefs.refs == NULL) {
+		diag_set(OutOfMemory, bigrefs.capacity *
+			sizeof(uint32_t), "malloc", "bigrefs.refs");
+		return -1;
+	}
+
 
 	if (coll_id_cache_init() != 0)
 		return -1;

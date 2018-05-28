@@ -129,7 +129,7 @@ index = s:create_index('primary', { type = 'tree' })
 a = s:insert{0}
 lots_of_links = {}
 ref_count = 0
-while (true) do table.insert(lots_of_links, s:get{0}) ref_count = ref_count + 1 end
+while (ref_count < 100000) do table.insert(lots_of_links, s:get{0}) ref_count = ref_count + 1 end
 ref_count
 lots_of_links = {}
 s:drop()

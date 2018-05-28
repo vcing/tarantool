@@ -327,6 +327,19 @@ struct PACKED tuple
 	 */
 };
 
+/**
+ * @brief Container for bigrefs.
+ */
+struct tuple_bigrefs
+{
+	/** reference counter */
+	uint32_t *refs;
+	/** index of last non-zero element */
+	uint16_t size;
+	/** capacity of container */
+	uint16_t capacity;
+};
+
 /** Size of the tuple including size of struct tuple. */
 static inline size_t
 tuple_size(const struct tuple *tuple)
@@ -774,7 +787,41 @@ tuple_field_uuid(const struct tuple *tuple, int fieldno,
 	return 0;
 }
 
-enum { TUPLE_REF_MAX = UINT16_MAX };
+enum {
+	TUPLE_BIGREFS_FACTOR = 2,
+	TUPLE_BIGREF_MAX = UINT32_MAX,
+	TUPLE_REF_MAX = UINT16_MAX >> 1,
+	TUPLE_REF_FLAG = UINT16_MAX ^ TUPLE_REF_MAX,
+	TUPLE_BIGREF_MIN_CAPACITY = 16
+};
+
+extern struct tuple_bigrefs bigrefs;
+
+/**
+ * Return index for new bigref
+ * @retval Number less than or equal 0x7fff Success.
+ * @retval Number more than 0x7fff Too many refs error.
+ */
+static inline uint16_t
+get_bigref_index(void)
+{
+	for(uint16_t i = 0; i < bigrefs.size; ++i)
+		if(bigrefs.refs[i] == 0)
+			return i;
+	if(bigrefs.size == bigrefs.capacity - 1) {
+		if(bigrefs.capacity > TUPLE_REF_MAX / TUPLE_BIGREFS_FACTOR)
+			return TUPLE_REF_FLAG;
+		bigrefs.capacity *= TUPLE_BIGREFS_FACTOR;
+		bigrefs.refs = (uint32_t *) realloc(bigrefs.refs,
+				bigrefs.capacity * sizeof(uint32_t));
+		if (bigrefs.refs == NULL) {
+			diag_set(OutOfMemory, bigrefs.capacity *
+				sizeof(uint32_t), "realloc", "bigrefs.refs");
+			return TUPLE_REF_FLAG;
+		}
+	}
+	return bigrefs.size++;
+}
 
 /**
  * Increment tuple reference counter.
@@ -785,12 +832,52 @@ enum { TUPLE_REF_MAX = UINT16_MAX };
 static inline int
 tuple_ref(struct tuple *tuple)
 {
-	if (tuple->refs + 1 > TUPLE_REF_MAX) {
-		diag_set(ClientError, ER_TUPLE_REF_OVERFLOW);
-		return -1;
+	if(tuple->refs == TUPLE_REF_MAX) {
+		uint16_t index = get_bigref_index();
+		if(index > TUPLE_REF_MAX) {
+			diag_set(ClientError, ER_TUPLE_REF_OVERFLOW);
+			return -1;
+		}
+		tuple->refs = TUPLE_REF_FLAG | index;
+		bigrefs.refs[index] = TUPLE_REF_MAX;
 	}
-	tuple->refs++;
+	if((tuple->refs & TUPLE_REF_FLAG) > 0) {
+		uint16_t index = tuple->refs ^ TUPLE_REF_FLAG;
+		if (bigrefs.refs[index] > TUPLE_BIGREF_MAX - 1) {
+			diag_set(ClientError, ER_TUPLE_REF_OVERFLOW);
+			return -1;
+		}
+		bigrefs.refs[index]++;
+	} else tuple->refs++;
 	return 0;
+}
+
+/**
+ * Check if capacity of bigrefs can be reduced
+ */
+static inline void
+bigrefs_check_capacity(void)
+{
+	uint16_t tmp_size;
+	uint16_t tmp_capacity = bigrefs.capacity;
+	for(uint16_t i = 0; i < bigrefs.capacity; ++i)
+		if(bigrefs.refs[i] > 0)
+			tmp_size = i;
+	while(tmp_capacity > TUPLE_BIGREF_MIN_CAPACITY &&
+	      tmp_size < tmp_capacity / TUPLE_BIGREFS_FACTOR) {
+		tmp_capacity /= TUPLE_BIGREFS_FACTOR;
+		if(tmp_capacity < TUPLE_BIGREF_MIN_CAPACITY)
+			tmp_capacity = TUPLE_BIGREF_MIN_CAPACITY;
+	}
+	bigrefs.size = tmp_size;
+	if(tmp_capacity < bigrefs.capacity) {
+		bigrefs.capacity = tmp_capacity;
+		bigrefs.refs = (uint32_t *) realloc(bigrefs.refs,
+				bigrefs.capacity * sizeof(uint32_t));
+		if (bigrefs.refs == NULL)
+			diag_set(OutOfMemory, bigrefs.capacity *
+				 sizeof(uint32_t), "malloc", "bigrefs.refs");
+	}
 }
 
 /**
@@ -802,8 +889,20 @@ static inline void
 tuple_unref(struct tuple *tuple)
 {
 	assert(tuple->refs - 1 >= 0);
+	uint16_t index = tuple->refs ^ TUPLE_REF_FLAG;
 
-	tuple->refs--;
+	if((tuple->refs & TUPLE_REF_FLAG) > 0) {
+		bigrefs.refs[index]--;
+	} else {
+		tuple->refs--;
+	}
+
+	if((tuple->refs & TUPLE_REF_FLAG) > 0 &&
+	   (bigrefs.refs[index] < TUPLE_REF_MAX)) {
+		tuple->refs = bigrefs.refs[index];
+		bigrefs.refs[index] = 0;
+		bigrefs_check_capacity();
+	}
 
 	if (tuple->refs == 0)
 		tuple_delete(tuple);
@@ -824,11 +923,27 @@ tuple_bless(struct tuple *tuple)
 {
 	assert(tuple != NULL);
 	/* Ensure tuple can be referenced at least once after return */
-	if (tuple->refs + 2 > TUPLE_REF_MAX) {
-		diag_set(ClientError, ER_TUPLE_REF_OVERFLOW);
-		return NULL;
+
+	if(tuple->refs == TUPLE_REF_MAX) {
+		uint16_t index = get_bigref_index();
+		if(index > TUPLE_REF_MAX) {
+			diag_set(ClientError, ER_TUPLE_REF_OVERFLOW);
+			return NULL;
+		}
+		tuple->refs = TUPLE_REF_FLAG | index;
+		bigrefs.refs[index] = TUPLE_REF_MAX;
 	}
-	tuple->refs++;
+	if((tuple->refs & TUPLE_REF_FLAG) > 0) {
+		uint16_t index = tuple->refs ^ TUPLE_REF_FLAG;
+		if (bigrefs.refs[index] > TUPLE_BIGREF_MAX - 2) {
+			diag_set(ClientError, ER_TUPLE_REF_OVERFLOW);
+			return NULL;
+		}
+		bigrefs.refs[index]++;
+	} else {
+		tuple->refs++;
+	}
+
 	/* Remove previous tuple */
 	if (likely(box_tuple_last != NULL))
 		tuple_unref(box_tuple_last); /* do not throw */
