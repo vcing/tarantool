@@ -11,6 +11,8 @@ double
 fiber_clock(void);
 uint64_t
 fiber_clock64(void);
+struct ev_loop *
+fiber_currentloop(void);
 ]]
 local C = ffi.C
 
@@ -30,8 +32,13 @@ local function fiber_clock64()
     return C.fiber_clock64()
 end
 
+local function fiber_currentloop()
+    return C.fiber_currentloop()
+end
+
 fiber.time = fiber_time
 fiber.time64 = fiber_time64
 fiber.clock = fiber_clock
 fiber.clock64 = fiber_clock64
+fiber.currentloop= fiber_currentloop
 return fiber

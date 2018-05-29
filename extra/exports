@@ -15,6 +15,7 @@ fiber_time
 fiber_time64
 fiber_clock
 fiber_clock64
+fiber_currentloop
 tarantool_lua_slab_cache
 ibuf_create
 ibuf_reinit

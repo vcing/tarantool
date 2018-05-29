@@ -329,6 +329,13 @@ struct slab_cache;
 API_EXPORT struct slab_cache *
 cord_slab_cache(void);
 
+/**
+ * Return the fiber event loop
+ */
+struct ev_loop;
+API_EXPORT struct ev_loop *
+fiber_currentloop(void);
+
 /** \endcond public */
 
 /**

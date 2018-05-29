@@ -1242,3 +1242,9 @@ int fiber_stat(fiber_stat_cb cb, void *cb_ctx)
 	}
 	return 0;
 }
+
+struct ev_loop *
+fiber_currentloop(void)
+{
+    return loop();
+}
