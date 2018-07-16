@@ -863,11 +863,7 @@ sqlite3VdbeSorterInit(sqlite3 * db,	/* Database connection (for malloc()) */
 
 	/* Initialize the upper limit on the number of worker threads */
 #if SQLITE_MAX_WORKER_THREADS>0
-	if (sqlite3TempInMemory(db) || sqlite3GlobalConfig.bCoreMutex == 0) {
-		nWorker = 0;
-	} else {
-		nWorker = db->aLimit[SQLITE_LIMIT_WORKER_THREADS];
-	}
+	nWorker = db->aLimit[SQLITE_LIMIT_WORKER_THREADS];
 #endif
 
 	/* Do not allow the total number of threads (main thread + all workers)
@@ -913,15 +909,8 @@ sqlite3VdbeSorterInit(sqlite3 * db,	/* Database connection (for malloc()) */
 			u32 szPma = sqlite3GlobalConfig.szPma;
 			pSorter->mnPmaSize = szPma * pgsz;
 
-			mxCache = db->mdb.pSchema->cache_size;
-			if (mxCache < 0) {
-				/* A negative cache-size value C indicates that the cache is abs(C)
-				 * KiB in size.
-				 */
-				mxCache = mxCache * -1024;
-			} else {
-				mxCache = mxCache * pgsz;
-			}
+			mxCache = SQLITE_DEFAULT_CACHE_SIZE;
+			mxCache = mxCache * -1024;
 			mxCache = MIN(mxCache, SQLITE_MAX_PMASZ);
 			pSorter->mxPmaSize =
 			    MAX(pSorter->mnPmaSize, (int)mxCache);
@@ -941,9 +930,7 @@ sqlite3VdbeSorterInit(sqlite3 * db,	/* Database connection (for malloc()) */
 		}
 
 		if ((pKeyInfo->nField + pKeyInfo->nXField) < 13
-		    && (pKeyInfo->aColl[0] == 0
-			|| pKeyInfo->aColl[0] == db->pDfltColl)
-		    ) {
+		    && (pKeyInfo->aColl[0] == NULL)) {
 			pSorter->typeMask =
 			    SORTER_TYPE_INTEGER | SORTER_TYPE_TEXT;
 		}
@@ -1269,7 +1256,6 @@ vdbeSorterOpenTempFile(sqlite3 * db,	/* Database handle doing sort */
 	if (sqlite3FaultSim(202))
 		return SQLITE_IOERR_ACCESS;
 	rc = sqlite3OsOpenMalloc(db->pVfs, 0, ppFd,
-				 SQLITE_OPEN_TEMP_JOURNAL |
 				 SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE |
 				 SQLITE_OPEN_EXCLUSIVE |
 				 SQLITE_OPEN_DELETEONCLOSE, &rc);

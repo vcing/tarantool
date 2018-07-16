@@ -40,7 +40,6 @@
 #include <bit/bit.h>
 
 #include "tuple.h"
-#include "tuple_compare.h"
 #include "iproto_constants.h"
 
 #if defined(__cplusplus)
@@ -105,14 +104,6 @@ struct vy_stmt {
 	int64_t lsn;
 	uint8_t  type; /* IPROTO_SELECT/REPLACE/UPSERT/DELETE */
 	/**
-	 * Number of UPSERT statements for the same key preceding
-	 * this statement. Used to trigger upsert squashing in the
-	 * background (see vy_range_set_upsert()). This member is
-	 * stored only for UPSERT statements in the extra memory
-	 * space before offsets table.
-	 *
-	 *     uint8_t n_upserts;
-	 *
 	 * Offsets array concatenated with MessagePack fields
 	 * array.
 	 * char raw[0];
@@ -147,23 +138,28 @@ vy_stmt_set_type(struct tuple *stmt, enum iproto_type type)
 	((struct vy_stmt *) stmt)->type = type;
 }
 
-/** Get upserts count of the vinyl statement. */
+/**
+ * Get upserts count of the vinyl statement.
+ * Only for UPSERT statements allocated on lsregion.
+ */
 static inline uint8_t
 vy_stmt_n_upserts(const struct tuple *stmt)
 {
-	assert(tuple_format(stmt)->extra_size == sizeof(uint8_t));
-	return *((const uint8_t *) tuple_extra(stmt));
+	assert(stmt->refs == 0);
+	assert(vy_stmt_type(stmt) == IPROTO_UPSERT);
+	return *((uint8_t *)stmt - 1);
 }
 
-/** Set upserts count of the vinyl statement. */
+/**
+ * Set upserts count of the vinyl statement.
+ * Only for UPSERT statements allocated on lsregion.
+ */
 static inline void
 vy_stmt_set_n_upserts(struct tuple *stmt, uint8_t n)
 {
-	struct tuple_format *format = tuple_format(stmt);
-	assert(format->extra_size == sizeof(uint8_t));
-	char *extra = (char *) stmt + stmt->data_offset -
-		      tuple_format_meta_size(format);
-	*((uint8_t *) extra) = n;
+	assert(stmt->refs == 0);
+	assert(vy_stmt_type(stmt) == IPROTO_UPSERT);
+	*((uint8_t *)stmt - 1) = n;
 }
 
 /** Get the column mask of the specified tuple. */
@@ -213,7 +209,7 @@ vy_tuple_delete(struct tuple_format *format, struct tuple *tuple);
  * @return new statement of the same type with the same data.
  */
 struct tuple *
-vy_stmt_dup(const struct tuple *stmt, struct tuple_format *format);
+vy_stmt_dup(const struct tuple *stmt);
 
 struct lsregion;
 
@@ -508,14 +504,12 @@ vy_stmt_new_upsert(struct tuple_format *format,
 /**
  * Create REPLACE statement from UPSERT statement.
  *
- * @param replace_format Format for new REPLACE statement.
  * @param upsert         Upsert statement.
  * @retval not NULL Success.
  * @retval     NULL Memory error.
  */
 struct tuple *
-vy_stmt_replace_from_upsert(struct tuple_format *replace_format,
-			    const struct tuple *upsert);
+vy_stmt_replace_from_upsert(const struct tuple *upsert);
 
 /**
  * Extract MessagePack data from the REPLACE/UPSERT statement.
@@ -528,8 +522,6 @@ static inline const char *
 vy_upsert_data_range(const struct tuple *tuple, uint32_t *p_size)
 {
 	assert(vy_stmt_type(tuple) == IPROTO_UPSERT);
-	/* UPSERT must have the n_upserts field. */
-	assert(tuple_format(tuple)->extra_size == sizeof(uint8_t));
 	const char *mp = tuple_data(tuple);
 	assert(mp_typeof(*mp) == MP_ARRAY);
 	const char *mp_end = mp;
@@ -635,9 +627,7 @@ vy_stmt_encode_secondary(const struct tuple *value,
  */
 struct tuple *
 vy_stmt_decode(struct xrow_header *xrow, const struct key_def *key_def,
-	       struct tuple_format *format,
-	       struct tuple_format *upsert_format,
-	       bool is_primary);
+	       struct tuple_format *format, bool is_primary);
 
 /**
  * Format a statement into string.
@@ -666,18 +656,6 @@ struct tuple_format *
 vy_tuple_format_new_with_colmask(struct tuple_format *mem_format);
 
 /**
- * Create a tuple format for UPSERT tuples. UPSERTs has an additional
- * extra byte before an offsets table, that stores the count
- * of squashed upserts @sa vy_squash.
- * @param mem_format A base tuple format.
- *
- * @retval not NULL Success.
- * @retval     NULL Memory or format register error.
- */
-struct tuple_format *
-vy_tuple_format_new_upsert(struct tuple_format *mem_format);
-
-/**
  * Check if a key of @a tuple contains NULL.
  * @param tuple Tuple to check.
  * @param def Key def to check by.
@@ -688,7 +666,7 @@ vy_tuple_key_contains_null(const struct tuple *tuple, const struct key_def *def)
 {
 	for (uint32_t i = 0; i < def->part_count; ++i) {
 		const char *field = tuple_field(tuple, def->parts[i].fieldno);
-		if (mp_typeof(*field) == MP_NIL)
+		if (field == NULL || mp_typeof(*field) == MP_NIL)
 			return true;
 	}
 	return false;

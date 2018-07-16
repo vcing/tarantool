@@ -84,11 +84,7 @@ struct Keyword {
 #else
 #  define CONFLICT   0x00000080
 #endif
-#ifdef SQLITE_OMIT_EXPLAIN
-#  define EXPLAIN    0
-#else
-#  define EXPLAIN    0x00000100
-#endif
+#define EXPLAIN      0x00000100
 #ifdef SQLITE_OMIT_FOREIGN_KEY
 #  define FKEY       0
 #else
@@ -104,11 +100,7 @@ struct Keyword {
 #else
 #  define REINDEX    0x00000800
 #endif
-#ifdef SQLITE_OMIT_SUBQUERY
-#  define SUBQUERY   0
-#else
-#  define SUBQUERY   0x00001000
-#endif
+#define SUBQUERY     0x00001000
 #ifdef SQLITE_OMIT_TRIGGER
 #  define TRIGGER    0
 #else

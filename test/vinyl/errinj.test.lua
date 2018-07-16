@@ -67,6 +67,11 @@ end;
 s:drop();
 test_run:cmd("setopt delimiter ''");
 
+-- Disable the cache so that we can check that disk errors
+-- are handled properly.
+vinyl_cache = box.cfg.vinyl_cache
+box.cfg{vinyl_cache = 0}
+
 s = box.schema.space.create('test', {engine='vinyl'})
 _ = s:create_index('pk')
 for i = 1, 10 do s:insert({i, 'test str' .. tostring(i)}) end
@@ -77,26 +82,34 @@ s:select()
 errinj.set("ERRINJ_VY_READ_PAGE", false)
 s:select()
 
-errinj.set("ERRINJ_VY_READ_PAGE_TIMEOUT", true)
+errinj.set("ERRINJ_VY_READ_PAGE_TIMEOUT", 0.05)
 function test_cancel_read () k = s:select() return #k end
 f1 = fiber.create(test_cancel_read)
 fiber.cancel(f1)
 -- task should be done
 fiber.sleep(0.1)
-errinj.set("ERRINJ_VY_READ_PAGE_TIMEOUT", false);
+errinj.set("ERRINJ_VY_READ_PAGE_TIMEOUT", 0);
 s:select()
 
 -- error after timeout for canceled fiber
 errinj.set("ERRINJ_VY_READ_PAGE", true)
-errinj.set("ERRINJ_VY_READ_PAGE_TIMEOUT", true)
+errinj.set("ERRINJ_VY_READ_PAGE_TIMEOUT", 0.05)
 f1 = fiber.create(test_cancel_read)
 fiber.cancel(f1)
 fiber.sleep(0.1)
-errinj.set("ERRINJ_VY_READ_PAGE_TIMEOUT", false);
+errinj.set("ERRINJ_VY_READ_PAGE_TIMEOUT", 0);
 errinj.set("ERRINJ_VY_READ_PAGE", false);
 s:select()
 
+-- index is dropped while a read task is in progress
+errinj.set("ERRINJ_VY_READ_PAGE_TIMEOUT", 0.05)
+f1 = fiber.create(test_cancel_read)
+fiber.cancel(f1)
 s:drop()
+fiber.sleep(0.1)
+errinj.set("ERRINJ_VY_READ_PAGE_TIMEOUT", 0);
+
+box.cfg{vinyl_cache = vinyl_cache}
 
 -- gh-2871: check that long reads are logged
 s = box.schema.space.create('test', {engine = 'vinyl'})
@@ -105,10 +118,10 @@ for i = 1, 10 do s:insert{i, i * 2} end
 box.snapshot()
 too_long_threshold = box.cfg.too_long_threshold
 box.cfg{too_long_threshold = 0.01}
-errinj.set("ERRINJ_VY_READ_PAGE_TIMEOUT", true)
+errinj.set("ERRINJ_VY_READ_PAGE_TIMEOUT", 0.05)
 s:get(10) ~= nil
 #s:select(5, {iterator = 'LE'}) == 5
-errinj.set("ERRINJ_VY_READ_PAGE_TIMEOUT", false);
+errinj.set("ERRINJ_VY_READ_PAGE_TIMEOUT", 0);
 test_run:cmd("push filter 'lsn=[0-9]+' to 'lsn=<lsn>'")
 test_run:grep_log('default', 'get.* took too long')
 test_run:grep_log('default', 'select.* took too long')
@@ -309,12 +322,10 @@ function fill_space()
 end;
 
 function iterate_in_read_view()
-    box.begin()
     local i = create_iterator(space)
     last_read = i.next()
     fiber.sleep(100000)
     last_read = i.next()
-    box.commit()
 end;
 
 test_run:cmd("setopt delimiter ''");
@@ -357,8 +368,24 @@ fiber.sleep(0)
 s:drop()
 -- Wait for the dump task to complete.
 box.snapshot()
+box.error.injection.set('ERRINJ_VY_RUN_WRITE_TIMEOUT', 0)
+
+--
+-- Check that all dump/compact tasks that are in progress at
+-- the time when the server stops are aborted immediately.
+--
+s = box.schema.space.create('test', {engine = 'vinyl'})
+_ = s:create_index('i1', {parts = {1, 'unsigned'}})
+_ = s:create_index('i2', {parts = {2, 'unsigned'}})
+box.error.injection.set('ERRINJ_VY_RUN_WRITE_STMT_TIMEOUT', 0.01)
+for i = 1, 1000 do s:replace{i, i} end
+_ = fiber.create(function() box.snapshot() end)
+fiber.sleep(0.01)
 test_run:cmd('switch default')
+t1 = fiber.time()
 test_run:cmd("stop server test")
+t2 = fiber.time()
+t2 - t1 < 1
 test_run:cmd("cleanup server test")
 
 --
@@ -452,7 +479,6 @@ box.snapshot()
 s:replace{0, 0}
 s:select{0}
 
-box.begin()
 errinj.set("ERRINJ_WAL_DELAY", true)
 wait_replace = true
 _ = fiber.create(function() s:replace{1, 1} wait_replace = false end)
@@ -463,6 +489,62 @@ errinj.set("ERRINJ_WAL_DELAY", false)
 while wait_replace do fiber.sleep(0.01) end
 state, value = gen(param, state)
 value
-box.commit()
+s:drop()
 
+--
+-- gh-2442: secondary index cursor must skip key update, made
+-- after the secondary index scan, but before a primary index
+-- lookup. It is ok, and the test checks this.
+--
+s = box.schema.create_space('test', {engine = 'vinyl'})
+pk = s:create_index('pk')
+sk = s:create_index('sk', {parts = {{2, 'unsigned'}}})
+s:replace{1, 1}
+s:replace{3, 3}
+box.snapshot()
+ret = nil
+function do_read() ret = sk:select({2}, {iterator = 'GE'}) end
+errinj.set("ERRINJ_VY_DELAY_PK_LOOKUP", true)
+f = fiber.create(do_read)
+f:status()
+ret
+s:replace{2, 2}
+errinj.set("ERRINJ_VY_DELAY_PK_LOOKUP", false)
+while ret == nil do fiber.sleep(0.01) end
+ret
+s:drop()
+
+--
+-- Check that ALTER is abroted if a tuple inserted during space
+-- format change does not conform to the new format.
+--
+format = {}
+format[1] = {name = 'field1', type = 'unsigned'}
+format[2] = {name = 'field2', type = 'string', is_nullable = true}
+s = box.schema.space.create('test', {engine = 'vinyl', format = format})
+_ = s:create_index('pk', {page_size = 16})
+
+pad = string.rep('x', 16)
+for i = 101, 200 do s:replace{i, pad} end
+box.snapshot()
+
+ch = fiber.channel(1)
+test_run:cmd("setopt delimiter ';'")
+_ = fiber.create(function()
+    fiber.sleep(0.01)
+    for i = 1, 100 do
+        s:replace{i, box.NULL}
+    end
+    ch:put(true)
+end);
+test_run:cmd("setopt delimiter ''");
+
+errinj.set("ERRINJ_VY_READ_PAGE_TIMEOUT", 0.001)
+format[2].is_nullable = false
+s:format(format) -- must fail
+errinj.set("ERRINJ_VY_READ_PAGE_TIMEOUT", 0)
+
+ch:get()
+
+s:count() -- 200
 s:drop()

@@ -35,6 +35,7 @@
 #include "errinj.h"
 #include "memory.h"
 #include "fiber.h"
+#include "tuple.h"
 #include <third_party/qsort_arg.h>
 #include <small/mempool.h>
 
@@ -315,6 +316,14 @@ memtx_tree_index_update_def(struct index *base)
 	index->tree.arg = memtx_tree_index_cmp_def(index);
 }
 
+static bool
+memtx_tree_index_depends_on_pk(struct index *base)
+{
+	struct index_def *def = base->def;
+	/* See comment to memtx_tree_index_cmp_def(). */
+	return !def->opts.is_unique || def->key_def->is_nullable;
+}
+
 static ssize_t
 memtx_tree_index_size(struct index *base)
 {
@@ -581,8 +590,13 @@ memtx_tree_index_create_snapshot_iterator(struct index *base)
 static const struct index_vtab memtx_tree_index_vtab = {
 	/* .destroy = */ memtx_tree_index_destroy,
 	/* .commit_create = */ generic_index_commit_create,
-	/* .commit_drop = */ generic_index_commit_drop,
+	/* .abort_create = */ memtx_index_abort_create,
+	/* .commit_modify = */ generic_index_commit_modify,
+	/* .commit_drop = */ memtx_index_commit_drop,
 	/* .update_def = */ memtx_tree_index_update_def,
+	/* .depends_on_pk = */ memtx_tree_index_depends_on_pk,
+	/* .def_change_requires_rebuild = */
+		memtx_index_def_change_requires_rebuild,
 	/* .size = */ memtx_tree_index_size,
 	/* .bsize = */ memtx_tree_index_bsize,
 	/* .min = */ generic_index_min,
@@ -595,6 +609,7 @@ static const struct index_vtab memtx_tree_index_vtab = {
 	/* .create_snapshot_iterator = */
 		memtx_tree_index_create_snapshot_iterator,
 	/* .info = */ generic_index_info,
+	/* .reset_stat = */ generic_index_reset_stat,
 	/* .begin_build = */ memtx_tree_index_begin_build,
 	/* .reserve = */ memtx_tree_index_reserve,
 	/* .build_next = */ memtx_tree_index_build_next,

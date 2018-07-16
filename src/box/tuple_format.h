@@ -35,6 +35,7 @@
 #include "field_def.h"
 #include "errinj.h"
 #include "tuple_dictionary.h"
+#include "coll_cache.h"
 
 #if defined(__cplusplus)
 extern "C" {
@@ -98,6 +99,8 @@ struct tuple_field {
 	bool is_key_part;
 	/** Action to perform if NULL constraint failed. */
 	enum on_conflict_action nullable_action;
+	/** Collation definition for string comparison */
+	struct coll *coll;
 };
 
 /**
@@ -212,12 +215,19 @@ tuple_format_new(struct tuple_format_vtab *vtab, struct key_def * const *keys,
 		 uint32_t space_field_count, struct tuple_dictionary *dict);
 
 /**
- * Check that two tuple formats are identical.
- * @param a format a
- * @param b format b
+ * Check, if @a format1 can store any tuples of @a format2. For
+ * example, if a field is not nullable in format1 and the same
+ * field is nullable in format2, or the field type is integer
+ * in format1 and unsigned in format2, then format1 can not store
+ * format2 tuples.
+ * @param format1 tuple format to check for compatibility of
+ * @param format2 tuple format to check compatibility with
+ *
+ * @retval True, if @a format1 can store any tuples of @a format2.
  */
 bool
-tuple_format_eq(const struct tuple_format *a, const struct tuple_format *b);
+tuple_format1_can_store_format2_tuples(const struct tuple_format *format1,
+				       const struct tuple_format *format2);
 
 /**
  * Register the duplicate of the specified format.
@@ -241,6 +251,21 @@ tuple_format_meta_size(const struct tuple_format *format)
 {
 	return format->extra_size + format->field_map_size;
 }
+
+/**
+ * Calculate minimal field count of tuples with specified keys and
+ * space format.
+ * @param keys Array of key definitions of indexes.
+ * @param key_count Length of @a keys.
+ * @param space_fields Array of fields from a space format.
+ * @param space_field_count Length of @a space_fields.
+ *
+ * @retval Minimal field count.
+ */
+uint32_t
+tuple_format_min_field_count(struct key_def * const *keys, uint16_t key_count,
+			     const struct field_def *space_fields,
+			     uint32_t space_field_count);
 
 typedef struct tuple_format box_tuple_format_t;
 
@@ -310,7 +335,7 @@ static inline const char *
 tuple_field_raw(const struct tuple_format *format, const char *tuple,
 		const uint32_t *field_map, uint32_t field_no)
 {
-	if (likely(field_no < format->field_count)) {
+	if (likely(field_no < format->index_field_count)) {
 		/* Indexed field */
 
 		if (field_no == 0) {
@@ -319,8 +344,12 @@ tuple_field_raw(const struct tuple_format *format, const char *tuple,
 		}
 
 		int32_t offset_slot = format->fields[field_no].offset_slot;
-		if (offset_slot != TUPLE_OFFSET_SLOT_NIL)
-			return tuple + field_map[offset_slot];
+		if (offset_slot != TUPLE_OFFSET_SLOT_NIL) {
+			if (field_map[offset_slot] != 0)
+				return tuple + field_map[offset_slot];
+			else
+				return NULL;
+		}
 	}
 	ERROR_INJECT(ERRINJ_TUPLE_FIELD, return NULL);
 	uint32_t field_count = mp_decode_array(&tuple);
@@ -354,6 +383,25 @@ tuple_field_raw_by_name(struct tuple_format *format, const char *tuple,
 		return NULL;
 	return tuple_field_raw(format, tuple, field_map, fieldno);
 }
+
+/**
+ * Get tuple field by its path.
+ * @param format Tuple format.
+ * @param tuple MessagePack tuple's body.
+ * @param field_map Tuple field map.
+ * @param path Field path.
+ * @param path_len Length of @a path.
+ * @param path_hash Hash of @a path.
+ * @param[out] field Found field, or NULL, if not found.
+ *
+ * @retval  0 Success.
+ * @retval -1 Error in JSON path.
+ */
+int
+tuple_field_raw_by_path(struct tuple_format *format, const char *tuple,
+                        const uint32_t *field_map, const char *path,
+                        uint32_t path_len, uint32_t path_hash,
+                        const char **field);
 
 #if defined(__cplusplus)
 } /* extern "C" */

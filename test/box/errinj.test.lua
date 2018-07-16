@@ -39,9 +39,6 @@ errinj.set("ERRINJ_WAL_ROTATE", false)
 space:update(1, {{'=', 2, 2}})
 space:get{1}
 space:get{2}
-errinj.set("ERRINJ_WAL_ROTATE", true)
-space:truncate()
-errinj.set("ERRINJ_WAL_ROTATE", false)
 space:truncate()
 
 space:drop()
@@ -123,7 +120,6 @@ box.begin()
     s:insert{2}
 box.commit();
 errinj.set("ERRINJ_TUPLE_ALLOC", false);
-s:select{};
 box.rollback();
 s:select{};
 box.begin()
@@ -315,7 +311,7 @@ i1:select{}
 i2:select{}
 i3:select{}
 
-box.error.injection.set('ERRINJ_BUILD_SECONDARY', i2.id)
+box.error.injection.set('ERRINJ_BUILD_INDEX', i2.id)
 
 i1:alter{parts = {3, "unsigned"}}
 
@@ -324,7 +320,7 @@ i1:select{}
 i2:select{}
 i3:select{}
 
-box.error.injection.set('ERRINJ_BUILD_SECONDARY', i3.id)
+box.error.injection.set('ERRINJ_BUILD_INDEX', i3.id)
 
 i1:alter{parts = {4, "unsigned"}}
 
@@ -333,7 +329,7 @@ i1:select{}
 i2:select{}
 i3:select{}
 
-box.error.injection.set('ERRINJ_BUILD_SECONDARY', -1)
+box.error.injection.set('ERRINJ_BUILD_INDEX', -1)
 
 s:drop()
 
@@ -345,7 +341,109 @@ s = box.schema.space.create('test')
 pk = s:create_index('pk')
 sk = s:create_index('sk', {parts = {2, 'unsigned'}})
 s:replace{1, 1}
-box.error.injection.set('ERRINJ_BUILD_SECONDARY', sk.id)
+box.error.injection.set('ERRINJ_BUILD_INDEX', sk.id)
 sk:alter({parts = {2, 'number'}})
-box.error.injection.set('ERRINJ_BUILD_SECONDARY', -1)
+box.error.injection.set('ERRINJ_BUILD_INDEX', -1)
+s:drop()
+
+--
+-- gh-3255: iproto can crash and discard responses, if a network
+-- is saturated, and DML yields too long on commit.
+--
+
+box.schema.user.grant('guest', 'read,write,execute', 'universe')
+s = box.schema.space.create('test')
+_ = s:create_index('pk')
+
+c = net_box.connect(box.cfg.listen)
+
+ch = fiber.channel(200)
+errinj.set("ERRINJ_IPROTO_TX_DELAY", true)
+for i = 1, 100 do fiber.create(function() for j = 1, 10 do c.space.test:replace{1} end ch:put(true) end) end
+for i = 1, 100 do fiber.create(function() for j = 1, 10 do c.space.test:select() end ch:put(true) end) end
+for i = 1, 200 do ch:get() end
+errinj.set("ERRINJ_IPROTO_TX_DELAY", false)
+
+s:drop()
+
+--
+-- gh-3325: do not cancel already sent requests, when a schema
+-- change is detected.
+--
+s = box.schema.create_space('test')
+pk = s:create_index('pk')
+s:replace{1, 1}
+cn = net_box.connect(box.cfg.listen)
+errinj.set("ERRINJ_WAL_DELAY", true)
+ok = nil
+err = nil
+test_run:cmd('setopt delimiter ";"')
+f = fiber.create(function()
+  local str = 'box.space.test:create_index("sk", {parts = {{2, "integer"}}})'
+  ok, err = pcall(cn.eval, cn, str)
+end)
+test_run:cmd('setopt delimiter ""');
+cn.space.test:get{1}
+errinj.set("ERRINJ_WAL_DELAY", false)
+while ok == nil do fiber.sleep(0.01) end
+ok, err
+cn:close()
+s:drop()
+
+--
+-- If message memory pool is used up, stop the connection, until
+-- the pool has free memory.
+--
+started = 0
+finished = 0
+continue = false
+test_run:cmd('setopt delimiter ";"')
+function long_poll_f()
+    started = started + 1
+    f = fiber.self()
+    while not continue do fiber.sleep(0.01) end
+    finished = finished + 1
+end;
+test_run:cmd('setopt delimiter ""');
+cn = net_box.connect(box.cfg.listen)
+function long_poll() cn:call('long_poll_f') end
+_ = fiber.create(long_poll)
+while started ~= 1 do fiber.sleep(0.01) end
+-- Simulate OOM for new requests.
+errinj.set("ERRINJ_TESTING", true)
+-- This request tries to allocate memory for request data and
+-- fails. This stops the connection until an existing
+-- request is finished.
+log = require('log')
+-- Fill the log with garbage to not accidentally read log messages
+-- produced by a previous test.
+log.info(string.rep('a', 1000))
+_ = fiber.create(long_poll)
+while not test_run:grep_log('default', 'can not allocate memory for a new message', 1000) do fiber.sleep(0.01) end
+test_run:grep_log('default', 'stopping input on connection', 1000) ~= nil
+started == 1
+continue = true
+errinj.set("ERRINJ_TESTING", false)
+-- Ensure that when memory is available again, the pending
+-- request is executed.
+while finished ~= 2 do fiber.sleep(0.01) end
+cn:close()
+
+box.schema.user.revoke('guest', 'read,write,execute','universe')
+
+--
+-- gh-3289: drop/truncate leaves the space in inconsistent
+-- state if WAL write fails.
+--
+s = box.schema.space.create('test')
+_ = s:create_index('pk')
+for i = 1, 10 do s:replace{i} end
+errinj.set('ERRINJ_WAL_IO', true)
+s:drop()
+s:truncate()
+s:drop()
+s:truncate()
+errinj.set('ERRINJ_WAL_IO', false)
+for i = 1, 10 do s:replace{i + 10} end
+s:select()
 s:drop()

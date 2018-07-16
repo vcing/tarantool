@@ -109,24 +109,20 @@ vy_stmt_alloc(struct tuple_format *format, uint32_t bsize)
 }
 
 struct tuple *
-vy_stmt_dup(const struct tuple *stmt, struct tuple_format *format)
+vy_stmt_dup(const struct tuple *stmt)
 {
 	/*
 	 * We don't use tuple_new() to avoid the initializing of
 	 * tuple field map. This map can be simple memcopied from
 	 * the original tuple.
 	 */
-	assert((vy_stmt_type(stmt) == IPROTO_UPSERT) ==
-	       (format->extra_size == sizeof(uint8_t)));
-	struct tuple *res = vy_stmt_alloc(format, stmt->bsize);
+	struct tuple *res = vy_stmt_alloc(tuple_format(stmt), stmt->bsize);
 	if (res == NULL)
 		return NULL;
 	assert(tuple_size(res) == tuple_size(stmt));
 	assert(res->data_offset == stmt->data_offset);
 	memcpy(res, stmt, tuple_size(stmt));
 	res->refs = 1;
-	res->format_id = tuple_format_id(format);
-	assert(tuple_size(res) == tuple_size(stmt));
 	return res;
 }
 
@@ -134,13 +130,26 @@ struct tuple *
 vy_stmt_dup_lsregion(const struct tuple *stmt, struct lsregion *lsregion,
 		     int64_t alloc_id)
 {
+	enum iproto_type type = vy_stmt_type(stmt);
 	size_t size = tuple_size(stmt);
+	size_t alloc_size = size;
 	struct tuple *mem_stmt;
-	mem_stmt = lsregion_alloc(lsregion, size, alloc_id);
+
+	/* Reserve one byte for UPSERT counter. */
+	if (type == IPROTO_UPSERT)
+		alloc_size++;
+
+	mem_stmt = lsregion_alloc(lsregion, alloc_size, alloc_id);
 	if (mem_stmt == NULL) {
 		diag_set(OutOfMemory, size, "lsregion_alloc", "mem_stmt");
 		return NULL;
 	}
+
+	if (type == IPROTO_UPSERT) {
+		*(uint8_t *)mem_stmt = 0;
+		mem_stmt = (struct tuple *)((uint8_t *)mem_stmt + 1);
+	}
+
 	memcpy(mem_stmt, stmt, size);
 	/*
 	 * Region allocated statements can't be referenced or unreferenced
@@ -171,8 +180,6 @@ vy_stmt_new_select(struct tuple_format *format, const char *key,
 	assert(part_count == 0 || key != NULL);
 	/* Key don't have field map */
 	assert(format->field_map_size == 0);
-	/* Key doesn't have n_upserts field. */
-	assert(format->extra_size != sizeof(uint8_t));
 
 	/* Calculate key length */
 	const char *key_end = key;
@@ -264,26 +271,14 @@ vy_stmt_new_upsert(struct tuple_format *format, const char *tuple_begin,
 		   const char *tuple_end, struct iovec *operations,
 		   uint32_t ops_cnt)
 {
-	/*
-	 * UPSERT must have the n_upserts field in the extra
-	 * memory.
-	 */
-	assert(format->extra_size == sizeof(uint8_t));
-	struct tuple *upsert =
-		vy_stmt_new_with_ops(format, tuple_begin, tuple_end,
-				     operations, ops_cnt, IPROTO_UPSERT);
-	if (upsert == NULL)
-		return NULL;
-	vy_stmt_set_n_upserts(upsert, 0);
-	return upsert;
+	return vy_stmt_new_with_ops(format, tuple_begin, tuple_end,
+				    operations, ops_cnt, IPROTO_UPSERT);
 }
 
 struct tuple *
 vy_stmt_new_replace(struct tuple_format *format, const char *tuple_begin,
 		    const char *tuple_end)
 {
-	/* REPLACE mustn't have n_upserts field. */
-	assert(format->extra_size != sizeof(uint8_t));
 	return vy_stmt_new_with_ops(format, tuple_begin, tuple_end,
 				    NULL, 0, IPROTO_REPLACE);
 }
@@ -292,18 +287,13 @@ struct tuple *
 vy_stmt_new_insert(struct tuple_format *format, const char *tuple_begin,
 		   const char *tuple_end)
 {
-	/* INSERT mustn't have n_upserts field. */
-	assert(format->extra_size != sizeof(uint8_t));
 	return vy_stmt_new_with_ops(format, tuple_begin, tuple_end,
 				    NULL, 0, IPROTO_INSERT);
 }
 
 struct tuple *
-vy_stmt_replace_from_upsert(struct tuple_format *replace_format,
-			    const struct tuple *upsert)
+vy_stmt_replace_from_upsert(const struct tuple *upsert)
 {
-	/* REPLACE mustn't have n_upserts field. */
-	assert(replace_format->extra_size == 0);
 	assert(vy_stmt_type(upsert) == IPROTO_UPSERT);
 	/* Get statement size without UPSERT operations */
 	uint32_t bsize;
@@ -311,24 +301,13 @@ vy_stmt_replace_from_upsert(struct tuple_format *replace_format,
 	assert(bsize <= upsert->bsize);
 
 	/* Copy statement data excluding UPSERT operations */
-	struct tuple_format *format = tuple_format_by_id(upsert->format_id);
-	/*
-	 * UPSERT must have the n_upserts field in the extra
-	 * memory.
-	 */
-	assert(format->extra_size == sizeof(uint8_t));
-	/*
-	 * In other fields the REPLACE tuple format must equal to
-	 * the UPSERT tuple format.
-	 */
-	assert(tuple_format_eq(format, replace_format));
-	struct tuple *replace = vy_stmt_alloc(replace_format, bsize);
+	struct tuple_format *format = tuple_format(upsert);
+	struct tuple *replace = vy_stmt_alloc(format, bsize);
 	if (replace == NULL)
 		return NULL;
 	/* Copy both data and field_map. */
 	char *dst = (char *)replace + sizeof(struct vy_stmt);
-	char *src = (char *)upsert + sizeof(struct vy_stmt) +
-		    format->extra_size;
+	char *src = (char *)upsert + sizeof(struct vy_stmt);
 	memcpy(dst, src, format->field_map_size + bsize);
 	vy_stmt_set_type(replace, IPROTO_REPLACE);
 	vy_stmt_set_lsn(replace, vy_stmt_lsn(upsert));
@@ -340,11 +319,8 @@ vy_stmt_new_surrogate_from_key(const char *key, enum iproto_type type,
 			       const struct key_def *cmp_def,
 			       struct tuple_format *format)
 {
-	/**
-	 * UPSERT can't be surrogate. Also any not UPSERT tuple
-	 * mustn't have the n_upserts field.
-	 */
-	assert(type != IPROTO_UPSERT && format->extra_size != sizeof(uint8_t));
+	/* UPSERT can't be surrogate. */
+	assert(type != IPROTO_UPSERT);
 	struct region *region = &fiber()->gc;
 
 	uint32_t field_count = format->index_field_count;
@@ -360,7 +336,7 @@ vy_stmt_new_surrogate_from_key(const char *key, enum iproto_type type,
 	assert(part_count <= field_count);
 	uint32_t nulls_count = field_count - cmp_def->part_count;
 	uint32_t bsize = mp_sizeof_array(field_count) +
-		mp_sizeof_nil() * nulls_count;
+			 mp_sizeof_nil() * nulls_count;
 	for (uint32_t i = 0; i < part_count; ++i) {
 		const struct key_part *part = &cmp_def->parts[i];
 		assert(part->fieldno < field_count);
@@ -421,14 +397,25 @@ vy_stmt_new_surrogate_delete(struct tuple_format *format,
 
 	const char *src_pos = src_data;
 	uint32_t src_count = mp_decode_array(&src_pos);
-	uint32_t field_count = format->index_field_count;
-	assert(src_count >= field_count);
-	(void) src_count;
+	assert(src_count >= format->min_field_count);
+	uint32_t field_count;
+	if (src_count < format->index_field_count) {
+		field_count = src_count;
+		/*
+		 * Nullify field map to be able to detect by 0,
+		 * which key fields are absent in tuple_field().
+		 */
+		memset((char *)field_map - format->field_map_size, 0,
+		       format->field_map_size);
+	} else {
+		field_count = format->index_field_count;
+	}
 	char *pos = mp_encode_array(data, field_count);
 	for (uint32_t i = 0; i < field_count; ++i) {
 		const struct tuple_field *field = &format->fields[i];
 		if (! field->is_key_part) {
-			/* Unindexed field - write NIL */
+			/* Unindexed field - write NIL. */
+			assert(i < src_count);
 			pos = mp_encode_nil(pos);
 			mp_next(&src_pos);
 			continue;
@@ -571,9 +558,7 @@ vy_stmt_encode_secondary(const struct tuple *value,
 
 struct tuple *
 vy_stmt_decode(struct xrow_header *xrow, const struct key_def *key_def,
-	       struct tuple_format *format,
-	       struct tuple_format *upsert_format,
-	       bool is_primary)
+	       struct tuple_format *format, bool is_primary)
 {
 	struct request request;
 	uint64_t key_map = dml_request_key_map(xrow->type);
@@ -606,7 +591,7 @@ vy_stmt_decode(struct xrow_header *xrow, const struct key_def *key_def,
 	case IPROTO_UPSERT:
 		ops.iov_base = (char *)request.ops;
 		ops.iov_len = request.ops_end - request.ops;
-		stmt = vy_stmt_new_upsert(upsert_format, request.tuple,
+		stmt = vy_stmt_new_upsert(format, request.tuple,
 					  request.tuple_end, &ops, 1);
 		break;
 	default:
@@ -665,17 +650,5 @@ vy_tuple_format_new_with_colmask(struct tuple_format *mem_format)
 	/* + size of column mask. */
 	assert(format->extra_size == 0);
 	format->extra_size = sizeof(uint64_t);
-	return format;
-}
-
-struct tuple_format *
-vy_tuple_format_new_upsert(struct tuple_format *mem_format)
-{
-	struct tuple_format *format = tuple_format_dup(mem_format);
-	if (format == NULL)
-		return NULL;
-	/* + size of n_upserts. */
-	assert(format->extra_size == 0);
-	format->extra_size = sizeof(uint8_t);
 	return format;
 }

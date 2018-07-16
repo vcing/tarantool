@@ -28,6 +28,7 @@
  * THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  */
+#include "json/path.h"
 #include "tuple_format.h"
 
 /** Global table of tuple formats */
@@ -37,7 +38,8 @@ static intptr_t recycled_format_ids = FORMAT_ID_NIL;
 static uint32_t formats_size = 0, formats_capacity = 0;
 
 static const struct tuple_field tuple_field_default = {
-	FIELD_TYPE_ANY, TUPLE_OFFSET_SLOT_NIL, false, ON_CONFLICT_ACTION_DEFAULT
+	FIELD_TYPE_ANY, TUPLE_OFFSET_SLOT_NIL, false,
+	ON_CONFLICT_ACTION_DEFAULT, NULL
 };
 
 /**
@@ -49,6 +51,9 @@ tuple_format_create(struct tuple_format *format, struct key_def * const *keys,
 		    uint16_t key_count, const struct field_def *fields,
 		    uint32_t field_count)
 {
+	format->min_field_count =
+		tuple_format_min_field_count(keys, key_count, fields,
+					     field_count);
 	if (format->field_count == 0) {
 		format->field_map_size = 0;
 		return 0;
@@ -59,8 +64,17 @@ tuple_format_create(struct tuple_format *format, struct key_def * const *keys,
 		format->fields[i].type = fields[i].type;
 		format->fields[i].offset_slot = TUPLE_OFFSET_SLOT_NIL;
 		format->fields[i].nullable_action = fields[i].nullable_action;
-		if (i + 1 > format->min_field_count && !fields[i].is_nullable)
-			format->min_field_count = i + 1;
+		struct coll *coll = NULL;
+		uint32_t coll_id = fields[i].coll_id;
+		if (coll_id != COLL_NONE) {
+			coll = coll_by_id(coll_id);
+			if (coll == NULL) {
+				diag_set(ClientError,ER_WRONG_COLLATION_OPTIONS,
+					 i + 1, "collation was not found by ID");
+				return -1;
+			}
+		}
+		format->fields[i].coll = coll;
 	}
 	/* Initialize remaining fields */
 	for (uint32_t i = field_count; i < format->field_count; i++)
@@ -118,11 +132,16 @@ tuple_format_create(struct tuple_format *format, struct key_def * const *keys,
 			/*
 			 * Check that there are no conflicts
 			 * between index part types and space
-			 * fields.
+			 * fields. If a part type is compatible
+			 * with field's one, then the part type is
+			 * more strict and the part type must be
+			 * used in tuple_format.
 			 */
-			if (field->type == FIELD_TYPE_ANY) {
+			if (field_type1_contains_type2(field->type,
+						       part->type)) {
 				field->type = part->type;
-			} else if (field->type != part->type) {
+			} else if (! field_type1_contains_type2(part->type,
+								field->type)) {
 				const char *name;
 				int fieldno = part->fieldno + TUPLE_INDEX_BASE;
 				if (part->fieldno >= field_count) {
@@ -256,7 +275,7 @@ tuple_format_alloc(struct key_def * const *keys, uint16_t key_count,
 	format->field_count = field_count;
 	format->index_field_count = index_field_count;
 	format->exact_field_count = 0;
-	format->min_field_count = index_field_count;
+	format->min_field_count = 0;
 	return format;
 }
 
@@ -281,8 +300,6 @@ tuple_format_new(struct tuple_format_vtab *vtab, struct key_def * const *keys,
 		 const struct field_def *space_fields,
 		 uint32_t space_field_count, struct tuple_dictionary *dict)
 {
-	assert((dict == NULL && space_field_count == 0) ||
-	       (dict != NULL && space_field_count == dict->name_count));
 	struct tuple_format *format =
 		tuple_format_alloc(keys, key_count, space_field_count, dict);
 	if (format == NULL)
@@ -303,19 +320,42 @@ tuple_format_new(struct tuple_format_vtab *vtab, struct key_def * const *keys,
 }
 
 bool
-tuple_format_eq(const struct tuple_format *a, const struct tuple_format *b)
+tuple_format1_can_store_format2_tuples(const struct tuple_format *format1,
+				       const struct tuple_format *format2)
 {
-	if (a->field_map_size != b->field_map_size ||
-	    a->field_count != b->field_count)
+	if (format1->exact_field_count != format2->exact_field_count)
 		return false;
-	for (uint32_t i = 0; i < a->field_count; ++i) {
-		if (a->fields[i].type != b->fields[i].type ||
-		    a->fields[i].offset_slot != b->fields[i].offset_slot)
+	for (uint32_t i = 0; i < format1->field_count; ++i) {
+		const struct tuple_field *field1 = &format1->fields[i];
+		/*
+		 * The field has a data type in format1, but has
+		 * no data type in format2.
+		 */
+		if (i >= format2->field_count) {
+			/*
+			 * The field can get a name added
+			 * for it, and this doesn't require a data
+			 * check.
+			 * If the field is defined as not
+			 * nullable, however, we need a data
+			 * check, since old data may contain
+			 * NULLs or miss the subject field.
+			 */
+			if (field1->type == FIELD_TYPE_ANY &&
+			    tuple_field_is_nullable(field1))
+				continue;
+			else
+				return false;
+		}
+		const struct tuple_field *field2 = &format2->fields[i];
+		if (! field_type1_contains_type2(field1->type, field2->type))
 			return false;
-		if (a->fields[i].is_key_part != b->fields[i].is_key_part)
-			return false;
-		if (tuple_field_is_nullable(a->fields + i) !=
-		    tuple_field_is_nullable(b->fields + i))
+		/*
+		 * Do not allow transition from nullable to non-nullable:
+		 * it would require a check of all data in the space.
+		 */
+		if (tuple_field_is_nullable(field2) &&
+		    !tuple_field_is_nullable(field1))
 			return false;
 	}
 	return true;
@@ -380,6 +420,14 @@ tuple_init_field_map(const struct tuple_format *format, uint32_t *field_map,
 	++field;
 	uint32_t i = 1;
 	uint32_t defined_field_count = MIN(field_count, format->field_count);
+	if (field_count < format->index_field_count) {
+		/*
+		 * Nullify field map to be able to detect by 0,
+		 * which key fields are absent in tuple_field().
+		 */
+		memset((char *)field_map - format->field_map_size, 0,
+		       format->field_map_size);
+	}
 	for (; i < defined_field_count; ++i, ++field) {
 		mp_type = mp_typeof(*pos);
 		if (key_mp_type_validate(field->type, mp_type, ER_FIELD_TYPE,
@@ -393,6 +441,28 @@ tuple_init_field_map(const struct tuple_format *format, uint32_t *field_map,
 		mp_next(&pos);
 	}
 	return 0;
+}
+
+uint32_t
+tuple_format_min_field_count(struct key_def * const *keys, uint16_t key_count,
+			     const struct field_def *space_fields,
+			     uint32_t space_field_count)
+{
+	uint32_t min_field_count = 0;
+	for (uint32_t i = 0; i < space_field_count; ++i) {
+		if (! space_fields[i].is_nullable)
+			min_field_count = i + 1;
+	}
+	for (uint32_t i = 0; i < key_count; ++i) {
+		const struct key_def *kd = keys[i];
+		for (uint32_t j = 0; j < kd->part_count; ++j) {
+			const struct key_part *kp = &kd->parts[j];
+			if (!key_part_is_nullable(kp) &&
+			    kp->fieldno + 1 > min_field_count)
+				min_field_count = kp->fieldno + 1;
+		}
+	}
+	return min_field_count;
 }
 
 /** Destroy tuple format subsystem and free resourses */
@@ -426,4 +496,171 @@ void
 box_tuple_format_unref(box_tuple_format_t *format)
 {
 	tuple_format_unref(format);
+}
+
+/**
+ * Propagate @a field to MessagePack(field)[index].
+ * @param[in][out] field Field to propagate.
+ * @param index 1-based index to propagate to.
+ *
+ * @retval  0 Success, the index was found.
+ * @retval -1 Not found.
+ */
+static inline int
+tuple_field_go_to_index(const char **field, uint64_t index)
+{
+	enum mp_type type = mp_typeof(**field);
+	if (type == MP_ARRAY) {
+		if (index == 0)
+			return -1;
+		/* Make index 0-based. */
+		index -= TUPLE_INDEX_BASE;
+		uint32_t count = mp_decode_array(field);
+		if (index >= count)
+			return -1;
+		for (; index > 0; --index)
+			mp_next(field);
+		return 0;
+	} else if (type == MP_MAP) {
+		uint64_t count = mp_decode_map(field);
+		for (; count > 0; --count) {
+			type = mp_typeof(**field);
+			if (type == MP_UINT) {
+				uint64_t value = mp_decode_uint(field);
+				if (value == index)
+					return 0;
+			} else if (type == MP_INT) {
+				int64_t value = mp_decode_int(field);
+				if (value >= 0 && (uint64_t)value == index)
+					return 0;
+			} else {
+				/* Skip key. */
+				mp_next(field);
+			}
+			/* Skip value. */
+			mp_next(field);
+		}
+	}
+	return -1;
+}
+
+/**
+ * Propagate @a field to MessagePack(field)[key].
+ * @param[in][out] field Field to propagate.
+ * @param key Key to propagate to.
+ * @param len Length of @a key.
+ *
+ * @retval  0 Success, the index was found.
+ * @retval -1 Not found.
+ */
+static inline int
+tuple_field_go_to_key(const char **field, const char *key, int len)
+{
+	enum mp_type type = mp_typeof(**field);
+	if (type != MP_MAP)
+		return -1;
+	uint64_t count = mp_decode_map(field);
+	for (; count > 0; --count) {
+		type = mp_typeof(**field);
+		if (type == MP_STR) {
+			uint32_t value_len;
+			const char *value = mp_decode_str(field, &value_len);
+			if (value_len == (uint)len &&
+			    memcmp(value, key, len) == 0)
+				return 0;
+		} else {
+			/* Skip key. */
+			mp_next(field);
+		}
+		/* Skip value. */
+		mp_next(field);
+	}
+	return -1;
+}
+
+int
+tuple_field_raw_by_path(struct tuple_format *format, const char *tuple,
+                        const uint32_t *field_map, const char *path,
+                        uint32_t path_len, uint32_t path_hash,
+                        const char **field)
+{
+	assert(path_len > 0);
+	uint32_t fieldno;
+	/*
+	 * It is possible, that a field has a name as
+	 * well-formatted JSON. For example 'a.b.c.d' or '[1]' can
+	 * be field name. To save compatibility at first try to
+	 * use the path as a field name.
+	 */
+	if (tuple_fieldno_by_name(format->dict, path, path_len, path_hash,
+				  &fieldno) == 0) {
+		*field = tuple_field_raw(format, tuple, field_map, fieldno);
+		return 0;
+	}
+	struct json_path_parser parser;
+	struct json_path_node node;
+	json_path_parser_create(&parser, path, path_len);
+	int rc = json_path_next(&parser, &node);
+	if (rc != 0)
+		goto error;
+	switch(node.type) {
+	case JSON_PATH_NUM: {
+		int index = node.num;
+		if (index == 0) {
+			*field = NULL;
+			return 0;
+		}
+		index -= TUPLE_INDEX_BASE;
+		*field = tuple_field_raw(format, tuple, field_map, index);
+		if (*field == NULL)
+			return 0;
+		break;
+	}
+	case JSON_PATH_STR: {
+		/* First part of a path is a field name. */
+		uint32_t name_hash;
+		if (path_len == (uint32_t) node.len) {
+			name_hash = path_hash;
+		} else {
+			/*
+			 * If a string is "field....", then its
+			 * precalculated juajit hash can not be
+			 * used. A tuple dictionary hashes only
+			 * name, not path.
+			 */
+			name_hash = field_name_hash(node.str, node.len);
+		}
+		*field = tuple_field_raw_by_name(format, tuple, field_map,
+						 node.str, node.len, name_hash);
+		if (*field == NULL)
+			return 0;
+		break;
+	}
+	default:
+		assert(node.type == JSON_PATH_END);
+		*field = NULL;
+		return 0;
+	}
+	while ((rc = json_path_next(&parser, &node)) == 0) {
+		switch(node.type) {
+		case JSON_PATH_NUM:
+			rc = tuple_field_go_to_index(field, node.num);
+			break;
+		case JSON_PATH_STR:
+			rc = tuple_field_go_to_key(field, node.str, node.len);
+			break;
+		default:
+			assert(node.type == JSON_PATH_END);
+			return 0;
+		}
+		if (rc != 0) {
+			*field = NULL;
+			return 0;
+		}
+	}
+error:
+	assert(rc > 0);
+	diag_set(ClientError, ER_ILLEGAL_PARAMS,
+		 tt_sprintf("error in path on position %d", rc));
+	return -1;
 }

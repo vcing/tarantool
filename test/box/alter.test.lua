@@ -321,298 +321,6 @@ ts:drop()
 box.space._space:replace{600, 1, 'test', 'memtx', 0, { sql = 100 }, {}}
 
 --
--- gh-2652: validate space format.
---
-s = box.schema.space.create('test', { format = "format" })
-format = { { name = 100 } }
-s = box.schema.space.create('test', { format = format })
-long = string.rep('a', box.schema.NAME_MAX + 1)
-format = { { name = long } }
-s = box.schema.space.create('test', { format = format })
-format = { { name = 'id', type = '100' } }
-s = box.schema.space.create('test', { format = format })
-format = { utils.setmap({}) }
-s = box.schema.space.create('test', { format = format })
-
--- Ensure the format is updated after index drop.
-format = { { name = 'id', type = 'unsigned' } }
-s = box.schema.space.create('test', { format = format })
-pk = s:create_index('pk')
-sk = s:create_index('sk', { parts = { 2, 'string' } })
-s:replace{1, 1}
-sk:drop()
-s:replace{1, 1}
-s:drop()
-
--- Check index parts conflicting with space format.
-format = { { name='field1', type='unsigned' }, { name='field2', type='string' }, { name='field3', type='scalar' } }
-s = box.schema.space.create('test', { format = format })
-pk = s:create_index('pk')
-sk1 = s:create_index('sk1', { parts = { 2, 'unsigned' } })
-sk2 = s:create_index('sk2', { parts = { 3, 'number' } })
-
--- Check space format conflicting with index parts.
-sk3 = s:create_index('sk3', { parts = { 2, 'string' } })
-format[2].type = 'unsigned'
-s:format(format)
-s:format()
-s.index.sk3.parts
-
--- Space format can be updated, if conflicted index is deleted.
-sk3:drop()
-s:format(format)
-s:format()
-
--- Check deprecated field types.
-format[2].type = 'num'
-format[3].type = 'str'
-format[4] = { name = 'field4', type = '*' }
-format
-s:format(format)
-s:format()
-s:replace{1, 2, '3', {4, 4, 4}}
-
--- Check not indexed fields checking.
-s:truncate()
-format[2] = {name='field2', type='string'}
-format[3] = {name='field3', type='array'}
-format[4] = {name='field4', type='number'}
-format[5] = {name='field5', type='integer'}
-format[6] = {name='field6', type='scalar'}
-format[7] = {name='field7', type='map'}
-format[8] = {name='field8', type='any'}
-format[9] = {name='field9'}
-s:format(format)
-
--- Check incorrect field types.
-format[9] = {name='err', type='any'}
-s:format(format)
-
-s:replace{1, '2', {3, 3}, 4.4, -5, true, {value=7}, 8, 9}
-s:replace{1, 2, {3, 3}, 4.4, -5, true, {value=7}, 8, 9}
-s:replace{1, '2', 3, 4.4, -5, true, {value=7}, 8, 9}
-s:replace{1, '2', {3, 3}, '4', -5, true, {value=7}, 8, 9}
-s:replace{1, '2', {3, 3}, 4.4, -5.5, true, {value=7}, 8, 9}
-s:replace{1, '2', {3, 3}, 4.4, -5, {6, 6}, {value=7}, 8, 9}
-s:replace{1, '2', {3, 3}, 4.4, -5, true, {7}, 8, 9}
-s:replace{1, '2', {3, 3}, 4.4, -5, true, {value=7}}
-s:replace{1, '2', {3, 3}, 4.4, -5, true, {value=7}, 8}
-s:truncate()
-
---
--- gh-1014: field names.
---
-format = {}
-format[1] = {name = 'field1', type = 'unsigned'}
-format[2] = {name = 'field2'}
-format[3] = {name = 'field1'}
-s:format(format)
-
-s:drop()
-
--- https://github.com/tarantool/tarantool/issues/2815
--- Extend space format definition syntax
-format = {{name='key',type='unsigned'}, {name='value',type='string'}}
-s = box.schema.space.create('test', { format = format })
-s:format()
-s:format({'id', 'name'})
-s:format()
-s:format({'id', {'name1'}})
-s:format()
-s:format({'id', {'name2', 'string'}})
-s:format()
-s:format({'id', {'name', type = 'string'}})
-s:format()
-s:drop()
-
-format = {'key', {'value',type='string'}}
-s = box.schema.space.create('test', { format = format })
-s:format()
-s:drop()
-
-s = box.schema.space.create('test')
-s:create_index('test', {parts = {'test'}})
-s:create_index('test', {parts = {{'test'}}})
-s:create_index('test', {parts = {{field = 'test'}}})
-s:create_index('test', {parts = {1}}).parts
-s:drop()
-
-s = box.schema.space.create('test')
-s:format{{'test1', 'integer'}, 'test2', {'test3', 'integer'}, {'test4','scalar'}}
-s:create_index('test', {parts = {'test'}})
-s:create_index('test', {parts = {{'test'}}})
-s:create_index('test', {parts = {{field = 'test'}}})
-s:create_index('test1', {parts = {'test1'}}).parts
-s:create_index('test2', {parts = {'test2'}}).parts
-s:create_index('test3', {parts = {{'test1', 'integer'}}}).parts
-s:create_index('test4', {parts = {{'test2', 'integer'}}}).parts
-s:create_index('test5', {parts = {{'test2', 'integer'}}}).parts
-s:create_index('test6', {parts = {1, 3}}).parts
-s:create_index('test7', {parts = {'test1', 4}}).parts
-s:create_index('test8', {parts = {{1, 'integer'}, {'test4', 'scalar'}}}).parts
-s:drop()
-
---
--- gh-2800: space formats checking is broken.
---
-
--- Ensure that vinyl correctly process field count change.
-s = box.schema.space.create('test', {engine = 'vinyl', field_count = 2})
-pk = s:create_index('pk')
-s:replace{1, 2}
-t = box.space._space:select{s.id}[1]:totable()
-t[5] = 1
-box.space._space:replace(t)
-s:drop()
-
--- Check field type changes.
-format = {}
-format[1] = {name = 'field1', type = 'unsigned'}
-format[2] = {name = 'field2', type = 'any'}
-format[3] = {name = 'field3', type = 'unsigned'}
-format[4] = {name = 'field4', type = 'string'}
-format[5] = {name = 'field5', type = 'number'}
-format[6] = {name = 'field6', type = 'integer'}
-format[7] = {name = 'field7', type = 'boolean'}
-format[8] = {name = 'field8', type = 'scalar'}
-format[9] = {name = 'field9', type = 'array'}
-format[10] = {name = 'field10', type = 'map'}
-s = box.schema.space.create('test', {format = format})
-pk = s:create_index('pk')
-t = s:replace{1, 2, 3, '4', 5.5, -6, true, 8, {9, 9}, {val = 10}}
-
-test_run:cmd("setopt delimiter ';'")
-function fail_format_change(fieldno, new_type)
-    local old_type = format[fieldno].type
-    format[fieldno].type = new_type
-    local ok, msg = pcall(s.format, s, format)
-    format[fieldno].type = old_type
-    return msg
-end;
-
-function ok_format_change(fieldno, new_type)
-    local old_type = format[fieldno].type
-    format[fieldno].type = new_type
-    s:format(format)
-    s:delete{1}
-    format[fieldno].type = old_type
-    s:format(format)
-    s:replace(t)
-end;
-test_run:cmd("setopt delimiter ''");
-
--- any --X--> unsigned
-fail_format_change(2, 'unsigned')
-
--- unsigned -----> any
-ok_format_change(3, 'any')
--- unsigned --X--> string
-fail_format_change(3, 'string')
--- unsigned -----> number
-ok_format_change(3, 'number')
--- unsigned -----> integer
-ok_format_change(3, 'integer')
--- unsigned -----> scalar
-ok_format_change(3, 'scalar')
--- unsigned --X--> map
-fail_format_change(3, 'map')
-
--- string -----> any
-ok_format_change(4, 'any')
--- string -----> scalar
-ok_format_change(4, 'scalar')
--- string --X--> boolean
-fail_format_change(4, 'boolean')
-
--- number -----> any
-ok_format_change(5, 'any')
--- number -----> scalar
-ok_format_change(5, 'scalar')
--- number --X--> integer
-fail_format_change(5, 'integer')
-
--- integer -----> any
-ok_format_change(6, 'any')
--- integer -----> number
-ok_format_change(6, 'number')
--- integer -----> scalar
-ok_format_change(6, 'scalar')
--- integer --X--> unsigned
-fail_format_change(6, 'unsigned')
-
--- boolean -----> any
-ok_format_change(7, 'any')
--- boolean -----> scalar
-ok_format_change(7, 'scalar')
--- boolean --X--> string
-fail_format_change(7, 'string')
-
--- scalar -----> any
-ok_format_change(8, 'any')
--- scalar --X--> unsigned
-fail_format_change(8, 'unsigned')
-
--- array -----> any
-ok_format_change(9, 'any')
--- array --X--> scalar
-fail_format_change(9, 'scalar')
-
--- map -----> any
-ok_format_change(10, 'any')
--- map --X--> scalar
-fail_format_change(10, 'scalar')
-
-s:drop()
-
--- Check new fields adding.
-format = {}
-s = box.schema.space.create('test')
-format[1] = {name = 'field1', type = 'unsigned'}
-s:format(format) -- Ok, no indexes.
-pk = s:create_index('pk')
-format[2] = {name = 'field2', type = 'unsigned'}
-s:format(format) -- Ok, empty space.
-s:replace{1, 1}
-format[2] = nil
-s:format(format) -- Ok, can delete fields with no checks.
-s:delete{1}
-sk1 = s:create_index('sk1', {parts = {2, 'unsigned'}})
-sk2 = s:create_index('sk2', {parts = {3, 'unsigned'}})
-sk5 = s:create_index('sk5', {parts = {5, 'unsigned'}})
-s:replace{1, 1, 1, 1, 1}
-format[2] = {name = 'field2', type = 'unsigned'}
-format[3] = {name = 'field3', type = 'unsigned'}
-format[4] = {name = 'field4', type = 'any'}
-format[5] = {name = 'field5', type = 'unsigned'}
--- Ok, all new fields are indexed or have type ANY, and new
--- field_count <= old field_count.
-s:format(format)
-
-s:replace{1, 1, 1, 1, 1, 1}
-format[6] = {name = 'field6', type = 'unsigned'}
--- Ok, but check existing tuples for a new field[6].
-s:format(format)
-
--- Fail, not enough fields.
-s:replace{2, 2, 2, 2, 2}
-
-s:replace{2, 2, 2, 2, 2, 2, 2}
-format[7] = {name = 'field7', type = 'unsigned'}
--- Fail, the tuple {1, ... 1} is invalid for a new format.
-s:format(format)
-s:drop()
-
--- Vinyl does not support adding fields to a not empty space.
-s = box.schema.space.create('test', {engine = 'vinyl'})
-pk = s:create_index('pk')
-s:replace{1,1}
-format = {}
-format[1] = {name = 'field1', type = 'unsigned'}
-format[2] = {name = 'field2', type = 'unsigned'}
-s:format(format)
-s:drop()
-
---
 -- gh-1557: NULL in indexes.
 --
 
@@ -640,6 +348,17 @@ s:format(format)
 s:delete(1)
 -- Disable is_nullable on empty space
 s:format(format)
+-- Disable is_nullable on a non-empty space.
+format[2].is_nullable = true
+s:format(format)
+s:replace{1, 1}
+format[2].is_nullable = false
+s:format(format)
+-- Enable is_nullable on a non-empty space.
+format[2].is_nullable = true
+s:format(format)
+s:replace{1, box.NULL}
+s:delete{1}
 s:format({})
 
 s:create_index('secondary', { parts = {{2, 'string', is_nullable = true}} })
@@ -688,6 +407,76 @@ s:replace{1}
 pk:alter{parts = {{1, 'integer'}}}
 s:replace{-2}
 s:select{}
+s:drop()
+
+--
+-- Allow to change is_nullable in index definition on non-empty
+-- space.
+--
+s = box.schema.create_space('test')
+pk = s:create_index('pk')
+sk1 = s:create_index('sk1', {parts = {{2, 'unsigned', is_nullable = true}}})
+sk2 = s:create_index('sk2', {parts = {{3, 'unsigned', is_nullable = false}}})
+s:replace{1, box.NULL, 1}
+sk1:alter({parts = {{2, 'unsigned', is_nullable = false}}})
+s:replace{1, 1, 1}
+sk1:alter({parts = {{2, 'unsigned', is_nullable = false}}})
+s:replace{1, 1, box.NULL}
+sk2:alter({parts = {{3, 'unsigned', is_nullable = true}}})
+s:replace{1, 1, box.NULL}
+s:replace{2, 10, 100}
+s:replace{3, 0, 20}
+s:replace{4, 15, 150}
+s:replace{5, 9, box.NULL}
+sk1:select{}
+sk2:select{}
+s:drop()
+
+--
+-- gh-3008: allow multiple types on the same field.
+--
+format = {}
+format[1] = {name = 'field1', type = 'unsigned'}
+format[2] = {name = 'field2', type = 'scalar'}
+format[3] = {name = 'field3', type = 'integer'}
+s = box.schema.create_space('test', {format = format})
+pk = s:create_index('pk')
+sk1 = s:create_index('sk1', {parts = {{2, 'number'}}})
+sk2 = s:create_index('sk2', {parts = {{2, 'integer'}}})
+sk3 = s:create_index('sk3', {parts = {{2, 'unsigned'}}})
+sk4 = s:create_index('sk4', {parts = {{3, 'number'}}})
+s:format()
+s:replace{1, '100', -20.2}
+s:replace{1, 100, -20.2}
+s:replace{1, 100, -20}
+s:replace{2, 50, 0}
+s:replace{3, 150, -60}
+s:replace{4, 0, 120}
+pk:select{}
+sk1:select{}
+sk2:select{}
+sk3:select{}
+sk4:select{}
+
+sk1:alter{parts = {{2, 'unsigned'}}}
+sk2:alter{parts = {{2, 'unsigned'}}}
+sk4:alter{parts = {{3, 'integer'}}}
+s:replace{1, 50.5, 1.5}
+s:replace{1, 50, 1.5}
+s:replace{5, 5, 5}
+sk1:select{}
+sk2:select{}
+sk3:select{}
+sk4:select{}
+
+sk1:drop()
+sk2:drop()
+sk3:drop()
+-- Remove 'unsigned' constraints from indexes, and 'scalar' now
+-- can be inserted in the second field.
+s:replace{1, true, 100}
+s:select{}
+sk4:select{}
 s:drop()
 
 --
@@ -761,3 +550,96 @@ t2.field_1
 t3.field1
 t3.field_1
 s:drop()
+
+--
+-- gh-3008. Ensure the change of hash index parts updates hash
+-- key_def.
+--
+s = box.schema.create_space('test')
+pk = s:create_index('pk', {type = 'hash'})
+pk:alter{parts = {{1, 'string'}}}
+s:replace{'1', '1'}
+s:replace{'1', '2'}
+pk:select{}
+pk:select{'1'}
+s:drop()
+
+--
+-- Ensure that incompatible key parts change validates format.
+--
+s = box.schema.create_space('test')
+pk = s:create_index('pk')
+s:replace{1}
+pk:alter{parts = {{1, 'string'}}} -- Must fail.
+s:drop()
+
+--
+-- gh-2895: do not ignore field type in space format, if it is not
+-- specified via 'type = ...'.
+--
+format = {}
+format[1] = {name = 'field1', 'unsigned'}
+format[2] = {name = 'field2', 'unsigned'}
+s = box.schema.create_space('test', {format = format})
+s:format()
+
+format[2] = {name = 'field2', 'unsigned', 'unknown'}
+s:format(format)
+s:format()
+
+s:drop()
+
+--
+-- gh-3285: index Lua object is not updated on alter.
+--
+box.internal.collation.create('test', 'ICU', 'ru-RU')
+s = box.schema.create_space('test')
+pk = s:create_index('pk')
+sk1 = s:create_index('b', {unique = false})
+sk2 = s:create_index('c', {type = 'hash', parts = {{3, 'unsigned'}}})
+sk3 = s:create_index('d', {parts = {{4, 'string'}}})
+test_run:cmd("setopt delimiter ';'")
+function index_count()
+    local r = 0
+    for i, _ in pairs(s.index) do
+        r = r + 1
+    end
+    return r / 2
+end;
+function validate_indexes()
+    assert(s == box.space.test)
+    assert(sk1 == nil or sk1 == s.index[sk1.name])
+    assert(sk2 == nil or sk2 == s.index[sk2.name])
+    assert(sk3 == nil or sk3 == s.index[sk3.name])
+end;
+test_run:cmd("setopt delimiter ''");
+index_count()
+
+sk3:rename('dd')
+sk3.name == 'dd'
+index_count()
+validate_indexes()
+
+sk3:alter({parts = {{4, 'string', collation = 'test'}}})
+sk3.parts[1].collation == 'test'
+index_count()
+validate_indexes()
+
+sk3:drop()
+sk3 = nil
+index_count()
+validate_indexes()
+
+sk2:alter({parts = {{4, 'string'}}})
+sk2.parts[1].type == 'string'
+sk2.parts[1].fieldno == 4
+index_count()
+validate_indexes()
+
+sk1:alter({unique = true})
+sk1.unique
+index_count()
+validate_indexes()
+
+s:drop()
+box.internal.collation.drop('test')

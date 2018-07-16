@@ -59,6 +59,7 @@ enum iproto_key {
 	IPROTO_TIMESTAMP = 0x04,
 	IPROTO_SCHEMA_VERSION = 0x05,
 	IPROTO_SERVER_VERSION = 0x06,
+	IPROTO_SERVER_IS_RO = 0x07,
 	/* Leave a gap for other keys in the header. */
 	IPROTO_SPACE_ID = 0x10,
 	IPROTO_INDEX_ID = 0x11,
@@ -87,7 +88,7 @@ enum iproto_key {
 	/* Also request keys. See the comment above. */
 	IPROTO_EXPR = 0x27, /* EVAL */
 	IPROTO_OPS = 0x28, /* UPSERT but not UPDATE ops, because of legacy */
-	IPROTO_FIELD_NAME = 0x29,
+	IPROTO_OPTIONS = 0x29,
 
 	/* Leave a gap between request keys and response keys */
 	IPROTO_DATA = 0x30,
@@ -104,15 +105,22 @@ enum iproto_key {
 	/* Leave a gap between response keys and SQL keys. */
 	IPROTO_SQL_TEXT = 0x40,
 	IPROTO_SQL_BIND = 0x41,
-	IPROTO_SQL_OPTIONS = 0x42,
 	/**
 	 * IPROTO_SQL_INFO: {
-	 *     IPROTO_SQL_ROW_COUNT: number
+	 *     SQL_INFO_ROW_COUNT: number
 	 * }
 	 */
-	IPROTO_SQL_INFO = 0x43,
-	IPROTO_SQL_ROW_COUNT = 0x44,
+	IPROTO_SQL_INFO = 0x42,
 	IPROTO_KEY_MAX
+};
+
+/**
+ * Keys, stored in IPROTO_METADATA. They can not be received
+ * in a request. Only sent as response, so no necessity in _strs
+ * or _key_type arrays.
+ */
+enum iproto_metadata_key {
+	IPROTO_FIELD_NAME = 0,
 };
 
 #define bit(c) (1ULL<<IPROTO_##c)
@@ -329,8 +337,10 @@ enum vy_run_info_key {
 	VY_RUN_INFO_MAX_LSN = 4,
 	/** Number of pages in the run. */
 	VY_RUN_INFO_PAGE_COUNT = 5,
+	/** Legacy bloom filter implementation. */
+	VY_RUN_INFO_BLOOM_LEGACY = 6,
 	/** Bloom filter for keys. */
-	VY_RUN_INFO_BLOOM = 6,
+	VY_RUN_INFO_BLOOM = 7,
 	/** The last key in this enum + 1 */
 	VY_RUN_INFO_KEY_MAX
 };

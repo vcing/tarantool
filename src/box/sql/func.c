@@ -54,7 +54,7 @@ sqlite3GetFuncCollSeq(sqlite3_context * context)
 	assert(context->pVdbe != 0);
 	pOp = &context->pVdbe->aOp[context->iOp - 1];
 	assert(pOp->opcode == OP_CollSeq);
-	assert(pOp->p4type == P4_COLLSEQ);
+	assert(pOp->p4type == P4_COLLSEQ || pOp->p4.pColl == NULL);
 	return pOp->p4.pColl;
 }
 
@@ -82,7 +82,6 @@ minmaxFunc(sqlite3_context * context, int argc, sqlite3_value ** argv)
 	assert(argc > 1);
 	mask = sqlite3_user_data(context) == 0 ? 0 : -1;
 	pColl = sqlite3GetFuncCollSeq(context);
-	assert(pColl);
 	assert(mask == -1 || mask == 0);
 	iBest = 0;
 	if (sqlite3_value_type(argv[0]) == SQLITE_NULL)
@@ -1576,15 +1575,6 @@ countStep(sqlite3_context * context, int argc, sqlite3_value ** argv)
 	if ((argc == 0 || SQLITE_NULL != sqlite3_value_type(argv[0])) && p) {
 		p->n++;
 	}
-#ifndef SQLITE_OMIT_DEPRECATED
-	/* The sqlite3_aggregate_count() function is deprecated.  But just to make
-	 * sure it still operates correctly, verify that its count agrees with our
-	 * internal count when using count(*) and when the total count can be
-	 * expressed as a 32-bit integer.
-	 */
-	assert(argc == 1 || p == 0 || p->n > 0x7fffffff
-	       || p->n == sqlite3_aggregate_count(context));
-#endif
 }
 
 static void
@@ -1721,12 +1711,10 @@ sqlite3_overload_function(sqlite3 * db, const char *zName, int nArg)
 		return SQLITE_MISUSE_BKPT;
 	}
 #endif
-	sqlite3_mutex_enter(db->mutex);
 	if (sqlite3FindFunction(db, zName, nArg, 0) == 0) {
 		rc = sqlite3CreateFunc(db, zName, nArg, 0, 0, sqlite3InvalidFunction, 0, 0, 0);
 	}
 	rc = sqlite3ApiExit(db, rc);
-	sqlite3_mutex_leave(db->mutex);
 	return rc;
 }
 
@@ -1852,9 +1840,6 @@ sqlite3RegisterBuiltinFunctions(void)
 	static FuncDef aBuiltinFunc[] = {
 #ifdef SQLITE_SOUNDEX
 		FUNCTION(soundex, 1, 0, 0, soundexFunc),
-#endif
-#if SQLITE_USER_AUTHENTICATION
-		FUNCTION(sqlite_crypt, 2, 0, 0, sqlite3CryptFunc),
 #endif
 		FUNCTION2(unlikely, 1, 0, 0, noopFunc, SQLITE_FUNC_UNLIKELY),
 		FUNCTION2(likelihood, 2, 0, 0, noopFunc, SQLITE_FUNC_UNLIKELY),

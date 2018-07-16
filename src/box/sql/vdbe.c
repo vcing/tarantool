@@ -44,12 +44,12 @@
 #include "sqliteInt.h"
 #include "vdbeInt.h"
 #include "tarantoolInt.h"
-#include "box/sql.h"
 
 #include "msgpuck/msgpuck.h"
 
 #include "box/schema.h"
 #include "box/space.h"
+#include "box/sequence.h"
 
 /*
  * Invoke this macro on memory cells just prior to changing the
@@ -620,7 +620,6 @@ int sqlite3VdbeExec(Vdbe *p)
 		goto no_mem;
 	}
 	assert(p->rc==SQLITE_OK || (p->rc&0xff)==SQLITE_BUSY);
-	assert(p->bIsReader || p->readOnly!=0);
 	p->rc = SQLITE_OK;
 	p->iCurrentTime = 0;
 	assert(p->explain==0);
@@ -1073,6 +1072,19 @@ case OP_Int64: {           /* out2 */
 	break;
 }
 
+/* Opcode: LoadPtr * P2 * P4 *
+ * Synopsis: r[P2] = P4
+ *
+ * P4 is a generic pointer. Copy it into register P2.
+ */
+case OP_LoadPtr: {
+	pOut = out2Prerelease(p, pOp);
+	assert(pOp->p4type == P4_PTR);
+	pOut->u.p = pOp->p4.p;
+	pOut->flags = MEM_Ptr;
+	break;
+}
+
 #ifndef SQLITE_OMIT_FLOATING_POINT
 /* Opcode: Real * P2 * P4 *
  * Synopsis: r[P2]=P4
@@ -1138,6 +1150,40 @@ case OP_String: {          /* out2 */
 		if (pIn3->u.i==pOp->p5) pOut->flags = MEM_Blob|MEM_Static|MEM_Term;
 	}
 #endif
+	break;
+}
+
+/* Opcode: NextAutoincValue P1 P2 * * *
+ * Synopsis: r[P2] = next value from space sequence, which pageno is r[P1]
+ *
+ * Get next value from space sequence, which pageno is written into register
+ * P1, write this value into register P2. If space doesn't exists (invalid
+ * space_id or something else), raise an error. If space with
+ * specified space_id doesn't have attached sequence, also raise an error.
+ */
+case OP_NextAutoincValue: {
+	assert(pOp->p1 > 0);
+	assert(pOp->p2 > 0);
+
+	int64_t value;
+	uint32_t space_id = SQLITE_PAGENO_TO_SPACEID(pOp->p1);
+
+	struct space *space = space_by_id(space_id);
+	if (space == NULL) {
+		rc = SQL_TARANTOOL_ERROR;
+		goto abort_due_to_error;
+	}
+
+	struct sequence *sequence = space->sequence;
+	if (sequence == NULL || sequence_next(sequence, &value) != 0) {
+		rc = SQL_TARANTOOL_ERROR;
+		goto abort_due_to_error;
+	}
+
+	pOut = out2Prerelease(p, pOp);
+	pOut->flags = MEM_Int;
+	pOut->u.i = value;
+
 	break;
 }
 
@@ -1373,7 +1419,6 @@ case OP_ResultRow: {
 	 */
 	if (SQLITE_OK!=(rc = sqlite3VdbeCheckFk(p, 0))) {
 		assert(user_session->sql_flags&SQLITE_CountRows);
-		assert(p->usesStmtJournal);
 		goto abort_due_to_error;
 	}
 
@@ -1615,7 +1660,7 @@ case OP_Remainder: {           /* same as TK_REM, in1, in2, out3 */
  * publicly.  Only built-in functions have access to this feature.
  */
 case OP_CollSeq: {
-	assert(pOp->p4type==P4_COLLSEQ);
+	assert(pOp->p4type==P4_COLLSEQ || pOp->p4.pColl == NULL);
 	if (pOp->p1) {
 		sqlite3VdbeMemSetInt64(&aMem[pOp->p1], 0);
 	}
@@ -2750,6 +2795,14 @@ case OP_MakeRecord: {
 	 * statement commitment, it is better to reuse the same chunk.
 	 * Such optimization is prohibited for ordinary spaces, since
 	 * memory shouldn't be reused until it is written into WAL.
+	 *
+	 * However, if memory for ephemeral space is allocated
+	 * on region, it will be freed only in vdbeHalt() routine.
+	 * It is the only way to free this region memory,
+	 * since ephemeral spaces don't have nothing in common
+	 * with txn routine and region memory won't be released
+	 * after txn_commit() or txn_rollback() as it happens
+	 * with ordinary spaces.
 	 */
 	if (bIsEphemeral) {
 		rc = sqlite3VdbeMemClearAndResize(pOut, nByte);
@@ -2824,22 +2877,13 @@ case OP_Savepoint: {
 	 */
 	assert(psql_txn->pSavepoint == 0 || p->autoCommit == 0);
 	assert(p1==SAVEPOINT_BEGIN||p1==SAVEPOINT_RELEASE||p1==SAVEPOINT_ROLLBACK);
-	assert(p->bIsReader);
 
 	if (p1==SAVEPOINT_BEGIN) {
-		if (db->nVdbeWrite>0) {
-			/* A new savepoint cannot be created if there are active write
-			 * statements (i.e. open read/write incremental blob handles).
-			 */
-			sqlite3VdbeError(p, "cannot open savepoint - SQL statements in progress");
-			rc = SQLITE_BUSY;
-		} else {
-			/* Create a new savepoint structure. */
-			pNew = sql_savepoint(p, zName);
-			/* Link the new savepoint into the database handle's list. */
-			pNew->pNext = psql_txn->pSavepoint;
-			psql_txn->pSavepoint = pNew;
-		}
+		/* Create a new savepoint structure. */
+		pNew = sql_savepoint(p, zName);
+		/* Link the new savepoint into the database handle's list. */
+		pNew->pNext = psql_txn->pSavepoint;
+		psql_txn->pSavepoint = pNew;
 	} else {
 		/* Find the named savepoint. If there is no such savepoint, then an
 		 * an error is returned to the user.
@@ -2852,7 +2896,7 @@ case OP_Savepoint: {
 		if (!pSavepoint) {
 			sqlite3VdbeError(p, "no such savepoint: %s", zName);
 			rc = SQLITE_ERROR;
-		} else if (db->nVdbeWrite>0 && p1==SAVEPOINT_RELEASE) {
+		} else if (p1==SAVEPOINT_RELEASE) {
 			/* It is not possible to release (commit) a savepoint if there are
 			 * active write statements.
 			 */
@@ -2888,7 +2932,6 @@ case OP_Savepoint: {
 				}
 				if (isSchemaChange) {
 					sqlite3ExpirePreparedStatements(db);
-					sqlite3ResetAllSchemasOfConnection(db);
 					user_session->sql_flags |= SQLITE_InternChanges;
 				}
 			}
@@ -2972,7 +3015,6 @@ case OP_AutoCommit: {
 	assert(desiredAutoCommit==1 || desiredAutoCommit==0);
 	assert(desiredAutoCommit==1 || iRollback==0);
 	assert(db->nVdbeActive>0);  /* At least this one VM is active */
-	assert(p->bIsReader);
 
 	if (desiredAutoCommit!=p->autoCommit) {
 		if (iRollback) {
@@ -2980,14 +3022,6 @@ case OP_AutoCommit: {
 			box_txn_rollback();
 			sqlite3RollbackAll(p, SQLITE_ABORT_ROLLBACK);
 			p->autoCommit = 1;
-		} else if (desiredAutoCommit && db->nVdbeWrite>0) {
-			/* If this instruction implements a COMMIT and other VMs are writing
-			 * return an error indicating that the other VMs must complete first.
-			 */
-			sqlite3VdbeError(p, "cannot commit transaction - "
-					 "SQL statements in progress");
-			rc = SQLITE_BUSY;
-			goto abort_due_to_error;
 		} else if ((rc = sqlite3VdbeCheckFk(p, 1))!=SQLITE_OK) {
 			goto vdbe_return;
 		} else {
@@ -3016,71 +3050,11 @@ case OP_AutoCommit: {
 	break;
 }
 
-/* Opcode: Transaction P1 P2 P3 P4 P5
- *
- * Begin a transaction on database P1 if a transaction is not already
- * active.
- * If P2 is non-zero, then a write-transaction is started, or if a
- * read-transaction is already active, it is upgraded to a write-transaction.
- * If P2 is zero, then a read-transaction is started.
- *
- * P1 is the index of the database file on which the transaction is
- * started.  Index 0 is the main database file and index 1 is the
- * file used for temporary tables.  Indices of 2 or more are used for
- * attached databases.
- *
- * If a write-transaction is started and the Vdbe.usesStmtJournal flag is
- * true (this flag is set if the Vdbe may modify more than one row and may
- * throw an ABORT exception), a statement transaction may also be opened.
- * More specifically, a statement transaction is opened if the database
- * connection is currently not in autocommit mode, or if there are other
- * active statements. A statement transaction allows the changes made by this
- * VDBE to be rolled back after an error without having to roll back the
- * entire transaction. If no error is encountered, the statement transaction
- * will automatically commit when the VDBE halts.
- *
- * If P5!=0 then this opcode also checks the schema cookie against P3
- * and the schema generation counter against P4.
- * The cookie changes its value whenever the database schema changes.
- * This operation is used to detect when that the cookie has changed
- * and that the current process needs to reread the schema.  If the schema
- * cookie in P3 differs from the schema cookie in the database header or
- * if the schema generation counter in P4 differs from the current
- * generation counter, then an SQLITE_SCHEMA error is raised and execution
- * halts.  The sqlite3_step() wrapper function might then reprepare the
- * statement and rerun it from the beginning.
- */
-case OP_Transaction: {
-	assert(p->bIsReader);
-	assert(p->readOnly==0 || pOp->p2==0);
-	assert(pOp->p1==0);
-	if (pOp->p2 && (user_session->sql_flags & SQLITE_QueryOnly)!=0) {
-		rc = SQLITE_READONLY;
-		goto abort_due_to_error;
-	}
-
-	testcase(rc == SQLITE_BUSY_SNAPSHOT);
-	testcase(rc == SQLITE_BUSY_RECOVERY);
-	if (rc != SQLITE_OK) {
-		if ((rc&0xff) == SQLITE_BUSY) {
-			p->pc = (int)(pOp - aOp);
-			p->rc = rc;
-			goto vdbe_return;
-		}
-		goto abort_due_to_error;
-	}
-	assert(pOp->p5==0 || pOp->p4type==P4_INT32);
-
-	if (rc) goto abort_due_to_error;
-	break;
-}
-
 /* Opcode: TTransaction * * * * *
  *
  * Start Tarantool's transaction.
  * Only do that if auto commit mode is on. This should be no-op
  * if this opcode was emitted inside a transaction.
- * Auto commit mode is disabled by OP_Transaction.
  */
 case OP_TTransaction: {
 	if (p->autoCommit) {
@@ -3107,8 +3081,6 @@ case OP_TTransaction: {
  * executing this instruction.
  */
 case OP_ReadCookie: {               /* out2 */
-	assert(p->bIsReader);
-
 	pOut = out2Prerelease(p, pOp);
 	pOut->u.i = 0;
 	break;
@@ -3124,13 +3096,9 @@ case OP_ReadCookie: {               /* out2 */
  * A transaction must be started before executing this opcode.
  */
 case OP_SetCookie: {
-	Db *pDb;
 	assert(pOp->p1==0);
-	assert(p->readOnly==0);
-	pDb = &db->mdb;
 	/* See note about index shifting on OP_ReadCookie */
 	/* When the schema cookie changes, record the new cookie internally */
-	pDb->pSchema->schema_cookie = pOp->p3;
 	user_session->sql_flags |= SQLITE_InternChanges;
 	if (pOp->p1==1) {
 		/* Invalidate all prepared statements whenever the TEMP database
@@ -3143,79 +3111,56 @@ case OP_SetCookie: {
 	break;
 }
 
-/* Opcode: OpenRead P1 P2 * P4 P5
- * Synopsis: root=P2
+/* Opcode: OpenRead P1 P2 P3 P4 P5
+ * Synopsis: index id = P2, space ptr = P3
  *
- * Open a read-only cursor for the database table whose root page is
- * P2 in a database file. 
- * Give the new cursor an identifier of P1.  The P1
- * values need not be contiguous but all P1 values should be small integers.
- * It is an error for P1 to be negative.
+ * Open a cursor for a space specified by pointer in P3 and index
+ * id in P2. Give the new cursor an identifier of P1. The P1
+ * values need not be contiguous but all P1 values should be
+ * small integers. It is an error for P1 to be negative.
  *
- * If P5!=0 then use the content of register P2 as the root page, not
- * the value of P2 itself.
+ * The P4 value may be a pointer to a KeyInfo structure.
+ * If it is a pointer to a KeyInfo structure, then said structure
+ * defines the content and collatining sequence of the index
+ * being opened. Otherwise, P4 is NULL.
  *
- * There will be a read lock on the database whenever there is an
- * open cursor.  If the database was unlocked prior to this instruction
- * then a read lock is acquired as part of this instruction.  A read
- * lock allows other processes to read the database but prohibits
- * any other process from modifying the database.  The read lock is
- * released when all cursors are closed.  If this instruction attempts
- * to get a read lock but fails, the script terminates with an
- * SQLITE_BUSY error code.
- *
- * The P4 value may be either an integer (P4_INT32) or a pointer to
- * a KeyInfo structure (P4_KEYINFO). If it is a pointer to a KeyInfo
- * structure, then said structure defines the content and collating
- * sequence of the index being opened. Otherwise, if P4 is an integer
- * value, it is set to the number of columns in the table.
- *
- * See also: OpenWrite, ReopenIdx
+ * If schema has changed since compile time, VDBE ends execution
+ * with appropriate error message. The only exception is
+ * when P5 is set to OPFLAG_FRESH_PTR, which means that
+ * space pointer has been fetched in runtime right before
+ * this opcode.
  */
-/* Opcode: ReopenIdx P1 P2 * P4 P5
- * Synopsis: root=P2
+/* Opcode: ReopenIdx P1 P2 P3 P4 P5
+ * Synopsis: index id = P2, space ptr = P3
  *
- * The ReopenIdx opcode works exactly like ReadOpen except that it first
- * checks to see if the cursor on P1 is already open with a root page
- * number of P2 and if it is this opcode becomes a no-op.  In other words,
- * if the cursor is already open, do not reopen it.
+ * The ReopenIdx opcode works exactly like OpenRead except that
+ * it first checks to see if the cursor on P1 is already open
+ * with the same index and if it is this opcode becomes a no-op.
+ * In other words, if the cursor is already open, do not reopen it.
  *
- * The ReopenIdx opcode may only be used with P5==0 and with P4 being
- * a P4_KEYINFO object.
- *
- * See the OpenRead opcode documentation for additional information.
+ * The ReopenIdx opcode may only be used with P5 == 0.
  */
-/* Opcode: OpenWrite P1 P2 * P4 P5
- * Synopsis: root=P2
+/* Opcode: OpenWrite P1 P2 P3 P4 P5
+ * Synopsis: index id = P2, space ptr = P3
  *
- * Open a read/write cursor named P1 on the table or index whose root
- * page is P2. Or if P5!=0 use the content of register P2 to find the
- * root page.
- *
- * The P4 value may be either an integer (P4_INT32) or a pointer to
- * a KeyInfo structure (P4_KEYINFO). If it is a pointer to a KeyInfo
- * structure, then said structure defines the content and collating
- * sequence of the index being opened. Otherwise, if P4 is an integer
- * value, it is set to the number of columns in the table, or to the
- * largest index of any column of the table that is actually used.
- *
- * This instruction works just like OpenRead except that it opens the cursor
- * in read/write mode.  For a given table, there can be one or more read-only
- * cursors or a single read/write cursor but not both.
- *
- * See also OpenRead.
+ * For now, OpenWrite is an alias for OpenRead.
+ * It exists just due legacy reasons and should be removed:
+ * it isn't neccessary to open cursor to make insertion or
+ * deletion.
  */
 case OP_ReopenIdx: {
 	int nField;
-	KeyInfo *pKeyInfo;
 	int p2;
 	VdbeCursor *pCur;
 	BtCursor *pBtCur;
 
 	assert(pOp->p5==0 || pOp->p5==OPFLAG_SEEKEQ);
-	assert(pOp->p4type==P4_KEYINFO);
 	pCur = p->apCsr[pOp->p1];
-	if (pCur && pCur->pgnoRoot==(u32)pOp->p2) {
+	p2 = pOp->p2;
+	pIn3 = &aMem[pOp->p3];
+	assert(pIn3->flags & MEM_Ptr);
+	if (pCur && pCur->uc.pCursor->space == (struct space *) pIn3->u.p &&
+	    pCur->uc.pCursor->index->def->iid == SQLITE_PAGENO_TO_INDEXID(p2)) {
 		goto open_cursor_set_hints;
 	}
 	/* If the cursor is not currently open or is open on a different
@@ -3225,82 +3170,47 @@ case OP_OpenRead:
 case OP_OpenWrite:
 
 	assert(pOp->opcode==OP_OpenWrite || pOp->p5==0 || pOp->p5==OPFLAG_SEEKEQ);
-	assert(p->bIsReader);
-	assert(pOp->opcode==OP_OpenRead || pOp->opcode==OP_ReopenIdx
-	       || p->readOnly==0);
-
-	if (p->expired) {
-		rc = SQLITE_ABORT_ROLLBACK;
+	/*
+	 * Even if schema has changed, pointer can come from
+	 * OP_SIDtoPtr opcode, which converts space id to pointer
+	 * during runtime.
+	 */
+	if (box_schema_version() != p->schema_ver &&
+	    (pOp->p5 & OPFLAG_FRESH_PTR) == 0) {
+		p->expired = 1;
+		rc = SQLITE_ERROR;
+		sqlite3VdbeError(p, "schema version has changed: " \
+				    "need to re-compile SQL statement");
 		goto abort_due_to_error;
 	}
-
-	nField = 0;
-	pKeyInfo = 0;
 	p2 = pOp->p2;
-	if (pOp->p5 & OPFLAG_P2ISREG) {
-		assert(p2>0);
-		assert(p2<=(p->nMem+1 - p->nCursor));
-		pIn2 = &aMem[p2];
-		assert(memIsValid(pIn2));
-		assert((pIn2->flags & MEM_Int)!=0);
-		sqlite3VdbeMemIntegerify(pIn2);
-		p2 = (int)pIn2->u.i;
-		/* The p2 value always comes from a prior OP_CreateTable opcode and
-		 * that opcode will always set the p2 value to 2 or more or else fail.
-		 * If there were a failure, the prepared statement would have halted
-		 * before reaching this instruction.
-		 */
-		assert(p2>=2);
-	}
-	if (pOp->p4type==P4_KEYINFO) {
-		if (pOp->p4.pKeyInfo) {
-			pKeyInfo = pOp->p4.pKeyInfo;
-		} else {
-			unsigned spaceId;
-			struct space *space;
-			const char *zName;
-			Table *pTab;
-			Index *pIdx;
-			/* Try to extract KeyInfo from PK if it was not passed.  */
-			spaceId = SQLITE_PAGENO_TO_SPACEID(p2);
-			space = space_by_id(spaceId);
-			assert(space);
-
-			zName = space_name(space);
-			assert(zName);
-
-			pTab = sqlite3HashFind(&db->mdb.pSchema->tblHash, zName);
-			assert(pTab);
-
-			pIdx = sqlite3PrimaryKeyIndex(pTab);
-			assert(pIdx);
-
-			pKeyInfo = sqlite3KeyInfoOfIndex(0, db, pIdx);
-			assert(pKeyInfo);
-		}
-		assert(pKeyInfo->db==db);
-		nField = pKeyInfo->nField+pKeyInfo->nXField;
-	} else if (pOp->p4type==P4_INT32) {
-		nField = pOp->p4.i;
-	}
+	pIn3 = &aMem[pOp->p3];
+	assert(pIn3->flags & MEM_Ptr);
+	struct space *space = ((struct space *) pIn3->u.p);
+	assert(space != NULL);
+	struct index *index = space_index(space, SQLITE_PAGENO_TO_INDEXID(p2));
+	assert(index != NULL);
+	/*
+	 * Since Tarantool iterator provides the full tuple,
+	 * we need a number of fields as wide as the table itself.
+	 * Otherwise, not enough slots for row parser cache are
+	 * allocated in VdbeCursor object.
+	 */
+	nField = space->def->field_count;
 	assert(pOp->p1>=0);
 	assert(nField>=0);
-	testcase( nField==0);  /* Table with INTEGER PRIMARY KEY and nothing else */
 	pCur = allocateCursor(p, pOp->p1, nField, CURTYPE_TARANTOOL);
 	if (pCur==0) goto no_mem;
 	pCur->nullRow = 1;
-	pCur->pgnoRoot = p2;
-
-	assert(p2 >= 1);
 	pBtCur = pCur->uc.pCursor;
-	pBtCur->pgnoRoot = p2;
-	pBtCur->pKeyInfo = pKeyInfo;
-	pBtCur->eState = CURSOR_INVALID;
 	pBtCur->curFlags |= BTCF_TaCursor;
-	pBtCur->pTaCursor = 0;
-	pCur->pKeyInfo = pKeyInfo;
+	pBtCur->space = space;
+	pBtCur->index = index;
+	pBtCur->eState = CURSOR_INVALID;
+	/* Key info still contains sorter order and collation. */
+	pCur->pKeyInfo = pOp->p4.pKeyInfo;
 
-	open_cursor_set_hints:
+open_cursor_set_hints:
 	assert(OPFLAG_BULKCSR==BTREE_BULKLOAD);
 	assert(OPFLAG_SEEKEQ==BTREE_SEEK_EQ);
 	testcase( pOp->p5 & OPFLAG_BULKCSR);
@@ -3333,11 +3243,8 @@ case OP_OpenTEphemeral: {
 	pCx->pKeyInfo  = pOp->p4.pKeyInfo;
 	pBtCur = pCx->uc.pCursor;
 	/* Ephemeral spaces don't have space_id */
-	pBtCur->pgnoRoot = 0;
-	pBtCur->pKeyInfo = pCx->pKeyInfo;
 	pBtCur->eState = CURSOR_INVALID;
 	pBtCur->curFlags = BTCF_TEphemCursor;
-	pBtCur->pTaCursor = 0;
 
 	rc = tarantoolSqlite3EphemeralCreate(pCx->uc.pCursor, pOp->p2,
 					     pOp->p4.pKeyInfo->aColl[0]);
@@ -3862,33 +3769,16 @@ case OP_Sequence: {           /* out2 */
 	break;
 }
 
-/* Opcode: NextId P1 P2 P3 * *
- * Synopsis: r[P3]=get_max(space_index[P1]{Column[P2]})
+/* Opcode: NextSequenceId * P2 * * *
+ * Synopsis: r[P2]=get_max(_sequence)
  *
- * Get next Id of the table. P1 is a table cursor, P2 is column
- * number. Return in P3 maximum id found in provided column,
+ * Get next Id of the _sequence space.
+ * Return in P2 maximum id found in _sequence,
  * incremented by one.
- *
- * This opcode is Tarantool specific and will segfault in case
- * of SQLite cursor.
  */
-case OP_NextId: {     /* out3 */
-	VdbeCursor *pC;    /* The VDBE cursor */
-	int p2;            /* Column number, which stores the id */
-	int pgno;          /* Page number of the cursor */
-	pC = p->apCsr[pOp->p1];
-	p2 = pOp->p2;
-	pOut = &aMem[pOp->p3];
-
-	/* This opcode is Tarantool specific.  */
-	assert(pC->uc.pCursor->curFlags & BTCF_TaCursor);
-
-	pgno = pC->pgnoRoot;
-
-	tarantoolSqlGetMaxId(SQLITE_PAGENO_TO_SPACEID(pgno),
-			     SQLITE_PAGENO_TO_INDEXID(pgno),
-			     p2,
-			     (uint64_t *) &pOut->u.i);
+case OP_NextSequenceId: {
+	pOut = &aMem[pOp->p2];
+	tarantoolSqlNextSeqId((uint64_t *) &pOut->u.i);
 
 	pOut->u.i += 1;
 	pOut->flags = MEM_Int;
@@ -4171,7 +4061,7 @@ case OP_NullRow: {
 	pC->cacheStatus = CACHE_STALE;
 	if (pC->eCurType==CURTYPE_TARANTOOL) {
 		assert(pC->uc.pCursor!=0);
-		sqlite3ClearCursor(pC->uc.pCursor);
+		sql_cursor_cleanup(pC->uc.pCursor);
 	}
 	break;
 }
@@ -4427,34 +4317,16 @@ case OP_Next:          /* jump */
 	goto check_for_interrupt;
 }
 
-/* Opcode: IdxInsert P1 P2 P3 P4 P5
+/* Opcode: IdxInsert P1 P2 * * P5
  * Synopsis: key=r[P2]
  *
- * Register P2 holds an SQL index key made using the
- * MakeRecord instructions.  This opcode writes that key
- * into the index P1.  Data for the entry is nil.
- *
- * If P4 is not zero, then it is the number of values in the unpacked
- * key of reg(P2).  In that case, P3 is the index of the first register
- * for the unpacked key.  The availability of the unpacked key can sometimes
- * be an optimization.
- *
- * If P5 has the OPFLAG_APPEND bit set, that is a hint to the b-tree layer
- * that this insert is likely to be an append.
- *
- * If P5 has the OPFLAG_NCHANGE bit set, then the change counter is
- * incremented by this instruction.  If the OPFLAG_NCHANGE bit is clear,
- * then the change counter is unchanged.
- *
- * If the OPFLAG_USESEEKRESULT flag of P5 is set, the implementation might
- * run faster by avoiding an unnecessary seek on cursor P1.  However,
- * the OPFLAG_USESEEKRESULT flag must only be set if there have been no prior
- * seeks on the cursor or if the most recent seek used a key equivalent
- * to P2.
- *
- * This instruction only works for indices.
+ * @param P1 Index of a space cursor.
+ * @param P2 Index of a register with MessagePack data to insert.
+ * @param P5 Flags. If P5 contains OPFLAG_NCHANGE, then VDBE
+ *        accounts the change in a case of successful insertion in
+ *        nChange counter.
  */
-/* Opcode: IdxReplace P1 P2 P3 P4 P5
+/* Opcode: IdxReplace P1 P2 * * P5
  * Synopsis: key=r[P2]
  *
  * This opcode works exactly as IdxInsert does, but in Tarantool
@@ -4471,7 +4343,6 @@ case OP_SorterInsert:       /* in2 */
 case OP_IdxReplace:
 case OP_IdxInsert: {        /* in2 */
 	VdbeCursor *pC;
-	CursorPayload x;
 
 	assert(pOp->p1>=0 && pOp->p1<p->nCursor);
 	pC = p->apCsr[pOp->p1];
@@ -4486,22 +4357,22 @@ case OP_IdxInsert: {        /* in2 */
 	if (pOp->opcode==OP_SorterInsert) {
 		rc = sqlite3VdbeSorterWrite(pC, pIn2);
 	} else {
-		x.nKey = pIn2->n;
-		x.pKey = pIn2->z;
-		x.aMem = aMem + pOp->p3;
-		x.nMem = (u16)pOp->p4.i;
-
 		BtCursor *pBtCur = pC->uc.pCursor;
-		assert((x.pKey == 0) == (pBtCur->pKeyInfo == 0));
 		if (pBtCur->curFlags & BTCF_TaCursor) {
 			/* Make sure that memory has been allocated on region. */
 			assert(aMem[pOp->p2].flags & MEM_Ephem);
 			if (pOp->opcode == OP_IdxInsert)
-				rc = tarantoolSqlite3Insert(pBtCur, &x);
+				rc = tarantoolSqlite3Insert(pBtCur->space,
+							    pIn2->z,
+							    pIn2->z + pIn2->n);
 			else
-				rc = tarantoolSqlite3Replace(pBtCur, &x);
+				rc = tarantoolSqlite3Replace(pBtCur->space,
+							     pIn2->z,
+							     pIn2->z + pIn2->n);
 		} else if (pBtCur->curFlags & BTCF_TEphemCursor) {
-			rc = tarantoolSqlite3EphemeralInsert(pBtCur, &x);
+			rc = tarantoolSqlite3EphemeralInsert(pBtCur->space,
+							     pIn2->z,
+							     pIn2->z + pIn2->n);
 		} else {
 			unreachable();
 		}
@@ -4523,6 +4394,79 @@ case OP_IdxInsert: {        /* in2 */
 	assert(p->errorAction == ON_CONFLICT_ACTION_ABORT ||
 	       p->errorAction == ON_CONFLICT_ACTION_FAIL);
 	if (rc) goto abort_due_to_error;
+	break;
+}
+
+/* Opcode: SInsert P1 P2 * * P5
+ * Synopsis: space id = P1, key = r[P2]
+ *
+ * This opcode is used only during DDL routine.
+ * In contrast to ordinary insertion, insertion to system spaces
+ * such as _space or _index will lead to schema changes.
+ * Thus, usage of space pointers is going to be impossible,
+ * as far as pointers can be expired since compilation time.
+ *
+ * If P5 is set to OPFLAG_NCHANGE, account overall changes
+ * made to database.
+ */
+case OP_SInsert: {
+	assert(pOp->p1 > 0);
+	assert(pOp->p2 >= 0);
+
+	pIn2 = &aMem[pOp->p2];
+	struct space *space = space_by_id(pOp->p1);
+	assert(space != NULL);
+	assert(space_is_system(space));
+	rc = tarantoolSqlite3Insert(space, pIn2->z, pIn2->z + pIn2->n);
+	if (rc)
+		goto abort_due_to_error;
+	if (pOp->p5 & OPFLAG_NCHANGE)
+		p->nChange++;
+	break;
+}
+
+/* Opcode: SDelete P1 P2 * * P5
+ * Synopsis: space id = P1, key = r[P2]
+ *
+ * This opcode is used only during DDL routine.
+ * Delete entry with given key from system space.
+ *
+ * If P5 is set to OPFLAG_NCHANGE, account overall changes
+ * made to database.
+ */
+case OP_SDelete: {
+	assert(pOp->p1 > 0);
+	assert(pOp->p2 >= 0);
+
+	pIn2 = &aMem[pOp->p2];
+	struct space *space = space_by_id(pOp->p1);
+	assert(space != NULL);
+	assert(space_is_system(space));
+	rc = sql_delete_by_key(space, pIn2->z, pIn2->n);
+	if (rc)
+		goto abort_due_to_error;
+	if (pOp->p5 & OPFLAG_NCHANGE)
+		p->nChange++;
+	break;
+}
+
+/* Opcode: SIDtoPtr P1 P2 * * *
+ * Synopsis: space id = P1, space[out] = r[P2]
+ *
+ * This opcode makes look up by space id and save found space
+ * into register, specified by the content of register P2.
+ * Such trick is needed during DLL routine, since schema may
+ * change and pointers become expired.
+ */
+case OP_SIDtoPtr: {
+	assert(pOp->p1 > 0);
+	assert(pOp->p2 >= 0);
+
+	pIn2 = out2Prerelease(p, pOp);
+	struct space *space = space_by_id(pOp->p1);
+	assert(space != NULL);
+	pIn2->u.p = (void *) space;
+	pIn2->flags = MEM_Ptr;
 	break;
 }
 
@@ -4661,60 +4605,20 @@ case OP_IdxGE:  {       /* jump */
 	break;
 }
 
-/* Opcode: Destroy P1 P2 P3 * *
+/* Opcode: Clear P1 * * * *
+ * Synopsis: space id = P1
  *
- * Delete an entire database table or index whose root page in the database
- * file is given by P1.
- *
- * The table being destroyed is in the main database file if P3==0.  If
- * P3==1 then the table to be clear is in the auxiliary database file
- * that is used to store tables create using CREATE TEMPORARY TABLE.
- *
- * Zero is stored in register P2.
- *
- * See also: Clear
- */
-case OP_Destroy: {     /* out2 */
-	int iMoved;
-
-	assert(p->readOnly==0);
-	assert(pOp->p1>1);
-	pOut = out2Prerelease(p, pOp);
-	pOut->flags = MEM_Null;
-	if (db->nVdbeRead > 1) {
-		rc = SQLITE_LOCKED;
-		p->errorAction = ON_CONFLICT_ACTION_ABORT;
-		goto abort_due_to_error;
-	} else {
-		iMoved = 0;  /* Not needed.  Only to silence a warning. */
-		pOut->flags = MEM_Int;
-		pOut->u.i = iMoved;
-		if (rc) goto abort_due_to_error;
-	}
-	break;
-}
-
-/* Opcode: Clear P1 P2 P3
- *
- * Delete all contents of the database table or index whose root page
- * in the database file is given by P1.  But, unlike Destroy, do not
- * remove the table or index from the database file.
- *
- * The table being clear is in the main database file if P2==0.  If
- * P2==1 then the table to be clear is in the auxiliary database file
- * that is used to store tables create using CREATE TEMPORARY TABLE.
- *
- * If the P3 value is non-zero, then the table referred to must be an
- * intkey table (an SQL table, not an index). In this case the row change
- * count is incremented by the number of rows in the table being cleared.
- * If P3 is greater than zero, then the value stored in register P3 is
- * also incremented by the number of rows in the table being cleared.
- *
- * See also: Destroy
+ * Delete all contents of the space, which space id is given
+ * in P1 argument. It is worth mentioning, that clearing routine
+ * doesn't involve truncating, since it features completely
+ * different mechanism under hood.
  */
 case OP_Clear: {
-	assert(p->readOnly==0);
-	rc = tarantoolSqlite3ClearTable(pOp->p1);
+	assert(pOp->p1 > 0);
+	uint32_t space_id = SQLITE_PAGENO_TO_SPACEID(pOp->p1);
+	struct space *space = space_by_id(space_id);
+	assert(space != NULL);
+	rc = tarantoolSqlite3ClearTable(space);
 	if (rc) goto abort_due_to_error;
 	break;
 }
@@ -4757,7 +4661,7 @@ case OP_ParseSchema2: {
 	char *argv[4] = {NULL, NULL, NULL, NULL};
 
 
-	assert(DbHasProperty(db, DB_SchemaLoaded));
+	assert(db->pSchema != NULL);
 
 	initData.db = db;
 	initData.pzErrMsg = &p->zErrMsg;
@@ -4811,7 +4715,7 @@ case OP_ParseSchema3: {
 	Mem *pRec;
 	char zPgnoBuf[16];
 	char *argv[4] = {NULL, zPgnoBuf, NULL, NULL};
-	assert(DbHasProperty(db, DB_SchemaLoaded));
+	assert(db->pSchema != NULL);
 
 	initData.db = db;
 	initData.pzErrMsg = &p->zErrMsg;
@@ -4870,7 +4774,7 @@ case OP_RenameTable: {
 	assert(space);
 	zOldTableName = space_name(space);
 	assert(zOldTableName);
-	pTab = sqlite3HashFind(&db->mdb.pSchema->tblHash, zOldTableName);
+	pTab = sqlite3HashFind(&db->pSchema->tblHash, zOldTableName);
 	assert(pTab);
 	pTrig = pTab->pTrigger;
 	iRootPage = pTab->tnum;
@@ -4891,8 +4795,8 @@ case OP_RenameTable: {
 		if (rc) goto abort_due_to_error;
 		pFKey->zTo = sqlite3DbStrNDup(db, zNewTableName,
 					      sqlite3Strlen30(zNewTableName));
-		sqlite3HashInsert(&db->mdb.pSchema->fkeyHash, zOldTableName, 0);
-		sqlite3HashInsert(&db->mdb.pSchema->fkeyHash, zNewTableName, pFKey);
+		sqlite3HashInsert(&db->pSchema->fkeyHash, zOldTableName, 0);
+		sqlite3HashInsert(&db->pSchema->fkeyHash, zNewTableName, pFKey);
 	}
 
 	sqlite3UnlinkAndDeleteTable(db, pTab->zName);
@@ -4913,7 +4817,7 @@ case OP_RenameTable: {
 		goto abort_due_to_error;
 	}
 
-	pTab = sqlite3HashFind(&db->mdb.pSchema->tblHash, zNewTableName);
+	pTab = sqlite3HashFind(&db->pSchema->tblHash, zNewTableName);
 	pTab->pTrigger = pTrig;
 
 	/* Rename all trigger created on this table.*/
@@ -5186,37 +5090,6 @@ case OP_FkIfZero: {         /* jump */
 }
 #endif /* #ifndef SQLITE_OMIT_FOREIGN_KEY */
 
-#ifndef SQLITE_OMIT_AUTOINCREMENT
-/* Opcode: MemMax P1 P2 * * *
- * Synopsis: r[P1]=max(r[P1],r[P2])
- *
- * P1 is a register in the root frame of this VM (the root frame is
- * different from the current frame if this instruction is being executed
- * within a sub-program). Set the value of register P1 to the maximum of
- * its current value and the value in register P2.
- *
- * This instruction throws an error if the memory cell is not initially
- * an integer.
- */
-case OP_MemMax: {        /* in2 */
-	VdbeFrame *pFrame;
-	if (p->pFrame) {
-		for(pFrame=p->pFrame; pFrame->pParent; pFrame=pFrame->pParent);
-		pIn1 = &pFrame->aMem[pOp->p1];
-	} else {
-		pIn1 = &aMem[pOp->p1];
-	}
-	assert(memIsValid(pIn1));
-	sqlite3VdbeMemIntegerify(pIn1);
-	pIn2 = &aMem[pOp->p2];
-	sqlite3VdbeMemIntegerify(pIn2);
-	if (pIn1->u.i<pIn2->u.i) {
-		pIn1->u.i = pIn2->u.i;
-	}
-	break;
-}
-#endif /* SQLITE_OMIT_AUTOINCREMENT */
-
 /* Opcode: IfPos P1 P2 P3 * *
  * Synopsis: if r[P1]>0 then r[P1]-=P3, goto P2
  *
@@ -5446,87 +5319,6 @@ case OP_AggFinal: {
 	break;
 }
 
-#ifndef SQLITE_OMIT_WAL
-/* Opcode: Checkpoint P1 P2 * * *
- *
- * Checkpoint the database. This is a no-op if it is not currently in
- * WAL mode. Parameter P1 is one of SQLITE_CHECKPOINT_PASSIVE, FULL,
- * RESTART, or TRUNCATE.  Write 1 or 0 into mem[P2] if the checkpoint returns
- * SQLITE_BUSY or not, respectively.  Write the number of pages in the
- * WAL after the checkpoint into mem[P2+1] and the number of pages
- * in the WAL that have been checkpointed after the checkpoint
- * completes into mem[P3+2].  However on an error, mem[P2+1] and
- * mem[P2+2] are initialized to -1.
- */
-case OP_Checkpoint: {
-	int i;                          /* Loop counter */
-	int aRes[3];                    /* Results */
-	Mem *pMem;                      /* Write results here */
-
-	assert(p->readOnly==0);
-	aRes[0] = 0;
-	aRes[1] = aRes[2] = -1;
-	assert(pOp->p1==SQLITE_CHECKPOINT_PASSIVE
-	       || pOp->p1==SQLITE_CHECKPOINT_FULL
-	       || pOp->p1==SQLITE_CHECKPOINT_RESTART
-	       || pOp->p1==SQLITE_CHECKPOINT_TRUNCATE
-		);
-	/* Tarantool: SQLite native WAL is removed. Probably whole opcode
-	   needs to be removed. Or adopt Tarantool's WAL for this op.  */
-	/* rc = sqlite3Checkpoint(db, pOp->p1, pOp->p2, &aRes[1], &aRes[2]); */
-	sqlite3VdbeError(p, "OP-code Checkpoint is not implemented yet.");
-	rc = SQLITE_ERROR;
-	goto abort_due_to_error;
-
-	if (rc) {
-		if (rc!=SQLITE_BUSY) goto abort_due_to_error;
-		rc = SQLITE_OK;
-		aRes[0] = 1;
-	}
-	for(i=0, pMem = &aMem[pOp->p2]; i<3; i++, pMem++) {
-		sqlite3VdbeMemSetInt64(pMem, (i64)aRes[i]);
-	}
-	break;
-};
-#endif
-
-#ifndef SQLITE_OMIT_PRAGMA
-/* Opcode: JournalMode P1 P2 P3 * *
- *
- * Change the journal mode of database P1 to P3. P3 must be one of the
- * PAGER_JOURNALMODE_XXX values. If changing between the various rollback
- * modes (delete, truncate, persist, off and memory), this is a simple
- * operation. No IO is required.
- *
- * If changing into or out of WAL mode the procedure is more complicated.
- *
- * Write a string containing the final journal-mode to register P2.
- */
-case OP_JournalMode: {    /* out2 */
-	int eNew;                       /* New journal mode */
-
-	pOut = out2Prerelease(p, pOp);
-	eNew = pOp->p3;
-	/* assert(eNew==PAGER_JOURNALMODE_DELETE
-	       || eNew==PAGER_JOURNALMODE_TRUNCATE
-	       || eNew==PAGER_JOURNALMODE_PERSIST
-	       || eNew==PAGER_JOURNALMODE_OFF
-	       || eNew==PAGER_JOURNALMODE_MEMORY
-	       || eNew==PAGER_JOURNALMODE_WAL
-	       || eNew==PAGER_JOURNALMODE_QUERY
-		); */
-	assert(pOp->p1==0);
-	assert(p->readOnly==0);
-
-	pOut->flags = MEM_Str|MEM_Static|MEM_Term;
-	pOut->z = (char *)sqlite3JournalModename(eNew);
-	pOut->n = sqlite3Strlen30(pOut->z);
-	if (rc) goto abort_due_to_error;
-	break;
-};
-#endif /* SQLITE_OMIT_PRAGMA */
-
-
 /* Opcode: Expire P1 * * * *
  *
  * Cause precompiled statements to expire.  When an expired statement
@@ -5578,18 +5370,10 @@ case OP_Init: {          /* jump */
 	assert(pOp==p->aOp);  /* Always instruction 0 */
 
 #ifndef SQLITE_OMIT_TRACE
-	if ((db->mTrace & (SQLITE_TRACE_STMT|SQLITE_TRACE_LEGACY))!=0
+	if ((db->mTrace & SQLITE_TRACE_STMT)!=0
 	    && !p->doingRerun
 	    && (zTrace = (pOp->p4.z ? pOp->p4.z : p->zSql))!=0
 		) {
-#ifndef SQLITE_OMIT_DEPRECATED
-		if (db->mTrace & SQLITE_TRACE_LEGACY) {
-			void (*x)(void*,const char*) = (void(*)(void*,const char*))db->xTrace;
-			char *z = sqlite3VdbeExpandSql(p, zTrace);
-			x(db->pTraceArg, z);
-			sqlite3_free(z);
-		} else
-#endif
 		{
 			(void)db->xTrace(SQLITE_TRACE_STMT, db->pTraceArg, p, zTrace);
 		}
@@ -5615,22 +5399,19 @@ case OP_Init: {          /* jump */
 
 /* Opcode: IncMaxid P1 * * * *
  *
- * The cursor (P1) should be open on _schema.
- * Increment the max_id (max space id) and store updated tuple in the
- * cursor.
+ * Increment the max_id from _schema (max space id)
+ * and store updated id in register specified by first operand.
+ * It is system opcode and must be used only during DDL routine.
  */
 case OP_IncMaxid: {
-	VdbeCursor *pC;
+	assert(pOp->p1 > 0);
+	pOut = &aMem[pOp->p1];
 
-	assert(pOp->p1>=0 && pOp->p1<p->nCursor);
-	pC = p->apCsr[pOp->p1];
-	assert(pC != 0);
-
-	rc = tarantoolSqlite3IncrementMaxid(pC->uc.pCursor);
+	rc = tarantoolSqlite3IncrementMaxid((uint64_t*) &pOut->u.i);
 	if (rc!=SQLITE_OK) {
 		goto abort_due_to_error;
 	}
-	pC->nullRow = 0;
+	pOut->flags = MEM_Int;
 	break;
 }
 
@@ -5716,13 +5497,10 @@ abort_due_to_error:
 	if (rc==SQLITE_IOERR_NOMEM) sqlite3OomFault(db);
 	rc = SQLITE_ERROR;
 	if (resetSchemaOnFault>0) {
-		sqlite3ResetOneSchema(db);
+		sqlite3SchemaClear(db);
 	}
 
-	/* This is the only way out of this procedure.  We have to
-	 * release the mutexes on btrees that were acquired at the
-	 * top.
-	 */
+	/* This is the only way out of this procedure. */
 vdbe_return:
 	testcase( nVmStep>0);
 	p->aCounter[SQLITE_STMTSTATUS_VM_STEP] += (int)nVmStep;

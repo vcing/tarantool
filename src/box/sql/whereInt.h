@@ -293,7 +293,10 @@ struct WhereTerm {
 struct WhereScan {
 	WhereClause *pOrigWC;	/* Original, innermost WhereClause */
 	WhereClause *pWC;	/* WhereClause currently being scanned */
-	const char *zCollName;	/* Required collating sequence, if not NULL */
+	/** Required collating sequence. */
+	struct coll *coll;
+	/** Flag is set if actual column was encountered. */
+	bool is_column_seen;
 	Expr *pIdxExpr;		/* Search for this index expression */
 	char idxaff;		/* Must match this affinity, if zCollName!=NULL */
 	unsigned char nEquiv;	/* Number of entries in aEquiv[] */
@@ -452,7 +455,6 @@ WhereTerm *sqlite3WhereFindTerm(WhereClause * pWC,	/* The WHERE clause to be sea
     );
 
 /* wherecode.c: */
-#ifndef SQLITE_OMIT_EXPLAIN
 int sqlite3WhereExplainOneScan(Parse * pParse,	/* Parse context */
 			       SrcList * pTabList,	/* Table list this loop refers to */
 			       WhereLevel * pLevel,	/* Scan to write OP_Explain opcode for */
@@ -460,9 +462,6 @@ int sqlite3WhereExplainOneScan(Parse * pParse,	/* Parse context */
 			       int iFrom,	/* Value for "from" column of output */
 			       u16 wctrlFlags	/* Flags passed to sqlite3WhereBegin() */
     );
-#else
-#define sqlite3WhereExplainOneScan(u,v,w,x,y,z) 0
-#endif				/* SQLITE_OMIT_EXPLAIN */
 #ifdef SQLITE_ENABLE_STMT_SCANSTATUS
 void sqlite3WhereAddScanStatus(Vdbe * v,	/* Vdbe to add scanstatus entry to */
 			       SrcList * pSrclist,	/* FROM clause pLvl reads data from */

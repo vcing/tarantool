@@ -30,7 +30,7 @@ local default_cfg = {
     vinyl_page_size           = 8 * 1024,
     vinyl_bloom_fpr           = 0.05,
     log                 = nil,
-    log_nonblock        = true,
+    log_nonblock        = nil,
     log_level           = 5,
     log_format          = "plain",
     io_collect_interval = nil,
@@ -57,7 +57,13 @@ local default_cfg = {
     worker_pool_threads = 4,
     replication_timeout = 1,
     replication_sync_lag = 10,
+    replication_connect_timeout = 4,
     replication_connect_quorum = nil, -- connect all
+    replication_skip_conflict = false,
+    feedback_enabled      = true,
+    feedback_host         = "https://feedback.tarantool.io",
+    feedback_interval     = 3600,
+    net_msg_max           = 768,
 }
 
 -- types of available options
@@ -112,7 +118,13 @@ local template_cfg = {
     worker_pool_threads = 'number',
     replication_timeout = 'number',
     replication_sync_lag = 'number',
+    replication_connect_timeout = 'number',
     replication_connect_quorum = 'number',
+    replication_skip_conflict = 'boolean',
+    feedback_enabled      = 'boolean',
+    feedback_host         = 'string',
+    feedback_interval     = 'number',
+    net_msg_max           = 'number',
 }
 
 local function normalize_uri(port)
@@ -168,10 +180,14 @@ local dynamic_cfg = {
     read_only               = private.cfg_set_read_only,
     memtx_max_tuple_size    = private.cfg_set_memtx_max_tuple_size,
     vinyl_max_tuple_size    = private.cfg_set_vinyl_max_tuple_size,
+    vinyl_cache             = private.cfg_set_vinyl_cache,
     vinyl_timeout           = private.cfg_set_vinyl_timeout,
     checkpoint_count        = private.cfg_set_checkpoint_count,
     checkpoint_interval     = private.checkpoint_daemon.set_checkpoint_interval,
     worker_pool_threads     = private.cfg_set_worker_pool_threads,
+    feedback_enabled        = private.feedback_daemon.set_feedback_params,
+    feedback_host           = private.feedback_daemon.set_feedback_params,
+    feedback_interval       = private.feedback_daemon.set_feedback_params,
     -- do nothing, affects new replicas, which query this value on start
     wal_dir_rescan_delay    = function() end,
     custom_proc_title       = function()
@@ -180,6 +196,8 @@ local dynamic_cfg = {
     force_recovery          = function() end,
     replication_timeout     = private.cfg_set_replication_timeout,
     replication_connect_quorum = private.cfg_set_replication_connect_quorum,
+    replication_skip_conflict = private.cfg_set_replication_skip_conflict,
+    net_msg_max             = private.cfg_set_net_msg_max,
 }
 
 local dynamic_cfg_skip_at_load = {

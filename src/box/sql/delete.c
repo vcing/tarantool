@@ -56,15 +56,13 @@ sqlite3SrcListLookup(Parse * pParse, SrcList * pSrc)
 	struct SrcList_item *pItem = pSrc->a;
 	Table *pTab;
 	assert(pItem && pSrc->nSrc == 1);
-	pTab = sqlite3LocateTableItem(pParse, 0, pItem);
+	pTab = sqlite3LocateTable(pParse, 0, pItem->zName);
 	sqlite3DeleteTable(pParse->db, pItem->pTab);
 	pItem->pTab = pTab;
-	if (pTab) {
+	if (pTab != NULL)
 		pTab->nTabRef++;
-	}
-	if (sqlite3IndexedByLookup(pParse, pItem)) {
-		pTab = 0;
-	}
+	if (sqlite3IndexedByLookup(pParse, pItem))
+		pTab = NULL;
 	return pTab;
 }
 
@@ -88,7 +86,7 @@ sqlite3IsReadOnly(Parse * pParse, Table * pTab, int viewOk)
 		return 1;
 	}
 #ifndef SQLITE_OMIT_VIEW
-	if (!viewOk && pTab->pSelect) {
+	if (!viewOk && space_is_view(pTab)) {
 		sqlite3ErrorMsg(pParse, "cannot modify %s because it is a view",
 				pTab->zName);
 		return 1;
@@ -113,7 +111,6 @@ sqlite3MaterializeView(Parse * pParse,	/* Parsing context */
 	Select *pSel;
 	SrcList *pFrom;
 	sqlite3 *db = pParse->db;
-	assert(sqlite3SchemaToIndex(db, pView->pSchema) == 0);
 	pWhere = sqlite3ExprDup(db, pWhere, 0);
 	pFrom = sqlite3SrcListAppend(db, 0, 0);
 	if (pFrom) {
@@ -123,14 +120,14 @@ sqlite3MaterializeView(Parse * pParse,	/* Parsing context */
 		assert(pFrom->a[0].pUsing == 0);
 	}
 	pSel = sqlite3SelectNew(pParse, 0, pFrom, pWhere, 0, 0, 0,
-				SF_IncludeHidden, 0, 0);
+				0, 0, 0);
 	sqlite3SelectDestInit(&dest, SRT_EphemTab, iCur);
 	sqlite3Select(pParse, pSel, &dest);
 	sqlite3SelectDelete(db, pSel);
 }
 #endif				/* !defined(SQLITE_OMIT_VIEW) && !defined(SQLITE_OMIT_TRIGGER) */
 
-#if defined(SQLITE_ENABLE_UPDATE_DELETE_LIMIT) && !defined(SQLITE_OMIT_SUBQUERY)
+#if defined(SQLITE_ENABLE_UPDATE_DELETE_LIMIT)
 /*
  * Generate an expression tree to implement the WHERE, ORDER BY,
  * and LIMIT/OFFSET portion of DELETE and UPDATE statements.
@@ -212,14 +209,13 @@ sqlite3LimitWhere(Parse * pParse,	/* The parser context */
 	return pInClause;
 
  limit_where_cleanup:
-	sqlite3ExprDelete(pParse->db, pWhere);
+	sql_expr_free(pParse->db, pWhere);
 	sqlite3ExprListDelete(pParse->db, pOrderBy);
-	sqlite3ExprDelete(pParse->db, pLimit);
-	sqlite3ExprDelete(pParse->db, pOffset);
+	sql_expr_free(pParse->db, pLimit);
+	sql_expr_free(pParse->db, pOffset);
 	return 0;
 }
 #endif				/* defined(SQLITE_ENABLE_UPDATE_DELETE_LIMIT) */
-       /*      && !defined(SQLITE_OMIT_SUBQUERY) */
 
 /*
  * Generate code for a DELETE FROM statement.
@@ -243,10 +239,8 @@ sqlite3DeleteFrom(Parse * pParse,	/* The parser context */
 	int iIdxCur = 0;	/* Cursor number of the first index */
 	int nIdx;		/* Number of indices */
 	sqlite3 *db;		/* Main database structure */
-	AuthContext sContext;	/* Authorization context */
 	NameContext sNC;	/* Name context to resolve expressions in */
 	int memCnt = -1;	/* Memory cell used for change counting */
-	int rcauth;		/* Value returned by authorization callback */
 	int eOnePass;		/* ONEPASS_OFF or _SINGLE or _MULTI */
 	int aiCurOnePass[2];	/* The write cursors opened by WHERE_ONEPASS */
 	u8 *aToOpen = 0;	/* Open cursor iTabCur+j if aToOpen[j] is true */
@@ -269,7 +263,6 @@ sqlite3DeleteFrom(Parse * pParse,	/* The parser context */
 	Trigger *pTrigger;	/* List of table triggers, if required */
 #endif
 
-	memset(&sContext, 0, sizeof(sContext));
 	db = pParse->db;
 	if (pParse->nErr || db->mallocFailed) {
 		goto delete_from_cleanup;
@@ -310,13 +303,6 @@ sqlite3DeleteFrom(Parse * pParse,	/* The parser context */
 	if (sqlite3IsReadOnly(pParse, pTab, (pTrigger ? 1 : 0))) {
 		goto delete_from_cleanup;
 	}
-	rcauth = sqlite3AuthCheck(pParse, SQLITE_DELETE, pTab->zName, 0,
-			          "main");
-	assert(rcauth == SQLITE_OK || rcauth == SQLITE_DENY
-			|| rcauth == SQLITE_IGNORE);
-	if (rcauth == SQLITE_DENY) {
-		goto delete_from_cleanup;
-	}
 	assert(!isView || pTrigger);
 
 	/* Assign cursor numbers to the table and all its indices.
@@ -327,12 +313,6 @@ sqlite3DeleteFrom(Parse * pParse,	/* The parser context */
 		pParse->nTab++;
 	}
 
-	/* Start the view context
-	 */
-	if (isView) {
-		sqlite3AuthContextPush(pParse, &sContext, pTab->zName);
-	}
-
 	/* Begin generating code.
 	 */
 	v = sqlite3GetVdbe(pParse);
@@ -341,7 +321,7 @@ sqlite3DeleteFrom(Parse * pParse,	/* The parser context */
 	}
 	if (pParse->nested == 0)
 		sqlite3VdbeCountChanges(v);
-	sqlite3BeginWriteOperation(pParse, 1);
+	sql_set_multi_write(pParse, true);
 
 	/* If we are trying to delete from a view, realize that view into
 	 * an ephemeral table.
@@ -375,7 +355,7 @@ sqlite3DeleteFrom(Parse * pParse,	/* The parser context */
 	 * this optimization caused the row change count (the value returned by
 	 * API function sqlite3_count_changes) to be set incorrectly.
 	 */
-	if (rcauth == SQLITE_OK && pWhere == 0 && !bComplex
+	if (pWhere == 0 && !bComplex
 #ifdef SQLITE_ENABLE_PREUPDATE_HOOK
 	    && db->xPreUpdateCallback == 0
 #endif
@@ -413,7 +393,7 @@ sqlite3DeleteFrom(Parse * pParse,	/* The parser context */
 		} else {
 			pPk = sqlite3PrimaryKeyIndex(pTab);
 			assert(pPk != 0);
-			nPk = pPk->nKeyCol;
+			nPk = index_column_count(pPk);
 			iPk = pParse->nMem + 1;
 			pParse->nMem += nPk;
 			iEphCur = pParse->nTab++;
@@ -492,7 +472,7 @@ sqlite3DeleteFrom(Parse * pParse,	/* The parser context */
 			sqlite3VdbeAddOp4(v, OP_MakeRecord, iPk, nPk, iKey, zAff, nPk);
 			/* Set flag to save memory allocating one by malloc. */
 			sqlite3VdbeChangeP5(v, 1);
-			sqlite3VdbeAddOp4Int(v, OP_IdxInsert, iEphCur, iKey, iPk, nPk);
+			sqlite3VdbeAddOp2(v, OP_IdxInsert, iEphCur, iKey);
 		}
 
 		/* If this DELETE cannot use the ONEPASS strategy, this is the
@@ -586,9 +566,8 @@ sqlite3DeleteFrom(Parse * pParse,	/* The parser context */
 	}
 
  delete_from_cleanup:
-	sqlite3AuthContextPop(&sContext);
 	sqlite3SrcListDelete(db, pTabList);
-	sqlite3ExprDelete(db, pWhere);
+	sql_expr_free(db, pWhere, false);
 	sqlite3DbFree(db, aToOpen);
 	return;
 }
@@ -653,9 +632,9 @@ sqlite3DeleteByKey(Parse *pParse, char *zTab, const char **columns,
 	return;
 
  error:
-	sqlite3ExprDelete(pParse->db, where);
+	sql_expr_free(pParse->db, where, false);
 	for (int i = 0; i < nPairs; ++i)
-		sqlite3ExprDelete(pParse->db, values[i]);
+		sql_expr_free(pParse->db, values[i], false);
 }
 
 /* Make sure "isView" and other macros defined above are undefined. Otherwise
@@ -813,7 +792,6 @@ sqlite3GenerateRowDelete(Parse * pParse,	/* Parsing context */
 		/* sqlite3GenerateRowIndexDelete(pParse, pTab, iDataCur, iIdxCur,0,iIdxNoSeek);  */
 		sqlite3VdbeAddOp2(v, OP_Delete, iDataCur,
 				  (count ? OPFLAG_NCHANGE : 0));
-		sqlite3VdbeAppendP4(v, (char *)pTab, P4_TABLE);
 		if (eMode != ONEPASS_OFF) {
 			sqlite3VdbeChangeP5(v, OPFLAG_AUXDELETE);
 		}
@@ -874,10 +852,9 @@ sqlite3GenerateRowIndexDelete(Parse * pParse,	/* Parsing and code generating con
 	pPk = sqlite3PrimaryKeyIndex(pTab);
 	/* In Tarantool it is enough to delete row just from pk */
 	VdbeModuleComment((v, "GenRowIdxDel for %s", pPk->zName));
-	r1 = sqlite3GenerateIndexKey(pParse, pPk, iDataCur, 0, 1,
-				     &iPartIdxLabel, NULL, r1);
-	sqlite3VdbeAddOp3(v, OP_IdxDelete, iIdxCur, r1,
-			  pPk->uniqNotNull ? pPk->nKeyCol : pPk->nColumn);
+	r1 = sqlite3GenerateIndexKey(pParse, pPk, iDataCur, 0, &iPartIdxLabel,
+				     NULL, r1);
+	sqlite3VdbeAddOp3(v, OP_IdxDelete, iIdxCur, r1, index_column_count(pPk));
 	sqlite3ResolvePartIdxLabel(pParse, iPartIdxLabel);
 }
 
@@ -917,7 +894,6 @@ sqlite3GenerateIndexKey(Parse * pParse,	/* Parsing context */
 			Index * pIdx,	/* The index for which to generate a key */
 			int iDataCur,	/* Cursor number from which to take column data */
 			int regOut,	/* Put the new key into this register if not 0 */
-			int prefixOnly,	/* Compute only a unique prefix of the key */
 			int *piPartIdxLabel,	/* OUT: Jump to this label to skip partial index */
 			Index * pPrior,	/* Previously generated index key */
 			int regPrior)	/* Register holding previous generated key */
@@ -939,8 +915,7 @@ sqlite3GenerateIndexKey(Parse * pParse,	/* Parsing context */
 			*piPartIdxLabel = 0;
 		}
 	}
-	nCol = (prefixOnly
-		&& pIdx->uniqNotNull) ? pIdx->nKeyCol : pIdx->nColumn;
+	nCol = index_column_count(pIdx);
 	regBase = sqlite3GetTempRange(pParse, nCol);
 	if (pPrior && (regBase != regPrior || pPrior->pPartIdxWhere))
 		pPrior = 0;

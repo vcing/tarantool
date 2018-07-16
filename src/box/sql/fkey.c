@@ -36,6 +36,7 @@
 #include <box/coll.h>
 #include "sqliteInt.h"
 #include "box/session.h"
+#include "tarantoolInt.h"
 
 #ifndef SQLITE_OMIT_FOREIGN_KEY
 #ifndef SQLITE_OMIT_TRIGGER
@@ -255,7 +256,8 @@ sqlite3FkLocateIndex(Parse * pParse,	/* Parse context to store any error in */
 	}
 
 	for (pIdx = pParent->pIndex; pIdx; pIdx = pIdx->pNext) {
-		if (pIdx->nKeyCol == nCol && IsUniqueIndex(pIdx)
+		int nIdxCol = index_column_count(pIdx);
+		if (nIdxCol == nCol && index_is_unique(pIdx)
 		    && pIdx->pPartIdxWhere == 0) {
 			/* pIdx is a UNIQUE index (or a PRIMARY KEY) and has the right number
 			 * of columns. If each indexed column corresponds to a foreign key
@@ -286,7 +288,6 @@ sqlite3FkLocateIndex(Parse * pParse,	/* Parse context to store any error in */
 				int i, j;
 				for (i = 0; i < nCol; i++) {
 					i16 iCol = pIdx->aiColumn[i];	/* Index of column in parent tbl */
-					const char *zDfltColl;	/* Def. collation for column */
 					char *zIdxCol;	/* Name of indexed column */
 
 					if (iCol < 0)
@@ -296,11 +297,12 @@ sqlite3FkLocateIndex(Parse * pParse,	/* Parse context to store any error in */
 					 * the default collation sequence for the column, this index is
 					 * unusable. Bail out early in this case.
 					 */
-					zDfltColl = pParent->aCol[iCol].zColl;
-					if (!zDfltColl)
-						zDfltColl = sqlite3StrBINARY;
-					if (strcmp
-					    (pIdx->azColl[i], zDfltColl))
+					struct coll *def_coll;
+					def_coll = sql_column_collation(pParent,
+									iCol);
+					struct coll *coll;
+					coll = sql_index_collation(pIdx, i);
+					if (def_coll != coll)
 						break;
 
 					zIdxCol = pParent->aCol[iCol].zName;
@@ -434,7 +436,7 @@ fkLookupParent(Parse * pParse,	/* Parse context */
 			int regTemp = sqlite3GetTempRange(pParse, nCol);
 			int regRec = sqlite3GetTempReg(pParse);
 
-			sqlite3VdbeAddOp2(v, OP_OpenRead, iCur, pIdx->tnum);
+			emit_open_cursor(pParse, iCur, pIdx->tnum);
 			sqlite3VdbeSetP4KeyInfo(pParse, pIdx);
 			for (i = 0; i < nCol; i++) {
 				sqlite3VdbeAddOp2(v, OP_Copy,
@@ -525,7 +527,6 @@ exprTableRegister(Parse * pParse,	/* Parsing and code generating context */
 {
 	Expr *pExpr;
 	Column *pCol;
-	const char *zColl;
 	sqlite3 *db = pParse->db;
 
 	pExpr = sqlite3Expr(db, TK_REGISTER, 0);
@@ -534,11 +535,13 @@ exprTableRegister(Parse * pParse,	/* Parsing and code generating context */
 			pCol = &pTab->aCol[iCol];
 			pExpr->iTable = regBase + iCol + 1;
 			pExpr->affinity = pCol->affinity;
-			zColl = pCol->zColl;
-			if (zColl == 0)
-				zColl = db->pDfltColl->name;
-			pExpr =
-			    sqlite3ExprAddCollateString(pParse, pExpr, zColl);
+			const char *coll_name;
+			if (pCol->coll == NULL && pCol->coll != NULL)
+				coll_name = pCol->coll->name;
+			else
+				coll_name = "binary";
+			pExpr = sqlite3ExprAddCollateString(pParse, pExpr,
+							    coll_name);
 		} else {
 			pExpr->iTable = regBase;
 			pExpr->affinity = SQLITE_AFF_INTEGER;
@@ -619,7 +622,7 @@ fkScanChildren(Parse * pParse,	/* Parse context */
 	Vdbe *v = sqlite3GetVdbe(pParse);
 
 	assert(pIdx == 0 || pIdx->pTable == pTab);
-	assert(pIdx == 0 || pIdx->nKeyCol == pFKey->nCol);
+	assert(pIdx == 0 || (int)index_column_count(pIdx) == pFKey->nCol);
 	assert(pIdx != 0);
 
 	if (nIncr < 0) {
@@ -668,7 +671,8 @@ fkScanChildren(Parse * pParse,	/* Parse context */
 		Expr *pEq, *pAll = 0;
 		Index *pPk = sqlite3PrimaryKeyIndex(pTab);
 		assert(pIdx != 0);
-		for (i = 0; i < pPk->nKeyCol; i++) {
+		int col_count = index_column_count(pPk);
+		for (i = 0; i < col_count; i++) {
 			i16 iCol = pIdx->aiColumn[i];
 			assert(iCol >= 0);
 			pLeft = exprTableRegister(pParse, pTab, regData, iCol);
@@ -698,10 +702,9 @@ fkScanChildren(Parse * pParse,	/* Parse context */
 	}
 
 	/* Clean up the WHERE clause constructed above. */
-	sqlite3ExprDelete(db, pWhere);
-	if (iFkIfZero) {
+	sql_expr_free(db, pWhere, false);
+	if (iFkIfZero)
 		sqlite3VdbeJumpHere(v, iFkIfZero);
-	}
 }
 
 /*
@@ -737,10 +740,10 @@ fkTriggerDelete(sqlite3 * dbMem, Trigger * p)
 {
 	if (p) {
 		TriggerStep *pStep = p->step_list;
-		sqlite3ExprDelete(dbMem, pStep->pWhere);
+		sql_expr_free(dbMem, pStep->pWhere, false);
 		sqlite3ExprListDelete(dbMem, pStep->pExprList);
 		sqlite3SelectDelete(dbMem, pStep->pSelect);
-		sqlite3ExprDelete(dbMem, p->pWhen);
+		sql_expr_free(dbMem, p->pWhen, false);
 		sqlite3DbFree(dbMem, p);
 	}
 }
@@ -769,7 +772,8 @@ sqlite3FkDropTable(Parse * pParse, SrcList * pName, Table * pTab)
 	sqlite3 *db = pParse->db;
 	struct session *user_session = current_session();
 
-	if ((user_session->sql_flags & SQLITE_ForeignKeys) && !pTab->pSelect) {
+	if ((user_session->sql_flags & SQLITE_ForeignKeys) &&
+	    !space_is_view(pTab)) {
 		int iSkip = 0;
 		Vdbe *v = sqlite3GetVdbe(pParse);
 
@@ -866,7 +870,7 @@ fkParentIsModified(Table * pTab, FKey * p, int *aChange)
 					if (0 ==
 					    strcmp(pCol->zName, zKey))
 						return 1;
-				} else if (pCol->colFlags & COLFLAG_PRIMKEY) {
+				} else if (table_column_is_in_pk(pTab, iKey)) {
 					return 1;
 				}
 			}
@@ -961,7 +965,8 @@ sqlite3FkCheck(Parse * pParse,	/* Parse context */
 		 * early.
 		 */
 		if (pParse->disableTriggers) {
-			pTo = sqlite3FindTable(db, pFKey->zTo);
+			pTo = sqlite3HashFind(&db->pSchema->tblHash,
+					      pFKey->zTo);
 		} else {
 			pTo = sqlite3LocateTable(pParse, 0, pFKey->zTo);
 		}
@@ -1008,22 +1013,6 @@ sqlite3FkCheck(Parse * pParse,	/* Parse context */
 				aiCol[i] = -1;
 			}
 			assert(pIdx == 0 || pIdx->aiColumn[i] >= 0);
-#ifndef SQLITE_OMIT_AUTHORIZATION
-			/* Request permission to read the parent key columns. If the
-			 * authorization callback returns SQLITE_IGNORE, behave as if any
-			 * values read from the parent table are NULL.
-			 */
-			if (db->xAuth) {
-				int rcauth;
-				char *zCol =
-				    pTo->aCol[pIdx ? pIdx->aiColumn[i] : pTo->
-					      iPKey].zName;
-				rcauth =
-				    sqlite3AuthReadCol(pParse, pTo->zName,
-						       zCol);
-				bIgnore = (rcauth == SQLITE_IGNORE);
-			}
-#endif
 		}
 
 		pParse->nTab++;
@@ -1157,7 +1146,8 @@ sqlite3FkOldmask(Parse * pParse,	/* Parse context */
 			Index *pIdx = 0;
 			sqlite3FkLocateIndex(pParse, pTab, p, &pIdx, 0);
 			if (pIdx) {
-				for (i = 0; i < pIdx->nKeyCol; i++) {
+				int nIdxCol = index_column_count(pIdx);
+				for (i = 0; i < nIdxCol; i++) {
 					assert(pIdx->aiColumn[i] >= 0);
 					mask |= COLUMN_MASK(pIdx->aiColumn[i]);
 				}
@@ -1360,8 +1350,12 @@ fkActionTrigger(Parse * pParse,	/* Parse context */
 									     &tToCol,
 									     0));
 				} else if (action == OE_SetDflt) {
+					uint32_t space_id =
+						SQLITE_PAGENO_TO_SPACEID(
+							pFKey->pFrom->tnum);
 					Expr *pDflt =
-					    pFKey->pFrom->aCol[iFromCol].pDflt;
+						space_column_default_expr(
+							space_id, (uint32_t)iFromCol);
 					if (pDflt) {
 						pNew =
 						    sqlite3ExprDup(db, pDflt,
@@ -1438,8 +1432,8 @@ fkActionTrigger(Parse * pParse,	/* Parse context */
 		/* Re-enable the lookaside buffer, if it was disabled earlier. */
 		db->lookaside.bDisable--;
 
-		sqlite3ExprDelete(db, pWhere);
-		sqlite3ExprDelete(db, pWhen);
+		sql_expr_free(db, pWhere, false);
+		sql_expr_free(db, pWhen, false);
 		sqlite3ExprListDelete(db, pList);
 		sqlite3SelectDelete(db, pSelect);
 		if (db->mallocFailed == 1) {

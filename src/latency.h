@@ -58,6 +58,12 @@ void
 latency_destroy(struct latency *latency);
 
 /**
+ * Reset a latency counter.
+ */
+void
+latency_reset(struct latency *latency);
+
+/**
  * Update a latency counter with a new observation.
  * @value is the observed latency value, in seconds.
  */
@@ -66,8 +72,9 @@ latency_collect(struct latency *latency, double value);
 
 /**
  * Get accumulated latency value, in seconds.
+ * Returns @pct-th percentile of all observations.
  */
 double
-latency_get(struct latency *latency);
+latency_get(struct latency *latency, int pct);
 
 #endif /* TARANTOOL_LATENCY_H_INCLUDED */

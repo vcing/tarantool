@@ -550,6 +550,16 @@ generic_index_commit_create(struct index *, int64_t)
 }
 
 void
+generic_index_abort_create(struct index *)
+{
+}
+
+void
+generic_index_commit_modify(struct index *, int64_t)
+{
+}
+
+void
 generic_index_commit_drop(struct index *)
 {
 }
@@ -557,6 +567,11 @@ generic_index_commit_drop(struct index *)
 void
 generic_index_update_def(struct index *)
 {
+}
+
+bool generic_index_depends_on_pk(struct index *)
+{
+	return false;
 }
 
 ssize_t
@@ -570,7 +585,7 @@ int
 generic_index_min(struct index *index, const char *key,
 		  uint32_t part_count, struct tuple **result)
 {
-	struct iterator *it = index_create_iterator(index, ITER_GE,
+	struct iterator *it = index_create_iterator(index, ITER_EQ,
 						    key, part_count);
 	if (it == NULL)
 		return -1;
@@ -583,7 +598,7 @@ int
 generic_index_max(struct index *index, const char *key,
 		  uint32_t part_count, struct tuple **result)
 {
-	struct iterator *it = index_create_iterator(index, ITER_LE,
+	struct iterator *it = index_create_iterator(index, ITER_REQ,
 						    key, part_count);
 	if (it == NULL)
 		return -1;
@@ -657,6 +672,12 @@ generic_index_info(struct index *index, struct info_handler *handler)
 	(void)index;
 	info_begin(handler);
 	info_end(handler);
+}
+
+void
+generic_index_reset_stat(struct index *index)
+{
+	(void)index;
 }
 
 void

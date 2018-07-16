@@ -129,6 +129,9 @@ add_executable(reflection_cxx.test reflection_cxx.cc unit.c
 add_executable(csv.test csv.c)
 target_link_libraries(csv.test csv)
 
+add_executable(json_path.test json_path.c)
+target_link_libraries(json_path.test json_path unit ${ICU_LIBRARIES})
+
 add_executable(rmean.test rmean.cc)
 target_link_libraries(rmean.test stat unit)
 add_executable(histogram.test histogram.c)
@@ -140,6 +143,8 @@ target_link_libraries(say.test core unit)
 set(ITERATOR_TEST_SOURCES
     vy_iterators_helper.c
     ${PROJECT_SOURCE_DIR}/src/box/vy_stmt.c
+    ${PROJECT_SOURCE_DIR}/src/box/vy_upsert.c
+    ${PROJECT_SOURCE_DIR}/src/box/vy_history.c
     ${PROJECT_SOURCE_DIR}/src/box/vy_mem.c
     ${PROJECT_SOURCE_DIR}/src/box/vy_cache.c)
 set(ITERATOR_TEST_LIBS core tuple xrow unit)
@@ -160,7 +165,8 @@ add_executable(vy_point_lookup.test
     ${PROJECT_SOURCE_DIR}/src/box/vy_tx.c
     ${PROJECT_SOURCE_DIR}/src/box/vy_read_set.c
     ${PROJECT_SOURCE_DIR}/src/box/vy_upsert.c
-    ${PROJECT_SOURCE_DIR}/src/box/vy_index.c
+    ${PROJECT_SOURCE_DIR}/src/box/vy_history.c
+    ${PROJECT_SOURCE_DIR}/src/box/vy_lsm.c
     ${PROJECT_SOURCE_DIR}/src/box/vy_cache.c
     ${PROJECT_SOURCE_DIR}/src/box/index_def.c
     ${PROJECT_SOURCE_DIR}/src/box/schema_def.c

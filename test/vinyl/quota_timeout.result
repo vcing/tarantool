@@ -65,15 +65,83 @@ box.info.vinyl().quota.used
 ---
 - 748241
 ...
-s:drop()
----
-...
 box.error.injection.set('ERRINJ_VY_RUN_WRITE', false)
 ---
 - ok
 ...
 fiber.sleep(0.01) -- wait for scheduler to unthrottle
 ---
+...
+--
+-- Check that there's a warning in the log if a transaction
+-- waits for quota for more than too_long_threshold seconds.
+--
+box.error.injection.set('ERRINJ_VY_RUN_WRITE_TIMEOUT', 0.01)
+---
+- ok
+...
+box.cfg{vinyl_timeout=60}
+---
+...
+box.cfg{too_long_threshold=0.01}
+---
+...
+_ = s:auto_increment{pad}
+---
+...
+_ = s:auto_increment{pad}
+---
+...
+test_run:cmd("push filter '[0-9.]+ sec' to '<sec> sec'")
+---
+- true
+...
+test_run:grep_log('test', 'waited for .* quota for too long.*')
+---
+- 'waited for 699089 bytes of vinyl memory quota for too long: <sec> sec'
+...
+test_run:cmd("clear filter")
+---
+- true
+...
+box.error.injection.set('ERRINJ_VY_RUN_WRITE_TIMEOUT', 0)
+---
+- ok
+...
+s:truncate()
+---
+...
+box.snapshot()
+---
+- ok
+...
+--
+-- Check that exceeding quota doesn't hang the scheduler
+-- in case there's nothing to dump.
+--
+-- The following operation should fail instantly irrespective
+-- of the value of 'vinyl_timeout' (gh-3291).
+--
+box.info.vinyl().quota.used == 0
+---
+- true
+...
+box.cfg{vinyl_timeout = 9000}
+---
+...
+pad = string.rep('x', box.cfg.vinyl_memory)
+---
+...
+_ = s:auto_increment{pad}
+---
+- error: Failed to allocate 1048615 bytes in lsregion for vinyl transaction
+...
+s:drop()
+---
+...
+box.snapshot()
+---
+- ok
 ...
 --
 -- Check that exceeding quota triggers dump of all spaces.
@@ -90,34 +158,28 @@ s2 = box.schema.space.create('test2', {engine = 'vinyl'})
 _ = s2:create_index('pk')
 ---
 ...
-_ = s1:auto_increment{}
+pad = string.rep('x', 64)
 ---
 ...
-box.info.vinyl().quota.used
+_ = s1:auto_increment{pad}
 ---
-- 49186
 ...
-pad = string.rep('x', box.cfg.vinyl_memory)
+s1.index.pk:info().memory.bytes > 0
+---
+- true
+...
+pad = string.rep('x', box.cfg.vinyl_memory - string.len(pad))
 ---
 ...
 _ = s2:auto_increment{pad}
 ---
-- error: Timed out waiting for Vinyl memory quota
 ...
-while box.info.vinyl().quota.used > 0 do fiber.sleep(0.01) end
+while s1.index.pk:info().disk.dump.count == 0 do fiber.sleep(0.01) end
 ---
 ...
-box.info.vinyl().quota.used
+s1.index.pk:info().memory.bytes == 0
 ---
-- 0
-...
---
--- Check that exceeding quota doesn't hang the scheduler
--- in case there's nothing to dump.
---
-s2:auto_increment{pad}
----
-- error: Timed out waiting for Vinyl memory quota
+- true
 ...
 test_run:cmd('switch default')
 ---

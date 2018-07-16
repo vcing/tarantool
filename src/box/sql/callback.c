@@ -55,7 +55,6 @@
  */
 struct coll *
 sqlite3GetCollSeq(Parse * pParse,	/* Parsing context */
-		  sqlite3 * db,	/* if called during runtime - pointer to the DB */
 		  struct coll * pColl,	/* Collating sequence with native encoding, or NULL */
 		  const char *zName	/* Collating sequence name */
     )
@@ -63,10 +62,9 @@ sqlite3GetCollSeq(Parse * pParse,	/* Parsing context */
 	struct coll *p;
 
 	p = pColl;
-	if (!p) {
-		p = sqlite3FindCollSeq(db, zName, 0);
-	}
-	if (p == 0) {
+	if (p == NULL)
+		p = sqlite3FindCollSeq(zName);
+	if (p == NULL && (strcasecmp(zName, "binary") != 0)) {
 		if (pParse)
 			sqlite3ErrorMsg(pParse,
 					"no such collation sequence: %s",
@@ -94,8 +92,7 @@ sqlite3CheckCollSeq(Parse * pParse, struct coll * pColl)
 	if (pColl) {
 		const char *zName = pColl->name;
 		struct coll *p =
-		    sqlite3GetCollSeq(pParse, pParse->db, pColl,
-				      zName);
+		    sqlite3GetCollSeq(pParse, pColl, zName);
 		if (!p) {
 			return SQLITE_ERROR;
 		}
@@ -104,66 +101,21 @@ sqlite3CheckCollSeq(Parse * pParse, struct coll * pColl)
 	return SQLITE_OK;
 }
 
-/*
- * This is the default collating function named "BINARY" which is always
- * available.
- * It is hardcoded to support Tarantool's collation interface.
- */
-static int
-binCollFunc(const char *pKey1, size_t nKey1, const char *pKey2, size_t nKey2, const struct coll * collation)
-{
-	int rc;
-	size_t n;
-	(void) collation;
-	n = nKey1 < nKey2 ? nKey1 : nKey2;
-	/* EVIDENCE-OF: R-65033-28449 The built-in BINARY collation compares
-	 * strings byte by byte using the memcmp() function from the standard C
-	 * library.
-	 */
-	rc = memcmp(pKey1, pKey2, n);
-	if (rc == 0) {
-		rc = (int)nKey1 - (int)nKey2;
-	}
-	return rc;
-}
-
-/*
- * This hardcoded structure created just to be called the same way
- * as collations in Tarantool, to support binary collation easily.
- */
-
-struct coll_plus_name_struct{
-    struct coll collation;
-    char name[20]; /* max of possible name lengths */
-};
-static struct coll_plus_name_struct binary_coll_with_name =
-	{{0, 0, COLL_TYPE_ICU, {0}, binCollFunc, 0, sizeof("BINARY"), {}},
-		"BINARY"};
-static struct coll * binary_coll = (struct coll*)&binary_coll_with_name;
-
-/*
- * Parameter zName points to a UTF-8 encoded string nName bytes long.
- * Return the CollSeq* pointer for the collation sequence named zName
- * for the encoding 'enc' from the database 'db'.
- *
- * If the entry specified is not found and 'create' is true, then create a
- * new entry.  Otherwise return NULL.
+/**
+ * Return the coll* pointer for the collation sequence named zName.
  *
  * A separate function sqlite3LocateCollSeq() is a wrapper around
- * this routine.  sqlite3LocateCollSeq() invokes the collation factory
- * if necessary and generates an error message if the collating sequence
- * cannot be found.
+ * this routine.  sqlite3LocateCollSeq() generates an error
+ * message if the collating sequence cannot be found.
  *
- * See also: sqlite3LocateCollSeq(), sqlite3GetCollSeq()
+ * @param zName Name of collation to be found.
+ * @retval Pointer for the collation sequence named zName.
  */
 struct coll *
-sqlite3FindCollSeq(sqlite3 * db, const char *zName, int create)
+sqlite3FindCollSeq(const char *zName)
 {
-	(void)db;
-	(void)create;
-	if (zName == NULL || sqlite3StrICmp(zName, "binary")==0){
-		return binary_coll;
-	}
+	if (zName == NULL || strcasecmp(zName, "binary") == 0)
+		return 0;
 	return coll_by_name(zName, strlen(zName));
 }
 
@@ -387,12 +339,14 @@ sqlite3FindFunction(sqlite3 * db,	/* An open database */
  * The Schema.cache_size variable is not cleared.
  */
 void
-sqlite3SchemaClear(void *p)
+sqlite3SchemaClear(sqlite3 * db)
 {
+	assert(db->pSchema != NULL);
+
 	Hash temp1;
 	Hash temp2;
 	HashElem *pElem;
-	Schema *pSchema = (Schema *) p;
+	Schema *pSchema = db->pSchema;
 
 	temp1 = pSchema->tblHash;
 	temp2 = pSchema->trigHash;
@@ -410,11 +364,8 @@ sqlite3SchemaClear(void *p)
 	}
 	sqlite3HashClear(&temp1);
 	sqlite3HashClear(&pSchema->fkeyHash);
-	pSchema->pSeqTab = 0;
-	if (pSchema->schemaFlags & DB_SchemaLoaded) {
-		pSchema->iGeneration++;
-		pSchema->schemaFlags &= ~DB_SchemaLoaded;
-	}
+
+	db->pSchema = NULL;
 }
 
 /* Create a brand new schema. */

@@ -48,17 +48,6 @@
 #endif
 
 /*
- * VDBE_DISPLAY_P4 is true or false depending on whether or not the
- * "explain" P4 display logic is enabled.
- */
-#if !defined(SQLITE_OMIT_EXPLAIN) || !defined(NDEBUG) \
-     || defined(VDBE_PROFILE) || defined(SQLITE_DEBUG)
-#define VDBE_DISPLAY_P4 1
-#else
-#define VDBE_DISPLAY_P4 0
-#endif
-
-/*
  * SQL is translated into a sequence of instructions to be
  * executed by a virtual machine.  Each instruction is an instance
  * of the following structure.
@@ -122,7 +111,6 @@ struct VdbeCursor {
 		VdbeSorter *pSorter;	/* CURTYPE_SORTER. Sorter object */
 	} uc;
 	KeyInfo *pKeyInfo;	/* Info about index keys needed by index cursors */
-	Pgno pgnoRoot;		/* Root page of the open cursor */
 	i16 nField;		/* Number of fields in the header */
 	u16 nHdrParsed;		/* Number of header fields parsed so far */
 	const u8 *aRow;		/* Data for the current row, if all on one page */
@@ -197,6 +185,7 @@ struct Mem {
 		i64 i;		/* Integer value used when MEM_Int is set in flags */
 		bool b;         /* Boolean value used when MEM_Bool is set in flags */
 		int nZero;	/* Used when bit MEM_Zero is set in flags */
+		void *p;	/* Generic pointer */
 		FuncDef *pDef;	/* Used only when flags==MEM_Agg */
 		VdbeFrame *pFrame;	/* Used when flags==MEM_Frame */
 	} u;
@@ -240,6 +229,7 @@ struct Mem {
 #define MEM_Real      0x0008	/* Value is a real number */
 #define MEM_Blob      0x0010	/* Value is a BLOB */
 #define MEM_Bool      0x0020    /* Value is a bool */
+#define MEM_Ptr       0x0040	/* Value is a generic pointer */
 #define MEM_AffMask   0x003f	/* Mask of affinity bits */
 #define MEM_Frame     0x0080	/* Value is a VdbeFrame object */
 #define MEM_Undefined 0x0100	/* Value is undefined */
@@ -379,6 +369,7 @@ struct Vdbe {
 	i64 nFkConstraint;	/* Number of imm. FK constraints this VM */
 	i64 nStmtDefCons;	/* Number of def. constraints when stmt started */
 	i64 nStmtDefImmCons;	/* Number of def. imm constraints when stmt started */
+	uint32_t schema_ver;	/* Schema version at the moment of VDBE creation. */
 
 	/*
 	 * In recursive triggers we can execute INSERT/UPDATE OR IGNORE
@@ -416,9 +407,6 @@ struct Vdbe {
 	i64 startTime;		/* Time when query started - used for profiling */
 #endif
 	int nOp;		/* Number of instructions in the program */
-#ifdef SQLITE_DEBUG
-	int rcApp;		/* errcode set by sqlite3_result_error_code() */
-#endif
 	u16 nResColumn;		/* Number of columns in one row of the result set */
 	u8 errorAction;		/* Recovery action to do in case of an error */
 	bft expired:1;		/* True if the VM needs to be recompiled */
@@ -426,9 +414,6 @@ struct Vdbe {
 	bft explain:2;		/* True if EXPLAIN present on SQL command */
 	bft changeCntOn:1;	/* True to update the change-counter */
 	bft runOnlyOnce:1;	/* Automatically expire on reset */
-	bft usesStmtJournal:1;	/* True if uses a statement journal */
-	bft readOnly:1;		/* True for statements that do not write */
-	bft bIsReader:1;	/* True for statements that read */
 	bft isPrepareV2:1;	/* True if prepared with prepare_v2() */
 	u32 aCounter[5];	/* Counters used by sqlite3_stmt_status() */
 	char *zSql;		/* Text of the SQL statement that generated this */

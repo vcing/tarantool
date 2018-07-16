@@ -97,7 +97,7 @@ whereClauseInsert(WhereClause * pWC, Expr * p, u16 wtFlags)
 					 sizeof(pWC->a[0]) * pWC->nSlot * 2);
 		if (pWC->a == 0) {
 			if (wtFlags & TERM_DYNAMIC) {
-				sqlite3ExprDelete(db, p);
+				sql_expr_free(db, p, false);
 			}
 			pWC->a = pOld;
 			return 0;
@@ -165,12 +165,20 @@ exprCommute(Parse * pParse, Expr * pExpr)
 			 * used by clearing the EP_Collate flag from Y.
 			 */
 			pExpr->pRight->flags &= ~EP_Collate;
-		} else if (sqlite3ExprCollSeq(pParse, pExpr->pLeft) != 0) {
-			/* Neither X nor Y have COLLATE operators, but X has a non-default
-			 * collating sequence.  So add the EP_Collate marker on X to cause
-			 * it to be searched first.
-			 */
-			pExpr->pLeft->flags |= EP_Collate;
+		} else {
+			bool is_found;
+			sql_expr_coll(pParse, pExpr->pLeft, &is_found);
+			if (is_found) {
+				/*
+				 * Neither X nor Y have COLLATE
+				 * operators, but X has a
+				 * non-default collating sequence.
+				 * So add the EP_Collate marker on
+				 * X to cause it to be searched
+				 * first.
+				 */
+				pExpr->pLeft->flags |= EP_Collate;
+			}
 		}
 	}
 	SWAP(pExpr->pRight, pExpr->pLeft);
@@ -428,7 +436,7 @@ whereCombineDisjuncts(SrcList * pSrc,	/* the FROM clause */
 	exprAnalyze(pSrc, pWC, idxNew);
 }
 
-#if !defined(SQLITE_OMIT_OR_OPTIMIZATION) && !defined(SQLITE_OMIT_SUBQUERY)
+#if !defined(SQLITE_OMIT_OR_OPTIMIZATION)
 /*
  * Analyze a term that consists of two or more OR-connected
  * subterms.  So in:
@@ -801,7 +809,7 @@ exprAnalyzeOrTerm(SrcList * pSrc,	/* the FROM clause */
 		}
 	}
 }
-#endif				/* !SQLITE_OMIT_OR_OPTIMIZATION && !SQLITE_OMIT_SUBQUERY */
+#endif				/* !SQLITE_OMIT_OR_OPTIMIZATION */
 
 /*
  * We already know that pExpr is a binary operator where both operands are
@@ -822,7 +830,6 @@ static int
 termIsEquivalence(Parse * pParse, Expr * pExpr)
 {
 	char aff1, aff2;
-	struct coll *pColl;
 	const char *zColl1, *zColl2;
 	if (!OptimizationEnabled(pParse->db, SQLITE_Transitive))
 		return 0;
@@ -838,14 +845,15 @@ termIsEquivalence(Parse * pParse, Expr * pExpr)
 	    ) {
 		return 0;
 	}
-	pColl =
+	struct coll *coll =
 	    sqlite3BinaryCompareCollSeq(pParse, pExpr->pLeft, pExpr->pRight);
-	if (pColl == 0 || sqlite3StrICmp(pColl->name, "BINARY") == 0)
+	if (coll == NULL || sqlite3StrICmp(coll->name, "BINARY") == 0)
 		return 1;
-	pColl = sqlite3ExprCollSeq(pParse, pExpr->pLeft);
-	zColl1 = pColl ? pColl->name : 0;
-	pColl = sqlite3ExprCollSeq(pParse, pExpr->pRight);
-	zColl2 = pColl ? pColl->name : 0;
+	bool unused;
+	coll = sql_expr_coll(pParse, pExpr->pLeft, &unused);
+	zColl1 = coll ? coll->name : NULL;
+	coll = sql_expr_coll(pParse, pExpr->pRight, &unused);
+	zColl2 = coll ? coll->name : NULL;
 	return sqlite3_stricmp(zColl1, zColl2) == 0;
 }
 
@@ -933,7 +941,7 @@ exprMightBeIndexed(SrcList * pFrom,	/* The FROM clause */
 	for (pIdx = pFrom->a[i].pTab->pIndex; pIdx; pIdx = pIdx->pNext) {
 		if (pIdx->aColExpr == 0)
 			continue;
-		for (i = 0; i < pIdx->nKeyCol; i++) {
+		for (i = 0; i < pIdx->nColumn; i++) {
 			if (pIdx->aiColumn[i] != XN_EXPR)
 				continue;
 			if (sqlite3ExprCompare
@@ -1057,7 +1065,7 @@ exprAnalyze(SrcList * pSrc,	/* the FROM clause */
 				int idxNew;
 				pDup = sqlite3ExprDup(db, pExpr, 0);
 				if (db->mallocFailed) {
-					sqlite3ExprDelete(db, pDup);
+					sql_expr_free(db, pDup, false);
 					return;
 				}
 				idxNew =
@@ -1134,7 +1142,7 @@ exprAnalyze(SrcList * pSrc,	/* the FROM clause */
 	}
 #endif				/* SQLITE_OMIT_BETWEEN_OPTIMIZATION */
 
-#if !defined(SQLITE_OMIT_OR_OPTIMIZATION) && !defined(SQLITE_OMIT_SUBQUERY)
+#if !defined(SQLITE_OMIT_OR_OPTIMIZATION)
 	/* Analyze a term that is composed of two or more subterms connected by
 	 * an OR operator.
 	 */
@@ -1398,7 +1406,7 @@ sqlite3WhereClauseClear(WhereClause * pWC)
 	sqlite3 *db = pWC->pWInfo->pParse->db;
 	for (i = pWC->nTerm - 1, a = pWC->a; i >= 0; i--, a++) {
 		if (a->wtFlags & TERM_DYNAMIC) {
-			sqlite3ExprDelete(db, a->pExpr);
+			sql_expr_free(db, a->pExpr, false);
 		}
 		if (a->wtFlags & TERM_ORINFO) {
 			whereOrInfoDelete(db, a->u.pOrInfo);
@@ -1474,9 +1482,6 @@ sqlite3WhereExprAnalyze(SrcList * pTabList,	/* the FROM clause */
 /*
  * For table-valued-functions, transform the function arguments into
  * new WHERE clause terms.
- *
- * Each function argument translates into an equality constraint against
- * a HIDDEN column in the table.
  */
 void
 sqlite3WhereTabFuncArgs(Parse * pParse,	/* Parsing context */
@@ -1497,8 +1502,7 @@ sqlite3WhereTabFuncArgs(Parse * pParse,	/* Parsing context */
 	if (pArgs == 0)
 		return;
 	for (j = k = 0; j < pArgs->nExpr; j++) {
-		while (k < pTab->nCol
-		       && (pTab->aCol[k].colFlags & COLFLAG_HIDDEN) == 0) {
+		while (k < pTab->nCol) {
 			k++;
 		}
 		if (k >= pTab->nCol) {

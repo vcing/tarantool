@@ -30,7 +30,9 @@
  */
 #include "vy_cache.h"
 #include "diag.h"
+#include "fiber.h"
 #include "schema_def.h"
+#include "vy_history.h"
 
 #ifndef CT_ASSERT_G
 #define CT_ASSERT_G(e) typedef char CONCAT(__ct_assert_, __LINE__)[(e) ? 1 :-1]
@@ -51,12 +53,11 @@ enum {
 };
 
 void
-vy_cache_env_create(struct vy_cache_env *e, struct slab_cache *slab_cache,
-		    size_t mem_quota)
+vy_cache_env_create(struct vy_cache_env *e, struct slab_cache *slab_cache)
 {
 	rlist_create(&e->cache_lru);
 	e->mem_used = 0;
-	e->mem_quota = mem_quota;
+	e->mem_quota = 0;
 	mempool_create(&e->cache_entry_mempool, slab_cache,
 		       sizeof(struct vy_cache_entry));
 }
@@ -203,10 +204,29 @@ vy_cache_gc(struct vy_cache_env *env)
 }
 
 void
+vy_cache_env_set_quota(struct vy_cache_env *env, size_t quota)
+{
+	env->mem_quota = quota;
+	while (env->mem_used > env->mem_quota) {
+		vy_cache_gc(env);
+		/*
+		 * Make sure we don't block other tx fibers
+		 * for too long.
+		 */
+		fiber_sleep(0);
+	}
+}
+
+void
 vy_cache_add(struct vy_cache *cache, struct tuple *stmt,
 	     struct tuple *prev_stmt, const struct tuple *key,
 	     enum iterator_type order)
 {
+	if (cache->env->mem_quota == 0) {
+		/* Cache is disabled. */
+		return;
+	}
+
 	/* Delete some entries if quota overused */
 	vy_cache_gc(cache->env);
 
@@ -639,18 +659,12 @@ vy_cache_iterator_seek(struct vy_cache_iterator *itr,
 	*entry = *vy_cache_tree_iterator_get_elem(tree, &itr->curr_pos);
 }
 
-void
+NODISCARD int
 vy_cache_iterator_next(struct vy_cache_iterator *itr,
-		       struct tuple **ret, bool *stop)
+		       struct vy_history *history, bool *stop)
 {
-	*ret = NULL;
 	*stop = false;
-
-	/* disable cache for errinj test - let it try to read from disk */
-	ERROR_INJECT(ERRINJ_VY_READ_PAGE,
-		     { itr->search_started = true; return; });
-	ERROR_INJECT(ERRINJ_VY_READ_PAGE_TIMEOUT,
-		     { itr->search_started = true; return; });
+	vy_history_cleanup(history);
 
 	if (!itr->search_started) {
 		assert(itr->curr_stmt == NULL);
@@ -660,60 +674,36 @@ vy_cache_iterator_next(struct vy_cache_iterator *itr,
 		vy_cache_iterator_seek(itr, itr->iterator_type,
 				       itr->key, &entry);
 		if (entry == NULL)
-			return;
+			return 0;
 		itr->curr_stmt = entry->stmt;
 		*stop = vy_cache_iterator_is_stop(itr, entry);
 	} else {
 		assert(itr->version == itr->cache->version);
 		if (itr->curr_stmt == NULL)
-			return;
+			return 0;
 		tuple_unref(itr->curr_stmt);
 		*stop = vy_cache_iterator_step(itr, &itr->curr_stmt);
 	}
 
 	vy_cache_iterator_skip_to_read_view(itr, stop);
 	if (itr->curr_stmt != NULL) {
-		*ret = itr->curr_stmt;
 		tuple_ref(itr->curr_stmt);
 		vy_stmt_counter_acct_tuple(&itr->cache->stat.get,
 					   itr->curr_stmt);
+		return vy_history_append_stmt(history, itr->curr_stmt);
 	}
+	return 0;
 }
 
-void
+NODISCARD int
 vy_cache_iterator_skip(struct vy_cache_iterator *itr,
 		       const struct tuple *last_stmt,
-		       struct tuple **ret, bool *stop)
+		       struct vy_history *history, bool *stop)
 {
-	*ret = NULL;
 	*stop = false;
-
-	/* disable cache for errinj test - let it try to read from disk */
-	ERROR_INJECT(ERRINJ_VY_READ_PAGE,
-		     { itr->search_started = true; return; });
-	ERROR_INJECT(ERRINJ_VY_READ_PAGE_TIMEOUT,
-		     { itr->search_started = true; return; });
+	vy_history_cleanup(history);
 
 	assert(!itr->search_started || itr->version == itr->cache->version);
-
-	/*
-	 * Check if the iterator is already positioned
-	 * at the statement following last_stmt.
-	 */
-	if (itr->search_started &&
-	    (itr->curr_stmt == NULL || last_stmt == NULL ||
-	     iterator_direction(itr->iterator_type) *
-	     vy_tuple_compare(itr->curr_stmt, last_stmt,
-			      itr->cache->cmp_def) > 0)) {
-		if (itr->curr_stmt == NULL)
-			return;
-		struct vy_cache_tree *tree = &itr->cache->cache_tree;
-		struct vy_cache_entry *entry =
-			*vy_cache_tree_iterator_get_elem(tree, &itr->curr_pos);
-		*ret = itr->curr_stmt;
-		*stop = vy_cache_iterator_is_stop(itr, entry);
-		return;
-	}
 
 	itr->search_started = true;
 	itr->version = itr->cache->version;
@@ -744,28 +734,19 @@ vy_cache_iterator_skip(struct vy_cache_iterator *itr,
 
 	vy_cache_iterator_skip_to_read_view(itr, stop);
 	if (itr->curr_stmt != NULL) {
-		*ret = itr->curr_stmt;
 		tuple_ref(itr->curr_stmt);
 		vy_stmt_counter_acct_tuple(&itr->cache->stat.get,
 					   itr->curr_stmt);
+		return vy_history_append_stmt(history, itr->curr_stmt);
 	}
+	return 0;
 }
 
-int
+NODISCARD int
 vy_cache_iterator_restore(struct vy_cache_iterator *itr,
 			  const struct tuple *last_stmt,
-			  struct tuple **ret, bool *stop)
+			  struct vy_history *history, bool *stop)
 {
-	/* disable cache for errinj test - let it try to read from disk */
-	if ((errinj(ERRINJ_VY_READ_PAGE, ERRINJ_BOOL) != NULL &&
-	     errinj(ERRINJ_VY_READ_PAGE, ERRINJ_BOOL)->bparam) ||
-	    (errinj(ERRINJ_VY_READ_PAGE_TIMEOUT, ERRINJ_BOOL) != NULL &&
-	     errinj(ERRINJ_VY_READ_PAGE_TIMEOUT, ERRINJ_BOOL)->bparam)) {
-		*ret = NULL;
-		*stop = false;
-		return 0;
-	}
-
 	struct key_def *def = itr->cache->cmp_def;
 	int dir = iterator_direction(itr->iterator_type);
 
@@ -840,11 +821,14 @@ vy_cache_iterator_restore(struct vy_cache_iterator *itr,
 				break;
 		}
 	}
-	*ret = itr->curr_stmt;
+
+	vy_history_cleanup(history);
 	if (itr->curr_stmt != NULL) {
 		tuple_ref(itr->curr_stmt);
 		vy_stmt_counter_acct_tuple(&itr->cache->stat.get,
 					   itr->curr_stmt);
+		if (vy_history_append_stmt(history, itr->curr_stmt) != 0)
+			return -1;
 		return prev_stmt != itr->curr_stmt;
 	}
 	return 0;

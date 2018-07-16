@@ -160,8 +160,9 @@ box_check_memtx_min_tuple_size(ssize_t memtx_min_tuple_size)
 		  "specified value is out of bounds");
 }
 
-static int
-process_rw(struct request *request, struct space *space, struct tuple **result)
+int
+box_process_rw(struct request *request, struct space *space,
+	       struct tuple **result)
 {
 	assert(iproto_type_is_dml(request->type));
 	rmean_collect(rmean_box, request->type, 1);
@@ -208,7 +209,7 @@ int
 box_wait_ro(bool ro, double timeout)
 {
 	double deadline = ev_monotonic_now(loop()) + timeout;
-	while (is_ro != ro) {
+	while (box_is_ro() != ro) {
 		if (fiber_cond_wait_deadline(&ro_cond, deadline) != 0)
 			return -1;
 		if (fiber_is_cancelled()) {
@@ -226,6 +227,7 @@ box_clear_orphan(void)
 		return; /* nothing to do */
 
 	is_orphan = false;
+	fiber_cond_broadcast(&ro_cond);
 
 	/* Update the title to reflect the new status. */
 	title("running");
@@ -278,7 +280,7 @@ apply_row(struct xstream *stream, struct xrow_header *row)
 	struct request request;
 	xrow_decode_dml_xc(row, &request, dml_request_key_map(row->type));
 	struct space *space = space_cache_find_xc(request.space_id);
-	if (process_rw(&request, space, NULL) != 0) {
+	if (box_process_rw(&request, space, NULL) != 0) {
 		say_error("error applying row: %s", request_str(&request));
 		diag_raise();
 	}
@@ -327,17 +329,46 @@ apply_initial_join_row(struct xstream *stream, struct xrow_header *row)
 /* {{{ configuration bindings */
 
 static void
-box_check_log(const char *log)
+box_check_say()
 {
+	const char *log = cfg_gets("log");
 	if (log == NULL)
 		return;
+	enum say_logger_type type;
+	if (say_parse_logger_type(&log, &type) < 0) {
+		tnt_raise(ClientError, ER_CFG, "log",
+			  diag_last_error(diag_get())->errmsg);
+	}
+
 	if (say_check_init_str(log) == -1) {
-		if (diag_last_error(diag_get())->type ==
-		    &type_IllegalParams) {
-			tnt_raise(ClientError, ER_CFG, "log",
-				 diag_last_error(diag_get())->errmsg);
-		}
+
 		diag_raise();
+	}
+
+	if (type == SAY_LOGGER_SYSLOG) {
+		struct say_syslog_opts opts;
+		if (say_parse_syslog_opts(log, &opts) < 0) {
+			if (diag_last_error(diag_get())->type ==
+			    &type_IllegalParams) {
+				tnt_raise(ClientError, ER_CFG, "log",
+					  diag_last_error(diag_get())->errmsg);
+			}
+		}
+		say_free_syslog_opts(&opts);
+		diag_raise();
+	}
+
+	const char *log_format = cfg_gets("log_format");
+	enum say_format format = say_format_by_name(log_format);
+	if (format == say_format_MAX)
+		diag_set(ClientError, ER_CFG, "log_format",
+			 "expected 'plain' or 'json'");
+	if (type == SAY_LOGGER_SYSLOG && format == SF_JSON) {
+		tnt_raise(ClientError, ER_ILLEGAL_PARAMS, "log, log_format");
+	}
+	int log_nonblock = cfg_getb("log_nonblock");
+	if (log_nonblock == 1 && type == SAY_LOGGER_FILE) {
+		tnt_raise(ClientError, ER_ILLEGAL_PARAMS, "log, log_nonblock");
 	}
 }
 
@@ -381,6 +412,17 @@ box_check_replication_timeout(void)
 	double timeout = cfg_getd("replication_timeout");
 	if (timeout <= 0) {
 		tnt_raise(ClientError, ER_CFG, "replication_timeout",
+			  "the value must be greather than 0");
+	}
+	return timeout;
+}
+
+static double
+box_check_replication_connect_timeout(void)
+{
+	double timeout = cfg_getd("replication_connect_timeout");
+	if (timeout <= 0) {
+		tnt_raise(ClientError, ER_CFG, "replication_connect_timeout",
 			  "the value must be greather than 0");
 	}
 	return timeout;
@@ -479,17 +521,59 @@ box_check_wal_max_size(int64_t wal_max_size)
 	return wal_max_size;
 }
 
+static void
+box_check_vinyl_options(void)
+{
+	int read_threads = cfg_geti("vinyl_read_threads");
+	int write_threads = cfg_geti("vinyl_write_threads");
+	int64_t range_size = cfg_geti64("vinyl_range_size");
+	int64_t page_size = cfg_geti64("vinyl_page_size");
+	int run_count_per_level = cfg_geti("vinyl_run_count_per_level");
+	double run_size_ratio = cfg_getd("vinyl_run_size_ratio");
+	double bloom_fpr = cfg_getd("vinyl_bloom_fpr");
+
+	if (read_threads < 1) {
+		tnt_raise(ClientError, ER_CFG, "vinyl_read_threads",
+			  "must be greater than or equal to 1");
+	}
+	if (write_threads < 2) {
+		tnt_raise(ClientError, ER_CFG, "vinyl_write_threads",
+			  "must be greater than or equal to 2");
+	}
+	if (range_size <= 0) {
+		tnt_raise(ClientError, ER_CFG, "vinyl_range_size",
+			  "must be greater than 0");
+	}
+	if (page_size <= 0 || page_size > range_size) {
+		tnt_raise(ClientError, ER_CFG, "vinyl_page_size",
+			  "must be greater than 0 and less than "
+			  "or equal to vinyl_range_size");
+	}
+	if (run_count_per_level <= 0) {
+		tnt_raise(ClientError, ER_CFG, "vinyl_run_count_per_level",
+			  "must be greater than 0");
+	}
+	if (run_size_ratio <= 1) {
+		tnt_raise(ClientError, ER_CFG, "vinyl_run_size_ratio",
+			  "must be greater than 1");
+	}
+	if (bloom_fpr <= 0 || bloom_fpr > 1) {
+		tnt_raise(ClientError, ER_CFG, "vinyl_bloom_fpr",
+			  "must be greater than 0 and less than or equal to 1");
+	}
+}
+
 void
 box_check_config()
 {
 	struct tt_uuid uuid;
-	box_check_log(cfg_gets("log"));
-	box_check_log_format(cfg_gets("log_format"));
+	box_check_say();
 	box_check_uri(cfg_gets("listen"), "listen");
 	box_check_instance_uuid(&uuid);
 	box_check_replicaset_uuid(&uuid);
 	box_check_replication();
 	box_check_replication_timeout();
+	box_check_replication_connect_timeout();
 	box_check_replication_connect_quorum();
 	box_check_replication_sync_lag();
 	box_check_readahead(cfg_geti("readahead"));
@@ -498,15 +582,7 @@ box_check_config()
 	box_check_wal_max_size(cfg_geti64("wal_max_size"));
 	box_check_wal_mode(cfg_gets("wal_mode"));
 	box_check_memtx_min_tuple_size(cfg_geti64("memtx_min_tuple_size"));
-	if (cfg_geti64("vinyl_page_size") > cfg_geti64("vinyl_range_size"))
-		tnt_raise(ClientError, ER_CFG, "vinyl_page_size",
-			  "can't be greater than vinyl_range_size");
-	if (cfg_geti("vinyl_read_threads") < 1)
-		tnt_raise(ClientError, ER_CFG,
-			  "vinyl_read_threads", "must be >= 1");
-	if (cfg_geti("vinyl_write_threads") < 2)
-		tnt_raise(ClientError, ER_CFG,
-			  "vinyl_write_threads", "must be >= 2");
+	box_check_vinyl_options();
 }
 
 /*
@@ -580,7 +656,7 @@ box_set_replication(void)
 
 	box_check_replication();
 	/* Try to connect to all replicas within the timeout period */
-	box_sync_replication(replication_connect_quorum_timeout(), true);
+	box_sync_replication(replication_connect_timeout, true);
 	/* Follow replica */
 	replicaset_follow();
 }
@@ -592,11 +668,23 @@ box_set_replication_timeout(void)
 }
 
 void
+box_set_replication_connect_timeout(void)
+{
+	replication_connect_timeout = box_check_replication_connect_timeout();
+}
+
+void
 box_set_replication_connect_quorum(void)
 {
 	replication_connect_quorum = box_check_replication_connect_quorum();
 	if (is_box_configured)
 		replicaset_check_quorum();
+}
+
+void
+box_set_replication_skip_conflict(void)
+{
+	replication_skip_conflict = cfg_geti("replication_skip_conflict");
 }
 
 void
@@ -690,12 +778,31 @@ box_set_vinyl_max_tuple_size(void)
 }
 
 void
+box_set_vinyl_cache(void)
+{
+	struct vinyl_engine *vinyl;
+	vinyl = (struct vinyl_engine *)engine_by_name("vinyl");
+	assert(vinyl != NULL);
+	vinyl_engine_set_cache(vinyl, cfg_geti64("vinyl_cache"));
+}
+
+void
 box_set_vinyl_timeout(void)
 {
 	struct vinyl_engine *vinyl;
 	vinyl = (struct vinyl_engine *)engine_by_name("vinyl");
 	assert(vinyl != NULL);
 	vinyl_engine_set_timeout(vinyl,	cfg_getd("vinyl_timeout"));
+}
+
+void
+box_set_net_msg_max(void)
+{
+	int new_iproto_msg_max = cfg_geti("net_msg_max");
+	iproto_set_msg_max(new_iproto_msg_max);
+	fiber_pool_set_max_size(&tx_fiber_pool,
+				new_iproto_msg_max *
+				IPROTO_FIBER_POOL_SIZE_FACTOR);
 }
 
 /* }}} configuration bindings */
@@ -759,7 +866,7 @@ boxk(int type, uint32_t space_id, const char *format, ...)
 	struct space *space = space_cache_find(space_id);
 	if (space == NULL)
 		return -1;
-	return process_rw(&request, space, NULL);
+	return box_process_rw(&request, space, NULL);
 }
 
 int
@@ -831,7 +938,7 @@ box_process1(struct request *request, box_tuple_t **result)
 		return -1;
 	if (!space->def->opts.temporary && box_check_writable() != 0)
 		return -1;
-	return process_rw(request, space, result);
+	return box_process_rw(request, space, result);
 }
 
 int
@@ -1134,7 +1241,7 @@ box_register_replica(uint32_t id, const struct tt_uuid *uuid)
 	if (boxk(IPROTO_INSERT, BOX_CLUSTER_ID, "[%u%s]",
 		 (unsigned) id, tt_uuid_str(uuid)) != 0)
 		diag_raise();
-	assert(replica_by_uuid(uuid) != NULL);
+	assert(replica_by_uuid(uuid)->id == id);
 }
 
 /**
@@ -1148,7 +1255,7 @@ static void
 box_on_join(const tt_uuid *instance_uuid)
 {
 	struct replica *replica = replica_by_uuid(instance_uuid);
-	if (replica != NULL)
+	if (replica != NULL && replica->id != REPLICA_ID_NIL)
 		return; /* nothing to do - already registered */
 
 	box_check_writable_xc();
@@ -1252,7 +1359,8 @@ box_process_join(struct ev_io *io, struct xrow_header *header)
 	 * is complete. Fail early if the caller does not have
 	 * appropriate access privileges.
 	 */
-	if (replica_by_uuid(&instance_uuid) == NULL) {
+	struct replica *replica = replica_by_uuid(&instance_uuid);
+	if (replica == NULL || replica->id == REPLICA_ID_NIL) {
 		box_check_writable_xc();
 		struct space *space = space_cache_find_xc(BOX_CLUSTER_ID);
 		access_check_space_xc(space, PRIV_W);
@@ -1305,7 +1413,7 @@ box_process_join(struct ev_io *io, struct xrow_header *header)
 	 */
 	box_on_join(&instance_uuid);
 
-	struct replica *replica = replica_by_uuid(&instance_uuid);
+	replica = replica_by_uuid(&instance_uuid);
 	assert(replica != NULL);
 	replica->gc = gc;
 	gc_guard.is_active = false;
@@ -1457,7 +1565,6 @@ box_free(void)
 		gc_free();
 		engine_shutdown();
 		wal_thread_stop();
-		identifier_destroy();
 	}
 
 	fiber_cond_destroy(&ro_cond);
@@ -1487,12 +1594,12 @@ engine_init()
 	struct vinyl_engine *vinyl;
 	vinyl = vinyl_engine_new_xc(cfg_gets("vinyl_dir"),
 				    cfg_geti64("vinyl_memory"),
-				    cfg_geti64("vinyl_cache"),
 				    cfg_geti("vinyl_read_threads"),
 				    cfg_geti("vinyl_write_threads"),
 				    cfg_geti("force_recovery"));
 	engine_register((struct engine *)vinyl);
 	box_set_vinyl_max_tuple_size();
+	box_set_vinyl_cache();
 	box_set_vinyl_timeout();
 }
 
@@ -1651,7 +1758,8 @@ static inline void
 box_cfg_xc(void)
 {
 	/* Join the cord interconnect as "tx" endpoint. */
-	fiber_pool_create(&tx_fiber_pool, "tx", FIBER_POOL_SIZE,
+	fiber_pool_create(&tx_fiber_pool, "tx",
+			  IPROTO_MSG_MAX_MIN * IPROTO_FIBER_POOL_SIZE_FACTOR,
 			  FIBER_POOL_IDLE_TIMEOUT);
 	/* Add an extra endpoint for WAL wake up/rollback messages. */
 	cbus_endpoint_create(&tx_prio_endpoint, "tx_prio", tx_prio_cb, &tx_prio_endpoint);
@@ -1663,11 +1771,11 @@ box_cfg_xc(void)
 	engine_init();
 	if (module_init() != 0)
 		diag_raise();
-	identifier_init();
 	schema_init();
 	replication_init();
 	port_init();
 	iproto_init();
+	sql_init();
 	wal_thread_start();
 
 	title("loading");
@@ -1676,10 +1784,13 @@ box_cfg_xc(void)
 	box_check_instance_uuid(&instance_uuid);
 	box_check_replicaset_uuid(&replicaset_uuid);
 
+	box_set_net_msg_max();
 	box_set_checkpoint_count();
 	box_set_too_long_threshold();
 	box_set_replication_timeout();
+	box_set_replication_connect_timeout();
 	box_set_replication_connect_quorum();
+	box_set_replication_skip_conflict();
 	replication_sync_lag = box_check_replication_sync_lag();
 	xstream_create(&join_stream, apply_initial_join_row);
 	xstream_create(&subscribe_stream, apply_row);
@@ -1804,7 +1915,7 @@ box_cfg_xc(void)
 		title("orphan");
 
 		/* Wait for the cluster to start up */
-		box_sync_replication(replication_connect_quorum_timeout(), false);
+		box_sync_replication(replication_connect_timeout, false);
 	} else {
 		if (!tt_uuid_is_nil(&instance_uuid))
 			INSTANCE_UUID = instance_uuid;
@@ -1863,7 +1974,7 @@ box_cfg_xc(void)
 	/* Follow replica */
 	replicaset_follow();
 
-	sql_init();
+	sql_load_schema();
 
 	say_info("ready to accept requests");
 
@@ -1964,4 +2075,22 @@ const char *
 box_status(void)
 {
     return status;
+}
+
+static int
+box_reset_space_stat(struct space *space, void *arg)
+{
+	(void)arg;
+	for (uint32_t i = 0; i < space->index_count; i++)
+		index_reset_stat(space->index[i]);
+	return 0;
+}
+
+void
+box_reset_stat(void)
+{
+	rmean_cleanup(rmean_box);
+	rmean_cleanup(rmean_error);
+	engine_reset_stat();
+	space_foreach(box_reset_space_stat, NULL);
 }

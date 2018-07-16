@@ -35,6 +35,7 @@
  */
 #include "sqliteInt.h"
 #include "src/box/session.h"
+#include "tarantoolInt.h"
 
 /*
  * The code in this file only exists if we are not omitting the
@@ -84,10 +85,9 @@ sqlite3AlterRenameTable(Parse * pParse,	/* Parser context. */
 		goto exit_rename_table;
 	assert(pSrc->nSrc == 1);
 
-	pTab = sqlite3LocateTableItem(pParse, 0, &pSrc->a[0]);
-	if (!pTab)
+	pTab = sqlite3LocateTable(pParse, 0, pSrc->a[0].zName);
+	if (pTab == NULL)
 		goto exit_rename_table;
-	assert(sqlite3SchemaToIndex(pParse->db, pTab->pSchema) == 0);
 
 	user_session->sql_flags |= SQLITE_PreferBuiltin;
 
@@ -99,7 +99,7 @@ sqlite3AlterRenameTable(Parse * pParse,	/* Parser context. */
 	/* Check that a table named 'zName' does not already exist
 	 * in database. If so, this is an error.
 	 */
-	if (sqlite3FindTable(db, zName)) {
+	if (sqlite3HashFind(&db->pSchema->tblHash, zName) != NULL) {
 		sqlite3ErrorMsg(pParse,
 				"there is already another table or index with this name: %s",
 				zName);
@@ -107,16 +107,9 @@ sqlite3AlterRenameTable(Parse * pParse,	/* Parser context. */
 	}
 
 #ifndef SQLITE_OMIT_VIEW
-	if (pTab->pSelect) {
+	if (space_is_view(pTab)) {
 		sqlite3ErrorMsg(pParse, "view %s may not be altered",
 				pTab->zName);
-		goto exit_rename_table;
-	}
-#endif
-
-#ifndef SQLITE_OMIT_AUTHORIZATION
-	/* Invoke the authorization callback. */
-	if (sqlite3AuthCheck(pParse, SQLITE_ALTER_TABLE, zDb, pTab->zName, 0)) {
 		goto exit_rename_table;
 	}
 #endif
@@ -129,18 +122,7 @@ sqlite3AlterRenameTable(Parse * pParse,	/* Parser context. */
 	if (v == 0) {
 		goto exit_rename_table;
 	}
-	sqlite3BeginWriteOperation(pParse, false);
-
-#ifndef SQLITE_OMIT_AUTOINCREMENT
-	/* If the sqlite_sequence table exists in this database, then update
-	 * it with the new table name.
-	 */
-	if (sqlite3FindTable(db, "sqlite_sequence")) {
-		sqlite3NestedParse(pParse,
-				   "UPDATE sqlite_sequence set name = %Q WHERE name = %Q",
-				   zName, pTab->zName);
-	}
-#endif
+	sql_set_multi_write(pParse, false);
 
 	/* Drop and reload the internal table schema. */
 	reloadTableSchema(pParse, pTab, zName);
@@ -180,16 +162,11 @@ sqlite3AlterFinishAddColumn(Parse * pParse, Token * pColDef)
 
 	zTab = &pNew->zName[16];	/* Skip the "sqlite_altertab_" prefix on the name */
 	pCol = &pNew->aCol[pNew->nCol - 1];
-	pDflt = pCol->pDflt;
-	pTab = sqlite3FindTable(db, zTab);
+	assert(pNew->def != NULL);
+	pDflt = space_column_default_expr(SQLITE_PAGENO_TO_SPACEID(pNew->tnum),
+					  pNew->nCol - 1);
+	pTab = sqlite3HashFind(&db->pSchema->tblHash, zTab);;
 	assert(pTab);
-
-#ifndef SQLITE_OMIT_AUTHORIZATION
-	/* Invoke the authorization callback. */
-	if (sqlite3AuthCheck(pParse, SQLITE_ALTER_TABLE, zDb, pTab->zName, 0)) {
-		return;
-	}
-#endif
 
 	/* If the default value for the new column was specified with a
 	 * literal NULL, then set pDflt to 0. This simplifies checking
@@ -204,7 +181,7 @@ sqlite3AlterFinishAddColumn(Parse * pParse, Token * pColDef)
 	 * If there is a NOT NULL constraint, then the default value for the
 	 * column must not be NULL.
 	 */
-	if (pCol->colFlags & COLFLAG_PRIMKEY) {
+	if (pCol->is_primkey) {
 		sqlite3ErrorMsg(pParse, "Cannot add a PRIMARY KEY column");
 		return;
 	}
@@ -282,12 +259,12 @@ sqlite3AlterBeginAddColumn(Parse * pParse, SrcList * pSrc)
 	assert(pParse->pNewTable == 0);
 	if (db->mallocFailed)
 		goto exit_begin_add_column;
-	pTab = sqlite3LocateTableItem(pParse, 0, &pSrc->a[0]);
-	if (!pTab)
+	pTab = sqlite3LocateTable(pParse, 0, pSrc->a[0].zName);
+	if (pTab == NULL)
 		goto exit_begin_add_column;
 
 	/* Make sure this is not an attempt to ALTER a view. */
-	if (pTab->pSelect) {
+	if (space_is_view(pTab)) {
 		sqlite3ErrorMsg(pParse, "Cannot add a column to a view");
 		goto exit_begin_add_column;
 	}
@@ -322,15 +299,14 @@ sqlite3AlterBeginAddColumn(Parse * pParse, SrcList * pSrc)
 	for (i = 0; i < pNew->nCol; i++) {
 		Column *pCol = &pNew->aCol[i];
 		pCol->zName = sqlite3DbStrDup(db, pCol->zName);
-		pCol->zColl = 0;
-		pCol->pDflt = 0;
+		pCol->coll = NULL;
 	}
-	pNew->pSchema = db->mdb.pSchema;
+	pNew->pSchema = db->pSchema;
 	pNew->addColOffset = pTab->addColOffset;
 	pNew->nTabRef = 1;
 
 	/* Begin a transaction and increment the schema cookie.  */
-	sqlite3BeginWriteOperation(pParse, 0);
+	sql_set_multi_write(pParse, false);
 	v = sqlite3GetVdbe(pParse);
 	if (!v)
 		goto exit_begin_add_column;

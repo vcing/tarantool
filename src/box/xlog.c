@@ -1797,7 +1797,7 @@ xlog_cursor_openfd(struct xlog_cursor *i, int fd, const char *name)
 	if (rc == -1)
 		goto error;
 	if (rc > 0) {
-		diag_set(XlogError, "Unexpected end of file");
+		diag_set(XlogError, "Unexpected end of file, run with 'force_recovery = true'");
 		goto error;
 	}
 	snprintf(i->name, PATH_MAX, "%s", name);
@@ -1869,33 +1869,6 @@ xlog_cursor_openmem(struct xlog_cursor *i, const char *data, size_t size,
 error:
 	ibuf_destroy(&i->rbuf);
 	return -1;
-}
-
-int
-xlog_cursor_reset(struct xlog_cursor *cursor)
-{
-	assert(xlog_cursor_is_open(cursor));
-	cursor->rbuf.rpos = cursor->rbuf.buf;
-	if (ibuf_used(&cursor->rbuf) != (size_t)cursor->read_offset) {
-		cursor->rbuf.wpos = cursor->rbuf.buf;
-		cursor->read_offset = 0;
-	}
-	if (cursor->state == XLOG_CURSOR_TX)
-		xlog_tx_cursor_destroy(&cursor->tx_cursor);
-	if (xlog_cursor_ensure(cursor, XLOG_META_LEN_MAX) == -1)
-		return -1;
-	int rc;
-	rc = xlog_meta_parse(&cursor->meta,
-			     (const char **)&cursor->rbuf.rpos,
-			     (const char *)cursor->rbuf.wpos);
-	if (rc == -1)
-		return -1;
-	if (rc > 0) {
-		diag_set(XlogError, "Unexpected end of file");
-		return -1;
-	}
-	cursor->state = XLOG_CURSOR_ACTIVE;
-	return 0;
 }
 
 void

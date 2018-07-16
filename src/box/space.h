@@ -49,6 +49,7 @@ struct txn;
 struct request;
 struct port;
 struct tuple;
+struct tuple_format;
 
 struct space_vtab {
 	/** Free a space instance. */
@@ -101,49 +102,36 @@ struct space_vtab {
 	 */
 	void (*drop_primary_key)(struct space *);
 	/**
-	 * Check that new fields of a space format are
-	 * compatible with existing tuples.
+	 * Check that all tuples stored in a space are compatible
+	 * with the new format.
 	 */
-	int (*check_format)(struct space *new_space,
-			    struct space *old_space);
+	int (*check_format)(struct space *space, struct tuple_format *format);
 	/**
-	 * Called with the new empty secondary index.
-	 * Fill the new index with data from the primary
-	 * key of the space.
-	 */
-	int (*build_secondary_key)(struct space *old_space,
-				   struct space *new_space,
-				   struct index *new_index);
-	/**
-	 * Notify the enigne about upcoming space truncation
-	 * so that it can prepare new_space object.
-	 */
-	int (*prepare_truncate)(struct space *old_space,
-				struct space *new_space);
-	/**
-	 * Commit space truncation. Called after space truncate
-	 * record was written to WAL hence must not fail.
+	 * Build a new index, primary or secondary, and fill it
+	 * with tuples stored in the given space. The function is
+	 * supposed to assure that all tuples conform to the new
+	 * format.
 	 *
-	 * The old_space is the space that was replaced with the
-	 * new_space as a result of truncation. The callback is
-	 * supposed to release resources associated with the
-	 * old_space and commit the new_space.
+	 * @param src_space   space to use as build source
+	 * @param new_index   index to build
+	 * @param new_format  format for validating tuples
+	 * @retval  0         success
+	 * @retval -1         build failed
 	 */
-	void (*commit_truncate)(struct space *old_space,
-				struct space *new_space);
+	int (*build_index)(struct space *src_space, struct index *new_index,
+			   struct tuple_format *new_format);
+	/**
+	 * Exchange two index objects in two spaces. Used
+	 * to update a space with a newly built index, while
+	 * making sure the old index doesn't leak.
+	 */
+	void (*swap_index)(struct space *old_space, struct space *new_space,
+			   uint32_t old_index_id, uint32_t new_index_id);
 	/**
 	 * Notify the engine about the changed space,
 	 * before it's done, to prepare 'new_space' object.
 	 */
 	int (*prepare_alter)(struct space *old_space,
-			     struct space *new_space);
-	/**
-	 * Notify the engine engine after altering a space and
-	 * replacing old_space with new_space in the space cache,
-	 * to, e.g., update all references to struct space
-	 * and replace old_space with new_space.
-	 */
-	void (*commit_alter)(struct space *old_space,
 			     struct space *new_space);
 };
 
@@ -178,12 +166,6 @@ struct space {
 	struct space_def *def;
 	/** Sequence attached to this space or NULL. */
 	struct sequence *sequence;
-	/**
-	 * Number of times the space has been truncated.
-	 * Updating this counter via _truncate space triggers
-	 * space truncation.
-	 */
-	uint64_t truncate_count;
 	/** Enable/disable triggers. */
 	bool run_triggers;
 	/**
@@ -299,21 +281,6 @@ const char *
 index_name_by_id(struct space *space, uint32_t id);
 
 /**
- * Check that a space with @an old_def can be altered to have
- * @a new_def.
- * @param old_def Old space definition.
- * @param new_def New space definition.
- * @param is_space_empty True, if a space is empty.
- *
- * @retval  0 Space definition can be altered to @a new_def.
- * @retval -1 Client error.
- */
-int
-space_def_check_compatibility(const struct space_def *old_def,
-			      const struct space_def *new_def,
-			      bool is_space_empty);
-
-/**
  * Check whether or not the current user can be granted
  * the requested access to the space.
  */
@@ -333,7 +300,6 @@ int
 space_execute_dml(struct space *space, struct txn *txn,
 		  struct request *request, struct tuple **result);
 
-
 static inline int
 space_ephemeral_replace(struct space *space, const char *tuple,
 			const char *tuple_end)
@@ -346,6 +312,14 @@ space_ephemeral_delete(struct space *space, const char *key)
 {
 	return space->vtab->ephemeral_delete(space, key);
 }
+
+/**
+ * Generic implementation of space_vtab::swap_index
+ * that simply swaps the two indexes in index maps.
+ */
+void
+generic_space_swap_index(struct space *old_space, struct space *new_space,
+			 uint32_t old_index_id, uint32_t new_index_id);
 
 static inline void
 init_system_space(struct space *space)
@@ -372,10 +346,9 @@ space_add_primary_key(struct space *space)
 }
 
 static inline int
-space_check_format(struct space *new_space, struct space *old_space)
+space_check_format(struct space *space, struct tuple_format *format)
 {
-	assert(old_space->vtab == new_space->vtab);
-	return new_space->vtab->check_format(new_space, old_space);
+	return space->vtab->check_format(space, format);
 }
 
 static inline void
@@ -385,26 +358,19 @@ space_drop_primary_key(struct space *space)
 }
 
 static inline int
-space_build_secondary_key(struct space *old_space,
-			  struct space *new_space, struct index *new_index)
+space_build_index(struct space *src_space, struct index *new_index,
+		  struct tuple_format *new_format)
 {
-	assert(old_space->vtab == new_space->vtab);
-	return new_space->vtab->build_secondary_key(old_space,
-						    new_space, new_index);
-}
-
-static inline int
-space_prepare_truncate(struct space *old_space, struct space *new_space)
-{
-	assert(old_space->vtab == new_space->vtab);
-	return new_space->vtab->prepare_truncate(old_space, new_space);
+	return src_space->vtab->build_index(src_space, new_index, new_format);
 }
 
 static inline void
-space_commit_truncate(struct space *old_space, struct space *new_space)
+space_swap_index(struct space *old_space, struct space *new_space,
+		 uint32_t old_index_id, uint32_t new_index_id)
 {
 	assert(old_space->vtab == new_space->vtab);
-	new_space->vtab->commit_truncate(old_space, new_space);
+	return new_space->vtab->swap_index(old_space, new_space,
+					   old_index_id, new_index_id);
 }
 
 static inline int
@@ -412,13 +378,6 @@ space_prepare_alter(struct space *old_space, struct space *new_space)
 {
 	assert(old_space->vtab == new_space->vtab);
 	return new_space->vtab->prepare_alter(old_space, new_space);
-}
-
-static inline void
-space_commit_alter(struct space *old_space, struct space *new_space)
-{
-	assert(old_space->vtab == new_space->vtab);
-	new_space->vtab->commit_alter(old_space, new_space);
 }
 
 static inline bool
@@ -478,31 +437,12 @@ space_delete_ephemeral(struct space *space);
 void
 space_dump_def(const struct space *space, struct rlist *key_list);
 
-/**
- * Exchange two index objects in two spaces. Used
- * to update a space with a newly built index, while
- * making sure the old index doesn't leak.
- */
-void
-space_swap_index(struct space *lhs, struct space *rhs,
-		 uint32_t lhs_id, uint32_t rhs_id);
-
 /** Rebuild index map in a space after a series of swap index. */
 void
 space_fill_index_map(struct space *space);
 
 #if defined(__cplusplus)
 } /* extern "C" */
-
-static inline void
-space_def_check_compatibility_xc(const struct space_def *old_def,
-				 const struct space_def *new_def,
-				 bool is_space_empty)
-{
-	if (space_def_check_compatibility(old_def, new_def,
-					  is_space_empty) != 0)
-		diag_raise();
-}
 
 static inline struct space *
 space_new_xc(struct space_def *space_def, struct rlist *key_list)
@@ -587,24 +527,17 @@ space_add_primary_key_xc(struct space *space)
 }
 
 static inline void
-space_check_format_xc(struct space *new_space, struct space *old_space)
+space_check_format_xc(struct space *space, struct tuple_format *format)
 {
-	if (space_check_format(new_space, old_space) != 0)
+	if (space_check_format(space, format) != 0)
 		diag_raise();
 }
 
 static inline void
-space_build_secondary_key_xc(struct space *old_space,
-			     struct space *new_space, struct index *new_index)
+space_build_index_xc(struct space *src_space, struct index *new_index,
+		     struct tuple_format *new_format)
 {
-	if (space_build_secondary_key(old_space, new_space, new_index) != 0)
-		diag_raise();
-}
-
-static inline void
-space_prepare_truncate_xc(struct space *old_space, struct space *new_space)
-{
-	if (space_prepare_truncate(old_space, new_space) != 0)
+	if (space_build_index(src_space, new_index, new_format) != 0)
 		diag_raise();
 }
 

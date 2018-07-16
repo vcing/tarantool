@@ -36,7 +36,9 @@
 #include <stdarg.h>
 #include <errno.h>
 #include <sys/types.h> /* pid_t */
+#include <tarantool_ev.h>
 #include "small/rlist.h"
+#include "fiber_cond.h"
 
 #if defined(__cplusplus)
 extern "C" {
@@ -97,6 +99,34 @@ enum say_logger_type {
 	SAY_LOGGER_SYSLOG
 };
 
+enum syslog_facility {
+	SYSLOG_KERN = 0,
+	SYSLOG_USER,
+	SYSLOG_MAIL,
+	SYSLOG_DAEMON,
+	SYSLOG_AUTH,
+	SYSLOG_INTERN,
+	SYSLOG_LPR,
+	SYSLOG_NEWS,
+	SYSLOG_UUCP,
+	SYSLOG_CLOCK,
+	SYSLOG_AUTHPRIV,
+	SYSLOG_FTP,
+	SYSLOG_NTP,
+	SYSLOG_AUDIT,
+	SYSLOG_ALERT,
+	SYSLOG_CRON,
+	SYSLOG_LOCAL0,
+	SYSLOG_LOCAL1,
+	SYSLOG_LOCAL2,
+	SYSLOG_LOCAL3,
+	SYSLOG_LOCAL4,
+	SYSLOG_LOCAL5,
+	SYSLOG_LOCAL6,
+	SYSLOG_LOCAL7,
+	syslog_facility_MAX,
+};
+
 struct log;
 
 typedef int (*log_format_func_t)(struct log *log, char *buf, int len, int level,
@@ -119,6 +149,18 @@ struct log {
 	pid_t pid;
 	/* Application identifier used to group syslog messages. */
 	char *syslog_ident;
+	/**
+	 * Used to wake up the main logger thread from a eio thread.
+	 */
+	ev_async log_async;
+	/**
+	 * Conditional variable securing variable below
+	 * from concurrent usage.
+	 */
+	struct fiber_cond rotate_cond;
+	/** Counter identifying number of threads executing log_rotate. */
+	int rotating_threads;
+	enum syslog_facility syslog_facility;
 	struct rlist in_log_list;
 };
 
@@ -131,7 +173,7 @@ struct log {
  * the diagnostics area
  */
 int
-log_create(struct log *log, const char *init_str, bool nonblock);
+log_create(struct log *log, const char *init_str, int nonblock);
 
 void
 log_destroy(struct log *log);
@@ -185,8 +227,11 @@ say_set_log_format(enum say_format format);
 enum say_format
 say_format_by_name(const char *format);
 
+struct ev_loop;
+struct ev_signal;
+
 void
-say_logrotate(int /* signo */);
+say_logrotate(struct ev_loop *, struct ev_signal *, int /* revents */);
 
 /** Init default logger. */
 void
@@ -346,7 +391,7 @@ say_parse_logger_type(const char **str, enum say_logger_type *type);
 /** Syslog logger initialization params */
 struct say_syslog_opts {
 	const char *identity;
-	const char *facility;
+	enum syslog_facility facility;
 	/* Input copy (content unspecified). */
 	char *copy;
 };

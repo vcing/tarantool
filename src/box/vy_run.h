@@ -41,14 +41,15 @@
 #include "vy_read_view.h"
 #include "vy_stat.h"
 #include "index_def.h"
+#include "xlog.h"
 
 #include "small/mempool.h"
-#include "salad/bloom.h"
 
 #if defined(__cplusplus)
 extern "C" {
 #endif /* defined(__cplusplus) */
 
+struct vy_history;
 struct vy_run_reader;
 
 /** Part of vinyl environment for run read/write */
@@ -82,10 +83,8 @@ struct vy_run_info {
 	int64_t max_lsn;
 	/** Number of pages in the run. */
 	uint32_t page_count;
-	/** Set iff bloom filter is available. */
-	bool has_bloom;
 	/** Bloom filter of all tuples in run */
-	struct bloom bloom;
+	struct tuple_bloom *bloom;
 };
 
 /**
@@ -129,22 +128,25 @@ struct vy_run {
 	/**
 	 * Run reference counter, the run is deleted once it hits 0.
 	 * A new run is created with the reference counter set to 1.
-	 * A run is referenced by each slice created for it.
+	 * A run is referenced by each slice created for it and each
+	 * pending read or write task.
 	 */
 	int refs;
+	/** Number of slices created for this run. */
+	int slice_count;
 	/**
 	 * Counter used on completion of a compaction task to check if
 	 * all slices of the run have been compacted and so the run is
 	 * not used any more and should be deleted.
 	 */
-	int64_t compacted_slice_count;
+	int compacted_slice_count;
 	/**
 	 * Link in the list of runs that became unused
 	 * after compaction.
 	 */
 	struct rlist in_unused;
-	/** Link in vy_index::runs list. */
-	struct rlist in_index;
+	/** Link in vy_lsm::runs list. */
+	struct rlist in_lsm;
 };
 
 /**
@@ -213,17 +215,15 @@ struct vy_run_iterator {
 	struct vy_run_iterator_stat *stat;
 
 	/* Members needed for memory allocation and disk access */
-	/** Index key definition used for storing statements on disk. */
+	/** Key definition used for comparing statements on disk. */
 	const struct key_def *cmp_def;
-	/** Index key definition defined by the user. */
+	/** Key definition provided by the user. */
 	const struct key_def *key_def;
 	/**
 	 * Format ot allocate REPLACE and DELETE tuples read from
 	 * pages.
 	 */
 	struct tuple_format *format;
-	/** Same as format, but for UPSERT tuples. */
-	struct tuple_format *upsert_format;
 	/** Set if this iterator is for a primary index. */
 	bool is_primary;
 	/** The run slice to iterate. */
@@ -244,15 +244,15 @@ struct vy_run_iterator {
 	/* State of the iterator */
 	/** Position of the current record */
 	struct vy_run_iterator_pos curr_pos;
-	/**
-	 * Last stmt returned by vy_run_iterator_get.
-	 * The iterator holds this stmt until the next call to
-	 * vy_run_iterator_get, when it's dereferenced.
-	 */
+	/** Statement at curr_pos. */
 	struct tuple *curr_stmt;
-	/** Position of record that spawned curr_stmt */
-	struct vy_run_iterator_pos curr_stmt_pos;
-	/** LRU cache of two active pages (two pages is enough). */
+	/**
+	 * Last two pages read by the iterator. We keep two pages
+	 * rather than just one, because we often probe a page for
+	 * a better match. Keeping the previous page makes sure we
+	 * won't throw out the current page if probing fails to
+	 * find a better match.
+	 */
 	struct vy_page *curr_page;
 	struct vy_page *prev_page;
 	/** Is false until first .._get or .._next_.. method is called */
@@ -301,6 +301,12 @@ vy_run_env_destroy(struct vy_run_env *env);
 void
 vy_run_env_enable_coio(struct vy_run_env *env, int threads);
 
+/**
+ * Return the size of a run bloom filter.
+ */
+size_t
+vy_run_bloom_size(struct vy_run *run);
+
 static inline struct vy_page_info *
 vy_run_page_info(struct vy_run *run, uint32_t pos)
 {
@@ -348,22 +354,23 @@ vy_run_recover(struct vy_run *run, const char *dir,
 	       uint32_t space_id, uint32_t iid);
 
 /**
- * Rebuild vy_run index
- * @param run - run to laod
+ * Rebuild run index
+ * @param run - run to rebuild index for
  * @param dir - path to the vinyl directory
  * @param space_id - space id
  * @param iid - index id
- * @param key_def index key definition
- * @param bloom_fpr bloom filter param
+ * @param cmp_def - key definition with primary key parts
+ * @param key_def - user defined key definition
+ * @param format - format for allocating tuples read from disk
+ * @param opts - index options
  * @return - 0 on sucess, -1 on fail
  */
 int
 vy_run_rebuild_index(struct vy_run *run, const char *dir,
 		     uint32_t space_id, uint32_t iid,
+		     const struct key_def *cmp_def,
 		     const struct key_def *key_def,
-		     const struct key_def *user_key_def,
-		     struct tuple_format *mem_format,
-		     struct tuple_format *upsert_format,
+		     struct tuple_format *format,
 		     const struct index_opts *opts);
 
 enum vy_file_type {
@@ -375,8 +382,8 @@ enum vy_file_type {
 extern const char *vy_file_suffix[];
 
 static inline int
-vy_index_snprint_path(char *buf, int size, const char *dir,
-		      uint32_t space_id, uint32_t iid)
+vy_lsm_snprint_path(char *buf, int size, const char *dir,
+		    uint32_t space_id, uint32_t iid)
 {
 	return snprintf(buf, size, "%s/%u/%u",
 			dir, (unsigned)space_id, (unsigned)iid);
@@ -396,20 +403,21 @@ vy_run_snprint_path(char *buf, int size, const char *dir,
 		    int64_t run_id, enum vy_file_type type)
 {
 	int total = 0;
-	SNPRINT(total, vy_index_snprint_path, buf, size,
+	SNPRINT(total, vy_lsm_snprint_path, buf, size,
 		dir, (unsigned)space_id, (unsigned)iid);
 	SNPRINT(total, snprintf, buf, size, "/");
 	SNPRINT(total, vy_run_snprint_filename, buf, size, run_id, type);
 	return total;
 }
 
+/**
+ * Remove all files (data, index) corresponding to a run
+ * with the given id. Return 0 on success, -1 if unlink()
+ * failed.
+ */
 int
-vy_run_write(struct vy_run *run, const char *dirpath,
-	     uint32_t space_id, uint32_t iid,
-	     struct vy_stmt_stream *wi, uint64_t page_size,
-	     const struct key_def *cmp_def,
-	     const struct key_def *key_def,
-	     size_t max_output_count, double bloom_fpr);
+vy_run_remove_files(const char *dir, uint32_t space_id,
+		    uint32_t iid, int64_t run_id);
 
 /**
  * Allocate a new run slice.
@@ -486,34 +494,26 @@ vy_run_iterator_open(struct vy_run_iterator *itr,
 		     const struct tuple *key, const struct vy_read_view **rv,
 		     const struct key_def *cmp_def,
 		     const struct key_def *key_def,
-		     struct tuple_format *format,
-		     struct tuple_format *upsert_format,
-		     bool is_primary);
+		     struct tuple_format *format, bool is_primary);
 
 /**
- * Advance a run iterator to the newest statement for the next key.
- * The statement is returned in @ret (NULL if EOF).
+ * Advance a run iterator to the next key.
+ * The key history is returned in @history (empty if EOF).
  * Returns 0 on success, -1 on memory allocation or IO error.
  */
 NODISCARD int
-vy_run_iterator_next_key(struct vy_run_iterator *itr, struct tuple **ret);
+vy_run_iterator_next(struct vy_run_iterator *itr,
+		     struct vy_history *history);
 
 /**
- * Advance a run iterator to the older statement for the same key.
- * The statement is returned in @ret (NULL if EOF).
- * Returns 0 on success, -1 on memory allocation or IO error.
- */
-NODISCARD int
-vy_run_iterator_next_lsn(struct vy_run_iterator *itr, struct tuple **ret);
-
-/**
- * Advance a run iterator to the newest statement for the first key
- * following @last_stmt. The statement is returned in @ret (NULL if EOF).
+ * Advance a run iterator to the key following @last_stmt.
+ * The key history is returned in @history (empty if EOF).
  * Returns 0 on success, -1 on memory allocation or IO error.
  */
 NODISCARD int
 vy_run_iterator_skip(struct vy_run_iterator *itr,
-		     const struct tuple *last_stmt, struct tuple **ret);
+		     const struct tuple *last_stmt,
+		     struct vy_history *history);
 
 /**
  * Close a run iterator.
@@ -546,8 +546,6 @@ struct vy_slice_stream {
 	const struct key_def *cmp_def;
 	/** Format for allocating REPLACE and DELETE tuples read from pages. */
 	struct tuple_format *format;
-	/** Same as format, but for UPSERT tuples. */
-	struct tuple_format *upsert_format;
 	/** Set if this iterator is for a primary index. */
 	bool is_primary;
 };
@@ -558,7 +556,89 @@ struct vy_slice_stream {
 void
 vy_slice_stream_open(struct vy_slice_stream *stream, struct vy_slice *slice,
 		     const struct key_def *cmp_def, struct tuple_format *format,
-		     struct tuple_format *upsert_format, bool is_primary);
+		     bool is_primary);
+
+/**
+ * Run_writer fills a created run with statements one by one,
+ * splitting them into pages.
+ */
+struct vy_run_writer {
+	/** Run to fill. */
+	struct vy_run *run;
+	/** Path to directory with run files. */
+	const char *dirpath;
+	/** Identifier of a space owning the run. */
+	uint32_t space_id;
+	/** Identifier of an index owning the run. */
+	uint32_t iid;
+	/**
+	 * Key definition to extract from tuple and store as page
+	 * min key, run min/max keys, and secondary index
+	 * statements.
+	 */
+	const struct key_def *cmp_def;
+	/** Key definition to calculate bloom. */
+	const struct key_def *key_def;
+	/**
+	 * Minimal page size. When a page becames bigger, it is
+	 * dumped.
+	 */
+	uint64_t page_size;
+	/**
+	 * Current page info capacity. Can grow with page number.
+	 */
+	uint32_t page_info_capacity;
+	/** Xlog to write data. */
+	struct xlog data_xlog;
+	/** Bloom filter false positive rate. */
+	double bloom_fpr;
+	/** Bloom filter. */
+	struct tuple_bloom_builder *bloom;
+	/** Buffer of a current page row offsets. */
+	struct ibuf row_index_buf;
+	/**
+	 * Remember a last written statement to use it as a source
+	 * of max key of a finished run.
+	 */
+	struct tuple *last_stmt;
+};
+
+/** Create a run writer to fill a run with statements. */
+int
+vy_run_writer_create(struct vy_run_writer *writer, struct vy_run *run,
+		const char *dirpath, uint32_t space_id, uint32_t iid,
+		const struct key_def *cmp_def, const struct key_def *key_def,
+		uint64_t page_size, double bloom_fpr);
+
+/**
+ * Write a specified statement into a run.
+ * @param writer Writer to write a statement.
+ * @param stmt Statement to write.
+ *
+ * @retval -1 Memory error.
+ * @retval  0 Success.
+ */
+int
+vy_run_writer_append_stmt(struct vy_run_writer *writer, struct tuple *stmt);
+
+/**
+ * Finalize run writing by writing run index into file. The writer
+ * is deleted after call.
+ * @param writer Run writer.
+ * @retval -1 Memory or IO error.
+ * @retval  0 Success.
+ */
+int
+vy_run_writer_commit(struct vy_run_writer *writer);
+
+/**
+ * Abort run writing. Can not delete a run and run's file here,
+ * becase it must be done from tx thread. The writer is deleted
+ * after call.
+ * @param Run writer.
+ */
+void
+vy_run_writer_abort(struct vy_run_writer *writer);
 
 #if defined(__cplusplus)
 } /* extern "C" */

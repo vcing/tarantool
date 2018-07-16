@@ -1,6 +1,17 @@
 fiber = require('fiber')
 test_run = require('test_run').new()
 
+-- sanity checks
+space = box.schema.space.create('test', {engine = 'vinyl' })
+space:create_index('pk', {range_size = 0})
+space:create_index('pk', {page_size = 0})
+space:create_index('pk', {page_size = 8192, range_size = 4096})
+space:create_index('pk', {run_count_per_level = 0})
+space:create_index('pk', {run_size_ratio = 1})
+space:create_index('pk', {bloom_fpr = 0})
+space:create_index('pk', {bloom_fpr = 1.1})
+space:drop()
+
 -- space secondary index create
 space = box.schema.space.create('test', { engine = 'vinyl' })
 index1 = space:create_index('primary')
@@ -266,4 +277,15 @@ s.index.secondary:alter{unique = true} -- error
 s.index.secondary.unique
 s:insert{2, 10}
 s.index.secondary:select(10)
+s:drop()
+
+-- Narrowing indexed field type entails index rebuild.
+s = box.schema.space.create('test', {engine = 'vinyl'})
+_ = s:create_index('i1')
+_ = s:create_index('i2', {parts = {2, 'integer'}})
+_ = s:create_index('i3', {parts = {{3, 'string', is_nullable = true}}})
+_ = s:replace{1, 1, 'test'}
+-- Should fail with 'Vinyl does not support building an index for a non-empty space'.
+s.index.i2:alter{parts = {2, 'unsigned'}}
+s.index.i3:alter{parts = {{3, 'string', is_nullable = false}}}
 s:drop()

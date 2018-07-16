@@ -8,10 +8,11 @@ test_run:cmd("push filter ".."'\\.lua.*:[0-9]+: ' to '.lua...\"]:<line>: '")
 
 test_run:cmd("setopt delimiter ';'")
 function x_select(cn, space_id, index_id, iterator, offset, limit, key, opts)
-    return cn:_request('select', opts, space_id, index_id, iterator,
-                       offset, limit, key)
+    local ret = cn:_request('select', opts, space_id, index_id, iterator,
+                            offset, limit, key)
+    return ret
 end
-function x_fatal(cn) cn._transport.perform_request(nil, nil, 'inject', nil, '\x80') end
+function x_fatal(cn) cn._transport.perform_request(nil, nil, 'inject', '\x80') end
 test_run:cmd("setopt delimiter ''");
 
 LISTEN = require('uri').parse(box.cfg.listen)
@@ -701,7 +702,7 @@ nb = net.new('localhost:3392', {
     wait_connected = true, console = true,
     connect_timeout = 0.01
 });
-nb.error == "Timeout exceeded" or nb.error == "Connection timed out";
+nb.error:find('timed out') ~= nil;
 nb:close();
 -- we must get peer closed
 nb = net.new('localhost:3392', {
@@ -789,7 +790,6 @@ disconnected_cnt
 conn:close()
 disconnected_cnt
 test_run:cmd('stop server connecter')
-test_run:cmd('cleanup server connecter')
 
 --
 -- gh-2401 update pseudo objects not replace them
@@ -871,4 +871,343 @@ while disconnected == false do fiber.sleep(0.01) end
 disconnected -- true
 
 box.session.on_disconnect(nil, on_disconnect)
-box.schema.user.revoke('guest', 'execute', 'universe')
+
+--
+-- gh-2666: check that netbox.call is not repeated on schema
+-- change.
+--
+box.schema.user.grant('guest', 'write', 'space', '_space')
+box.schema.user.grant('guest', 'write', 'space', '_schema')
+count = 0
+function create_space(name) count = count + 1 box.schema.create_space(name) return true end
+c = net.connect(box.cfg.listen)
+c:call('create_space', {'test1'})
+count
+c:call('create_space', {'test2'})
+count
+c:call('create_space', {'test3'})
+count
+box.space.test1:drop()
+box.space.test2:drop()
+box.space.test3:drop()
+box.schema.user.revoke('guest', 'write', 'space', '_space')
+box.schema.user.revoke('guest', 'write', 'space', '_schema')
+c:close()
+
+--
+-- gh-3164: netbox connection is not closed and garbage collected
+-- ever, if reconnect_after is set.
+--
+test_run:cmd('start server connecter')
+test_run:cmd("set variable connect_to to 'connecter.listen'")
+weak = setmetatable({}, {__mode = 'v'})
+-- Create strong and weak reference. Weak is valid until strong
+-- is valid too.
+strong = net.connect(connect_to, {reconnect_after = 0.1})
+weak.c = strong
+weak.c:ping()
+test_run:cmd('stop server connecter')
+test_run:cmd('cleanup server connecter')
+-- Check the connection tries to reconnect at least two times.
+-- 'Cannot assign requested address' is the crutch for running the
+-- tests in a docker. This error emits instead of
+-- 'Connection refused' inside a docker.
+old_log_level = box.cfg.log_level
+box.cfg{log_level = 6}
+log.info(string.rep('a', 1000))
+test_run:cmd("setopt delimiter ';'")
+while test_run:grep_log('default', 'Connection refused', 1000) == nil and
+      test_run:grep_log('default', 'Cannot assign requested address', 1000) == nil do
+       fiber.sleep(0.1)
+end;
+log.info(string.rep('a', 1000));
+while test_run:grep_log('default', 'Connection refused', 1000) == nil and
+      test_run:grep_log('default', 'Cannot assign requested address', 1000) == nil do
+       fiber.sleep(0.1)
+end;
+test_run:cmd("setopt delimiter ''");
+box.cfg{log_level = old_log_level}
+collectgarbage('collect')
+strong.state
+strong == weak.c
+-- Remove single strong reference. Now connection must be garbage
+-- collected.
+strong = nil
+collectgarbage('collect')
+-- Now weak.c is null, because it was weak reference, and the
+-- connection is deleted by 'collect'.
+weak.c
+
+--
+-- gh-2677: netbox supports console connections, that complicates
+-- both console and netbox. It was necessary because before a
+-- connection is established, a console does not known is it
+-- binary or text protocol, and netbox could not be created from
+-- existing socket.
+--
+box.schema.user.grant('guest','read,write,execute','universe')
+urilib = require('uri')
+uri = urilib.parse(tostring(box.cfg.listen))
+s, greeting = net.establish_connection(uri.host, uri.service)
+c = net.wrap(s, greeting, uri.host, uri.service, {reconnect_after = 0.01})
+c.state
+
+a = 100
+function kek(args) return {1, 2, 3, args} end
+c:eval('a = 200')
+a
+c:call('kek', {300})
+s = box.schema.create_space('test')
+pk = s:create_index('pk')
+c:reload_schema()
+c.space.test:replace{1}
+c.space.test:get{1}
+c.space.test:delete{1}
+--
+-- Break a connection to test reconnect_after.
+--
+_ = c._transport.perform_request(nil, nil, 'inject', '\x80')
+c.state
+while not c:is_connected() do fiber.sleep(0.01) end
+c:ping()
+
+s:drop()
+c:close()
+
+--
+-- Test a case, when netbox can not connect first time, but
+-- reconnect_after is set.
+--
+c = net.connect('localhost:33333', {reconnect_after = 0.1, wait_connected = false})
+while c.state ~= 'error_reconnect' do fiber.sleep(0.01) end
+c:close()
+
+box.schema.user.revoke('guest', 'read,write,execute', 'universe')
+c.state
+c = nil
+
+--
+-- gh-3256 net.box is_nullable and collation options output
+--
+space = box.schema.create_space('test')
+box.schema.user.grant('guest', 'read,write,execute', 'universe')
+_ = space:create_index('pk')
+_ = space:create_index('sk', {parts = {{2, 'unsigned', is_nullable = true}}})
+c = net:connect(box.cfg.listen)
+c.space.test.index.sk.parts
+space:drop()
+
+space = box.schema.create_space('test')
+box.internal.collation.create('test', 'ICU', 'ru-RU')
+_ = space:create_index('sk', { type = 'tree', parts = {{1, 'str', collation = 'test'}}, unique = true })
+c:reload_schema()
+c.space.test.index.sk.parts
+c:close()
+box.internal.collation.drop('test')
+space:drop()
+c.state
+c = nil
+
+--
+-- gh-3107: fiber-async netbox.
+--
+cond = nil
+function long_function(...) cond = fiber.cond() cond:wait() return ... end
+function finalize_long() while not cond do fiber.sleep(0.01) end cond:signal() cond = nil end
+s = box.schema.create_space('test')
+pk = s:create_index('pk')
+s:replace{1}
+s:replace{2}
+s:replace{3}
+s:replace{4}
+c = net:connect(box.cfg.listen)
+--
+-- Check long connections, multiple wait_result().
+--
+future = c:call('long_function', {1, 2, 3}, {is_async = true})
+future:result()
+future:is_ready()
+future:wait_result(0.01) -- Must fail on timeout.
+finalize_long()
+ret = future:wait_result(100)
+future:is_ready()
+-- Any timeout is ok - response is received already.
+future:wait_result(0)
+future:wait_result(0.01)
+ret
+
+_, err = pcall(future.wait_result, future, true)
+err:find('Usage') ~= nil
+_, err = pcall(future.wait_result, future, '100')
+err:find('Usage') ~= nil
+
+--
+-- Check infinity timeout.
+--
+ret = nil
+_ = fiber.create(function() ret = c:call('long_function', {1, 2, 3}, {is_async = true}):wait_result() end)
+finalize_long()
+while not ret do fiber.sleep(0.01) end
+ret
+
+future = c:eval('return long_function(...)', {1, 2, 3}, {is_async = true})
+future:result()
+future:wait_result(0.01) -- Must fail on timeout.
+finalize_long()
+future:wait_result(100)
+
+--
+-- Ensure the request is garbage collected both if is not used and
+-- if is.
+--
+gc_test = setmetatable({}, {__mode = 'v'})
+gc_test.future = c:call('long_function', {1, 2, 3}, {is_async = true})
+gc_test.future ~= nil
+collectgarbage()
+gc_test
+finalize_long()
+
+future = c:call('long_function', {1, 2, 3}, {is_async = true})
+collectgarbage()
+future ~= nil
+finalize_long()
+future:wait_result(1000)
+collectgarbage()
+future ~= nil
+gc_test.future = future
+future = nil
+collectgarbage()
+gc_test
+
+--
+-- Ensure a request can be finalized from non-caller fibers.
+--
+future = c:call('long_function', {1, 2, 3}, {is_async = true})
+ret = {}
+count = 0
+for i = 1, 10 do fiber.create(function() ret[i] = future:wait_result(1000) count = count + 1 end) end
+future:wait_result(0.01) -- Must fail on timeout.
+finalize_long()
+while count ~= 10 do fiber.sleep(0.1) end
+ret
+
+--
+-- Test space methods.
+--
+future = c.space.test:select({1}, {is_async = true})
+ret = future:wait_result(100)
+ret
+type(ret[1])
+future = c.space.test:insert({5}, {is_async = true})
+future:wait_result(100)
+s:get{5}
+future = c.space.test:replace({6}, {is_async = true})
+future:wait_result(100)
+s:get{6}
+future = c.space.test:delete({6}, {is_async = true})
+future:wait_result(100)
+s:get{6}
+future = c.space.test:update({5}, {{'=', 2, 5}}, {is_async = true})
+future:wait_result(100)
+s:get{5}
+future = c.space.test:upsert({5}, {{'=', 2, 6}}, {is_async = true})
+future:wait_result(100)
+s:get{5}
+future = c.space.test:get({5}, {is_async = true})
+future:wait_result(100)
+
+--
+-- Test index methods.
+--
+future = c.space.test.index.pk:select({1}, {is_async = true})
+future:wait_result(100)
+future = c.space.test.index.pk:get({2}, {is_async = true})
+future:wait_result(100)
+future = c.space.test.index.pk:min({}, {is_async = true})
+future:wait_result(100)
+future = c.space.test.index.pk:max({}, {is_async = true})
+future:wait_result(100)
+future = c.space.test.index.pk:count({3}, {is_async = true})
+future:wait_result(100)
+future = c.space.test.index.pk:delete({3}, {is_async = true})
+future:wait_result(100)
+s:get{3}
+future = c.space.test.index.pk:update({4}, {{'=', 2, 6}}, {is_async = true})
+future:wait_result(100)
+s:get{4}
+
+--
+-- Test async errors.
+--
+future = c.space.test:insert({1}, {is_async = true})
+future:wait_result()
+future:result()
+
+--
+-- Test discard.
+--
+future = c:call('long_function', {1, 2, 3}, {is_async = true})
+future:discard()
+finalize_long()
+future:result()
+future:wait_result(100)
+
+--
+-- Test closed connection.
+--
+future = c:call('long_function', {1, 2, 3}, {is_async = true})
+finalize_long()
+future:wait_result(100)
+future2 = c:call('long_function', {1, 2, 3}, {is_async = true})
+c:close()
+future2:wait_result(100)
+future2:result()
+future2:discard()
+-- Already successful result must be available.
+future:wait_result(100)
+future:result()
+future:is_ready()
+finalize_long()
+
+--
+-- Test reconnect.
+--
+c = net:connect(box.cfg.listen, {reconnect_after = 0.01})
+future = c:call('long_function', {1, 2, 3}, {is_async = true})
+_ = c._transport.perform_request(nil, nil, 'inject', '\x80')
+while not c:is_connected() do fiber.sleep(0.01) end
+finalize_long()
+future:wait_result(100)
+future:result()
+future = c:call('long_function', {1, 2, 3}, {is_async = true})
+finalize_long()
+future:wait_result(100)
+
+--
+-- Test raw response getting.
+--
+ibuf = require('buffer').ibuf()
+future = c:call('long_function', {1, 2, 3}, {is_async = true, buffer = ibuf})
+finalize_long()
+future:wait_result(100)
+result, ibuf.rpos = msgpack.decode_unchecked(ibuf.rpos)
+result
+
+--
+-- Test async schema version change.
+--
+function change_schema(i) local tmp = box.schema.create_space('test'..i) return 'ok' end
+future1 = c:call('change_schema', {'1'}, {is_async = true})
+future2 = c:call('change_schema', {'2'}, {is_async = true})
+future3 = c:call('change_schema', {'3'}, {is_async = true})
+future1:wait_result()
+future2:wait_result()
+future3:wait_result()
+
+c:close()
+s:drop()
+box.space.test1:drop()
+box.space.test2:drop()
+box.space.test3:drop()
+
+box.schema.user.revoke('guest', 'read,write,execute', 'universe')

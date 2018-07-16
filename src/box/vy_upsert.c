@@ -50,42 +50,6 @@ vy_update_alloc(void *arg, size_t size)
 }
 
 /**
- * vinyl wrapper of tuple_upsert_execute.
- * vibyl upsert opts are slightly different from tarantool ops,
- *  so they need some preparation before tuple_upsert_execute call.
- *  The function does this preparation.
- * On successfull upsert the result is placed into stmt and stmt_end args.
- * On fail the stmt and stmt_end args are not changed.
- * Possibly allocates new stmt via fiber region alloc,
- * so call fiber_gc() after usage
- */
-static void
-vy_apply_upsert_ops(struct region *region, const char **stmt,
-		    const char **stmt_end, const char *ops, const char *ops_end,
-		    bool suppress_error, uint64_t *column_mask)
-{
-	if (ops == ops_end)
-		return;
-
-#ifndef NDEBUG
-	const char *serie_end_must_be = ops;
-	mp_next(&serie_end_must_be);
-	assert(ops_end == serie_end_must_be);
-#endif
-	const char *result;
-	uint32_t size;
-	result = tuple_upsert_execute(vy_update_alloc, region,
-				      ops, ops_end,
-				      *stmt, *stmt_end,
-				      &size, 0, suppress_error, column_mask);
-	if (result != NULL) {
-		/* if failed, just skip it and leave stmt the same */
-		*stmt = result;
-		*stmt_end = result + size;
-	}
-}
-
-/**
  * Try to squash two upsert series (msgspacked index_base + ops)
  * Try to create a tuple with squahed operations
  *
@@ -125,7 +89,7 @@ vy_upsert_try_to_squash(struct tuple_format *format, struct region *region,
 struct tuple *
 vy_apply_upsert(const struct tuple *new_stmt, const struct tuple *old_stmt,
 		const struct key_def *cmp_def, struct tuple_format *format,
-		struct tuple_format *upsert_format, bool suppress_error)
+		bool suppress_error)
 {
 	/*
 	 * old_stmt - previous (old) version of stmt
@@ -140,7 +104,7 @@ vy_apply_upsert(const struct tuple *new_stmt, const struct tuple *old_stmt,
 		/*
 		 * INSERT case: return new stmt.
 		 */
-		return vy_stmt_replace_from_upsert(format, new_stmt);
+		return vy_stmt_replace_from_upsert(new_stmt);
 	}
 
 	/*
@@ -165,8 +129,11 @@ vy_apply_upsert(const struct tuple *new_stmt, const struct tuple *old_stmt,
 	size_t region_svp = region_used(region);
 	uint8_t old_type = vy_stmt_type(old_stmt);
 	uint64_t column_mask = COLUMN_MASK_FULL;
-	vy_apply_upsert_ops(region, &result_mp, &result_mp_end, new_ops,
-			    new_ops_end, suppress_error, &column_mask);
+	result_mp = tuple_upsert_execute(vy_update_alloc, region, new_ops,
+					 new_ops_end, result_mp, result_mp_end,
+					 &mp_size, 0, suppress_error,
+					 &column_mask);
+	result_mp_end = result_mp + mp_size;
 	if (old_type != IPROTO_UPSERT) {
 		assert(old_type == IPROTO_INSERT ||
 		       old_type == IPROTO_REPLACE);
@@ -195,7 +162,7 @@ vy_apply_upsert(const struct tuple *new_stmt, const struct tuple *old_stmt,
 	 * UPSERT + UPSERT case: combine operations
 	 */
 	assert(old_ops_end - old_ops > 0);
-	if (vy_upsert_try_to_squash(upsert_format, region,
+	if (vy_upsert_try_to_squash(format, region,
 				    result_mp, result_mp_end,
 				    old_ops, old_ops_end,
 				    new_ops, new_ops_end,
@@ -226,8 +193,8 @@ vy_apply_upsert(const struct tuple *new_stmt, const struct tuple *old_stmt,
 	operations[0].iov_base = (void *)ops_buf;
 	operations[0].iov_len = header - ops_buf;
 
-	result_stmt = vy_stmt_new_upsert(upsert_format, result_mp,
-					 result_mp_end, operations, 3);
+	result_stmt = vy_stmt_new_upsert(format, result_mp, result_mp_end,
+					 operations, 3);
 	region_truncate(region, region_svp);
 	if (result_stmt == NULL)
 		return NULL;
@@ -244,8 +211,7 @@ check_key:
 		 * @retval the old stmt.
 		 */
 		tuple_unref(result_stmt);
-		result_stmt = vy_stmt_dup(old_stmt, old_type == IPROTO_UPSERT ?
-						    upsert_format : format);
+		result_stmt = vy_stmt_dup(old_stmt);
 	}
 	return result_stmt;
 }

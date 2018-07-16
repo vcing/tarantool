@@ -890,6 +890,12 @@ memtx_engine_memory_stat(struct engine *engine, struct engine_memory_stat *stat)
 	stat->index += index_stats.totals.used;
 }
 
+static void
+memtx_engine_reset_stat(struct engine *engine)
+{
+	(void)engine;
+}
+
 static int
 memtx_engine_check_space_def(struct space_def *def)
 {
@@ -918,6 +924,7 @@ static const struct engine_vtab memtx_engine_vtab = {
 	/* .collect_garbage = */ memtx_engine_collect_garbage,
 	/* .backup = */ memtx_engine_backup,
 	/* .memory_stat = */ memtx_engine_memory_stat,
+	/* .reset_stat = */ memtx_engine_reset_stat,
 	/* .check_space_def = */ memtx_engine_check_space_def,
 };
 
@@ -1054,4 +1061,93 @@ memtx_index_extent_reserve(int num)
 		memtx_index_num_reserved_extents++;
 	}
 	return 0;
+}
+
+void
+memtx_index_prune(struct index *index)
+{
+	if (index->def->iid > 0)
+		return;
+
+	/*
+	 * Tuples stored in a memtx space are referenced by the
+	 * primary index so when the primary index is dropped we
+	 * should delete them.
+	 */
+	struct iterator *it = index_create_iterator(index, ITER_ALL, NULL, 0);
+	if (it == NULL)
+		goto fail;
+	int rc;
+	struct tuple *tuple;
+	while ((rc = iterator_next(it, &tuple)) == 0 && tuple != NULL)
+		tuple_unref(tuple);
+	iterator_delete(it);
+	if (rc != 0)
+		goto fail;
+
+	return;
+fail:
+	/*
+	 * This function is called after WAL write so we have no
+	 * other choice but panic in case of any error. The good
+	 * news is memtx iterators do not fail so we should not
+	 * normally get here.
+	 */
+	diag_log();
+	unreachable();
+	panic("failed to drop index");
+}
+
+void
+memtx_index_abort_create(struct index *index)
+{
+	memtx_index_prune(index);
+}
+
+void
+memtx_index_commit_drop(struct index *index)
+{
+	memtx_index_prune(index);
+}
+
+bool
+memtx_index_def_change_requires_rebuild(struct index *index,
+					const struct index_def *new_def)
+{
+	struct index_def *old_def = index->def;
+
+	assert(old_def->iid == new_def->iid);
+	assert(old_def->space_id == new_def->space_id);
+
+	if (old_def->type != new_def->type)
+		return true;
+	if (!old_def->opts.is_unique && new_def->opts.is_unique)
+		return true;
+
+	const struct key_def *old_cmp_def, *new_cmp_def;
+	if (index_depends_on_pk(index)) {
+		old_cmp_def = old_def->cmp_def;
+		new_cmp_def = new_def->cmp_def;
+	} else {
+		old_cmp_def = old_def->key_def;
+		new_cmp_def = new_def->key_def;
+	}
+
+	/*
+	 * Compatibility of field types is verified by CheckSpaceFormat
+	 * so it suffices to check that the new key definition indexes
+	 * the same set of fields in the same order.
+	 */
+	if (old_cmp_def->part_count != new_cmp_def->part_count)
+		return true;
+
+	for (uint32_t i = 0; i < new_cmp_def->part_count; i++) {
+		const struct key_part *old_part = &old_cmp_def->parts[i];
+		const struct key_part *new_part = &new_cmp_def->parts[i];
+		if (old_part->fieldno != new_part->fieldno)
+			return true;
+		if (old_part->coll != new_part->coll)
+			return true;
+	}
+	return false;
 }

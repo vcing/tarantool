@@ -1,3 +1,5 @@
+#ifndef TARANTOOL_SQL_SQLITELIMIT_H_INCLUDED
+#define TARANTOOL_SQL_SQLITELIMIT_H_INCLUDED
 /*
  * Copyright 2010-2017, Tarantool AUTHORS, please see AUTHORS file.
  *
@@ -33,6 +35,7 @@
  *
  * This file defines various limits of what SQLite can process.
  */
+#include "trivia/util.h"
 
 enum {
 	/*
@@ -71,6 +74,14 @@ enum {
  */
 #ifndef SQLITE_MAX_COLUMN
 #define SQLITE_MAX_COLUMN 2000
+#endif
+/*
+ * tt_static_buf() is used to store bitmask for used columns in a table during
+ * SQL parsing stage. The following statement checks if static buffer is big
+ * enough to store the bitmask.
+ */
+#if SQLITE_MAX_COLUMN > TT_STATIC_BUF_LEN * 8
+#error "Bitmask for used table columns cannot fit into static buffer"
 #endif
 
 /*
@@ -143,14 +154,6 @@ enum {
 #endif
 
 /*
- * The default number of frames to accumulate in the log file before
- * checkpointing the database in WAL mode.
- */
-#ifndef SQLITE_DEFAULT_WAL_AUTOCHECKPOINT
-#define SQLITE_DEFAULT_WAL_AUTOCHECKPOINT  1000
-#endif
-
-/*
  * The maximum number of attached databases.  This must be between 0
  * and 125.  The upper bound of 125 is because the attached databases are
  * counted using a signed 8-bit integer which has a maximum value of 127
@@ -185,3 +188,5 @@ enum {
  * 40 or stack guard will be triggered.
  */
 #define SQL_MAX_COMPILING_TRIGGERS 30
+
+#endif /* TARANTOOL_SQL_SQLITELIMIT_H_INCLUDED */

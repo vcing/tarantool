@@ -201,6 +201,20 @@ ssize_t
 box_index_count(uint32_t space_id, uint32_t index_id, int type,
 		const char *key, const char *key_end);
 
+/**
+ * Extract key from tuple according to key definition of given
+ * index. Returned buffer is allocated on box_txn_alloc() with
+ * this key.
+ * @param tuple Tuple from which need to extract key.
+ * @param space_id Space identifier.
+ * @param index_id Index identifier.
+ * @retval not NULL Success
+ * @retval     NULL Memory Allocation error
+ */
+char *
+box_tuple_extract_key(const box_tuple_t *tuple, uint32_t space_id,
+		      uint32_t index_id, uint32_t *key_size);
+
 /** \endcond public */
 
 /**
@@ -343,6 +357,19 @@ struct index_vtab {
 	 */
 	void (*commit_create)(struct index *index, int64_t signature);
 	/**
+	 * Called if index creation failed, either due to
+	 * WAL write error or build error.
+	 */
+	void (*abort_create)(struct index *index);
+	/**
+	 * Called after WAL write to comit index definition update.
+	 * Must not fail.
+	 *
+	 * @signature is the LSN that was assigned to the row
+	 * that modified the index.
+	 */
+	void (*commit_modify)(struct index *index, int64_t signature);
+	/**
 	 * Called after WAL write to commit index drop.
 	 * Must not fail.
 	 */
@@ -352,6 +379,18 @@ struct index_vtab {
 	 * require index rebuild.
 	 */
 	void (*update_def)(struct index *);
+	/**
+	 * Return true if the index depends on the primary
+	 * key definition and hence needs to be updated if
+	 * the primary key is modified.
+	 */
+	bool (*depends_on_pk)(struct index *);
+	/**
+	 * Return true if the change of index definition
+	 * cannot be done without rebuild.
+	 */
+	bool (*def_change_requires_rebuild)(struct index *index,
+					    const struct index_def *new_def);
 
 	ssize_t (*size)(struct index *);
 	ssize_t (*bsize)(struct index *);
@@ -379,6 +418,8 @@ struct index_vtab {
 	struct snapshot_iterator *(*create_snapshot_iterator)(struct index *);
 	/** Introspection (index:info()) */
 	void (*info)(struct index *, struct info_handler *);
+	/** Reset all incremental statistic counters. */
+	void (*reset_stat)(struct index *);
 	/**
 	 * Two-phase index creation: begin building, add tuples, finish.
 	 */
@@ -459,6 +500,18 @@ index_commit_create(struct index *index, int64_t signature)
 }
 
 static inline void
+index_abort_create(struct index *index)
+{
+	index->vtab->abort_create(index);
+}
+
+static inline void
+index_commit_modify(struct index *index, int64_t signature)
+{
+	index->vtab->commit_modify(index, signature);
+}
+
+static inline void
 index_commit_drop(struct index *index)
 {
 	index->vtab->commit_drop(index);
@@ -468,6 +521,19 @@ static inline void
 index_update_def(struct index *index)
 {
 	index->vtab->update_def(index);
+}
+
+static inline bool
+index_depends_on_pk(struct index *index)
+{
+	return index->vtab->depends_on_pk(index);
+}
+
+static inline bool
+index_def_change_requires_rebuild(struct index *index,
+				  const struct index_def *new_def)
+{
+	return index->vtab->def_change_requires_rebuild(index, new_def);
 }
 
 static inline ssize_t
@@ -544,6 +610,12 @@ index_info(struct index *index, struct info_handler *handler)
 }
 
 static inline void
+index_reset_stat(struct index *index)
+{
+	index->vtab->reset_stat(index);
+}
+
+static inline void
 index_begin_build(struct index *index)
 {
 	index->vtab->begin_build(index);
@@ -571,8 +643,11 @@ index_end_build(struct index *index)
  * Virtual method stubs.
  */
 void generic_index_commit_create(struct index *, int64_t);
+void generic_index_abort_create(struct index *);
+void generic_index_commit_modify(struct index *, int64_t);
 void generic_index_commit_drop(struct index *);
 void generic_index_update_def(struct index *);
+bool generic_index_depends_on_pk(struct index *);
 ssize_t generic_index_size(struct index *);
 int generic_index_min(struct index *, const char *, uint32_t, struct tuple **);
 int generic_index_max(struct index *, const char *, uint32_t, struct tuple **);
@@ -584,6 +659,7 @@ int generic_index_replace(struct index *, struct tuple *, struct tuple *,
 			  enum dup_replace_mode, struct tuple **);
 struct snapshot_iterator *generic_index_create_snapshot_iterator(struct index *);
 void generic_index_info(struct index *, struct info_handler *);
+void generic_index_reset_stat(struct index *);
 void generic_index_begin_build(struct index *);
 int generic_index_reserve(struct index *, uint32_t);
 int generic_index_build_next(struct index *, struct tuple *);

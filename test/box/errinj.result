@@ -12,7 +12,11 @@ index = space:create_index('primary', { type = 'hash' })
 ...
 errinj.info()
 ---
-- ERRINJ_WAL_WRITE:
+- ERRINJ_VY_RUN_WRITE_STMT_TIMEOUT:
+    state: 0
+  ERRINJ_WAL_WRITE:
+    state: false
+  ERRINJ_HTTPC_EXECUTE:
     state: false
   ERRINJ_VYRUN_DATA_READ:
     state: false
@@ -30,6 +34,8 @@ errinj.info()
     state: false
   ERRINJ_VYRUN_INDEX_GARBAGE:
     state: false
+  ERRINJ_VY_DELAY_PK_LOOKUP:
+    state: false
   ERRINJ_VY_TASK_COMPLETE:
     state: false
   ERRINJ_PORT_DUMP:
@@ -43,41 +49,45 @@ errinj.info()
   ERRINJ_RELAY_REPORT_INTERVAL:
     state: 0
   ERRINJ_VY_READ_PAGE_TIMEOUT:
-    state: false
+    state: 0
   ERRINJ_XLOG_META:
     state: false
   ERRINJ_WAL_WRITE_DISK:
     state: false
   ERRINJ_VY_RUN_WRITE:
     state: false
+  ERRINJ_BUILD_INDEX:
+    state: -1
   ERRINJ_RELAY_FINAL_SLEEP:
     state: false
   ERRINJ_VY_RUN_DISCARD:
     state: false
   ERRINJ_WAL_ROTATE:
     state: false
+  ERRINJ_LOG_ROTATE:
+    state: false
   ERRINJ_RELAY_EXIT_DELAY:
     state: 0
+  ERRINJ_IPROTO_TX_DELAY:
+    state: false
   ERRINJ_VY_POINT_ITER_WAIT:
     state: false
   ERRINJ_TUPLE_FIELD:
     state: false
-  ERRINJ_INDEX_ALLOC:
-    state: false
   ERRINJ_XLOG_GARBAGE:
     state: false
-  ERRINJ_VY_RUN_WRITE_TIMEOUT:
-    state: 0
+  ERRINJ_INDEX_ALLOC:
+    state: false
   ERRINJ_RELAY_TIMEOUT:
     state: 0
   ERRINJ_TESTING:
     state: false
-  ERRINJ_VY_LOG_FLUSH:
-    state: false
+  ERRINJ_VY_RUN_WRITE_TIMEOUT:
+    state: 0
   ERRINJ_VY_SQUASH_TIMEOUT:
     state: 0
-  ERRINJ_BUILD_SECONDARY:
-    state: -1
+  ERRINJ_VY_LOG_FLUSH:
+    state: false
   ERRINJ_VY_INDEX_DUMP:
     state: -1
 ...
@@ -196,18 +206,6 @@ space:get{1}
 ...
 space:get{2}
 ---
-...
-errinj.set("ERRINJ_WAL_ROTATE", true)
----
-- ok
-...
-space:truncate()
----
-- error: Failed to write to disk
-...
-errinj.set("ERRINJ_WAL_ROTATE", false)
----
-- ok
 ...
 space:truncate()
 ---
@@ -451,10 +449,6 @@ box.commit();
 errinj.set("ERRINJ_TUPLE_ALLOC", false);
 ---
 - ok
-...
-s:select{};
----
-- []
 ...
 box.rollback();
 ---
@@ -955,13 +949,13 @@ i3:select{}
   - [2, 3, 1, 2, 10, 10]
   - [1, 4, 3, 4, 10, 10]
 ...
-box.error.injection.set('ERRINJ_BUILD_SECONDARY', i2.id)
+box.error.injection.set('ERRINJ_BUILD_INDEX', i2.id)
 ---
 - ok
 ...
 i1:alter{parts = {3, "unsigned"}}
 ---
-- error: Error injection 'buildSecondaryKey'
+- error: Error injection 'build index'
 ...
 _ = collectgarbage('collect')
 ---
@@ -987,13 +981,13 @@ i3:select{}
   - [2, 3, 1, 2, 10, 10]
   - [1, 4, 3, 4, 10, 10]
 ...
-box.error.injection.set('ERRINJ_BUILD_SECONDARY', i3.id)
+box.error.injection.set('ERRINJ_BUILD_INDEX', i3.id)
 ---
 - ok
 ...
 i1:alter{parts = {4, "unsigned"}}
 ---
-- error: Error injection 'buildSecondaryKey'
+- error: Error injection 'build index'
 ...
 _ = collectgarbage('collect')
 ---
@@ -1019,7 +1013,7 @@ i3:select{}
   - [2, 3, 1, 2, 10, 10]
   - [1, 4, 3, 4, 10, 10]
 ...
-box.error.injection.set('ERRINJ_BUILD_SECONDARY', -1)
+box.error.injection.set('ERRINJ_BUILD_INDEX', -1)
 ---
 - ok
 ...
@@ -1043,16 +1037,270 @@ s:replace{1, 1}
 ---
 - [1, 1]
 ...
-box.error.injection.set('ERRINJ_BUILD_SECONDARY', sk.id)
+box.error.injection.set('ERRINJ_BUILD_INDEX', sk.id)
 ---
 - ok
 ...
 sk:alter({parts = {2, 'number'}})
 ---
 ...
-box.error.injection.set('ERRINJ_BUILD_SECONDARY', -1)
+box.error.injection.set('ERRINJ_BUILD_INDEX', -1)
 ---
 - ok
+...
+s:drop()
+---
+...
+--
+-- gh-3255: iproto can crash and discard responses, if a network
+-- is saturated, and DML yields too long on commit.
+--
+box.schema.user.grant('guest', 'read,write,execute', 'universe')
+---
+...
+s = box.schema.space.create('test')
+---
+...
+_ = s:create_index('pk')
+---
+...
+c = net_box.connect(box.cfg.listen)
+---
+...
+ch = fiber.channel(200)
+---
+...
+errinj.set("ERRINJ_IPROTO_TX_DELAY", true)
+---
+- ok
+...
+for i = 1, 100 do fiber.create(function() for j = 1, 10 do c.space.test:replace{1} end ch:put(true) end) end
+---
+...
+for i = 1, 100 do fiber.create(function() for j = 1, 10 do c.space.test:select() end ch:put(true) end) end
+---
+...
+for i = 1, 200 do ch:get() end
+---
+...
+errinj.set("ERRINJ_IPROTO_TX_DELAY", false)
+---
+- ok
+...
+s:drop()
+---
+...
+--
+-- gh-3325: do not cancel already sent requests, when a schema
+-- change is detected.
+--
+s = box.schema.create_space('test')
+---
+...
+pk = s:create_index('pk')
+---
+...
+s:replace{1, 1}
+---
+- [1, 1]
+...
+cn = net_box.connect(box.cfg.listen)
+---
+...
+errinj.set("ERRINJ_WAL_DELAY", true)
+---
+- ok
+...
+ok = nil
+---
+...
+err = nil
+---
+...
+test_run:cmd('setopt delimiter ";"')
+---
+- true
+...
+f = fiber.create(function()
+  local str = 'box.space.test:create_index("sk", {parts = {{2, "integer"}}})'
+  ok, err = pcall(cn.eval, cn, str)
+end)
+test_run:cmd('setopt delimiter ""');
+---
+...
+cn.space.test:get{1}
+---
+- [1, 1]
+...
+errinj.set("ERRINJ_WAL_DELAY", false)
+---
+- ok
+...
+while ok == nil do fiber.sleep(0.01) end
+---
+...
+ok, err
+---
+- true
+- null
+...
+cn:close()
+---
+...
+s:drop()
+---
+...
+--
+-- If message memory pool is used up, stop the connection, until
+-- the pool has free memory.
+--
+started = 0
+---
+...
+finished = 0
+---
+...
+continue = false
+---
+...
+test_run:cmd('setopt delimiter ";"')
+---
+- true
+...
+function long_poll_f()
+    started = started + 1
+    f = fiber.self()
+    while not continue do fiber.sleep(0.01) end
+    finished = finished + 1
+end;
+---
+...
+test_run:cmd('setopt delimiter ""');
+---
+- true
+...
+cn = net_box.connect(box.cfg.listen)
+---
+...
+function long_poll() cn:call('long_poll_f') end
+---
+...
+_ = fiber.create(long_poll)
+---
+...
+while started ~= 1 do fiber.sleep(0.01) end
+---
+...
+-- Simulate OOM for new requests.
+errinj.set("ERRINJ_TESTING", true)
+---
+- ok
+...
+-- This request tries to allocate memory for request data and
+-- fails. This stops the connection until an existing
+-- request is finished.
+log = require('log')
+---
+...
+-- Fill the log with garbage to not accidentally read log messages
+-- produced by a previous test.
+log.info(string.rep('a', 1000))
+---
+...
+_ = fiber.create(long_poll)
+---
+...
+while not test_run:grep_log('default', 'can not allocate memory for a new message', 1000) do fiber.sleep(0.01) end
+---
+...
+test_run:grep_log('default', 'stopping input on connection', 1000) ~= nil
+---
+- true
+...
+started == 1
+---
+- true
+...
+continue = true
+---
+...
+errinj.set("ERRINJ_TESTING", false)
+---
+- ok
+...
+-- Ensure that when memory is available again, the pending
+-- request is executed.
+while finished ~= 2 do fiber.sleep(0.01) end
+---
+...
+cn:close()
+---
+...
+box.schema.user.revoke('guest', 'read,write,execute','universe')
+---
+...
+--
+-- gh-3289: drop/truncate leaves the space in inconsistent
+-- state if WAL write fails.
+--
+s = box.schema.space.create('test')
+---
+...
+_ = s:create_index('pk')
+---
+...
+for i = 1, 10 do s:replace{i} end
+---
+...
+errinj.set('ERRINJ_WAL_IO', true)
+---
+- ok
+...
+s:drop()
+---
+- error: Failed to write to disk
+...
+s:truncate()
+---
+- error: Failed to write to disk
+...
+s:drop()
+---
+- error: Failed to write to disk
+...
+s:truncate()
+---
+- error: Failed to write to disk
+...
+errinj.set('ERRINJ_WAL_IO', false)
+---
+- ok
+...
+for i = 1, 10 do s:replace{i + 10} end
+---
+...
+s:select()
+---
+- - [1]
+  - [2]
+  - [3]
+  - [4]
+  - [5]
+  - [6]
+  - [7]
+  - [8]
+  - [9]
+  - [10]
+  - [11]
+  - [12]
+  - [13]
+  - [14]
+  - [15]
+  - [16]
+  - [17]
+  - [18]
+  - [19]
+  - [20]
 ...
 s:drop()
 ---

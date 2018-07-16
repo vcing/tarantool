@@ -85,7 +85,7 @@ int sqlite3_open_file_count = 0;
 #if defined(SQLITE_TEST)
 int sqlite3_memdebug_vfs_oom_test = 1;
 #define DO_OS_MALLOC_TEST(x)                                       \
-  if (sqlite3_memdebug_vfs_oom_test && (!x || !sqlite3JournalIsInMemory(x))) { \
+  if (sqlite3_memdebug_vfs_oom_test && !x) { \
     void *pTstAlloc = sqlite3Malloc(10);                             \
     if (!pTstAlloc) return SQLITE_IOERR_NOMEM_BKPT;                  \
     sqlite3_free(pTstAlloc);                                         \
@@ -287,7 +287,7 @@ sqlite3OsOpen(sqlite3_vfs * pVfs,
 	DO_OS_MALLOC_TEST(0);
 	/* 0x87f7f is a mask of SQLITE_OPEN_ flags that are valid to be passed
 	 * down into the VFS layer.  Some SQLITE_OPEN_ flags (for example,
-	 * SQLITE_OPEN_FULLMUTEX or SQLITE_OPEN_SHAREDCACHE) are blocked before
+	 * SQLITE_OPEN_SHAREDCACHE) are blocked before
 	 * reaching the VFS.
 	 */
 	rc = pVfs->xOpen(pVfs, zPath, pFile, flags & 0x87f7f, pFlagsOut);
@@ -439,25 +439,17 @@ sqlite3_vfs *
 sqlite3_vfs_find(const char *zVfs)
 {
 	sqlite3_vfs *pVfs = 0;
-#if SQLITE_THREADSAFE
-	sqlite3_mutex *mutex;
-#endif
 #ifndef SQLITE_OMIT_AUTOINIT
 	int rc = sqlite3_initialize();
 	if (rc)
 		return 0;
 #endif
-#if SQLITE_THREADSAFE
-	mutex = sqlite3MutexAlloc(SQLITE_MUTEX_STATIC_MASTER);
-#endif
-	sqlite3_mutex_enter(mutex);
 	for (pVfs = vfsList; pVfs; pVfs = pVfs->pNext) {
 		if (zVfs == 0)
 			break;
 		if (strcmp(zVfs, pVfs->zName) == 0)
 			break;
 	}
-	sqlite3_mutex_leave(mutex);
 	return pVfs;
 }
 
@@ -467,8 +459,6 @@ sqlite3_vfs_find(const char *zVfs)
 static void
 vfsUnlink(sqlite3_vfs * pVfs)
 {
-	assert(sqlite3_mutex_held
-	       (sqlite3MutexAlloc(SQLITE_MUTEX_STATIC_MASTER)));
 	if (pVfs == 0) {
 		/* No-op */
 	} else if (vfsList == pVfs) {
@@ -492,8 +482,6 @@ vfsUnlink(sqlite3_vfs * pVfs)
 int
 sqlite3_vfs_register(sqlite3_vfs * pVfs, int makeDflt)
 {
-	MUTEX_LOGIC(sqlite3_mutex * mutex;
-	    )
 #ifndef SQLITE_OMIT_AUTOINIT
 	int rc = sqlite3_initialize();
 	if (rc)
@@ -504,9 +492,6 @@ sqlite3_vfs_register(sqlite3_vfs * pVfs, int makeDflt)
 		return SQLITE_MISUSE_BKPT;
 #endif
 
-	MUTEX_LOGIC(mutex = sqlite3MutexAlloc(SQLITE_MUTEX_STATIC_MASTER);
-	    )
-	    sqlite3_mutex_enter(mutex);
 	vfsUnlink(pVfs);
 	if (makeDflt || vfsList == 0) {
 		pVfs->pNext = vfsList;
@@ -516,7 +501,6 @@ sqlite3_vfs_register(sqlite3_vfs * pVfs, int makeDflt)
 		vfsList->pNext = pVfs;
 	}
 	assert(vfsList);
-	sqlite3_mutex_leave(mutex);
 	return SQLITE_OK;
 }
 
@@ -526,11 +510,6 @@ sqlite3_vfs_register(sqlite3_vfs * pVfs, int makeDflt)
 int
 sqlite3_vfs_unregister(sqlite3_vfs * pVfs)
 {
-#if SQLITE_THREADSAFE
-	sqlite3_mutex *mutex = sqlite3MutexAlloc(SQLITE_MUTEX_STATIC_MASTER);
-#endif
-	sqlite3_mutex_enter(mutex);
 	vfsUnlink(pVfs);
-	sqlite3_mutex_leave(mutex);
 	return SQLITE_OK;
 }

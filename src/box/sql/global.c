@@ -189,36 +189,19 @@ const unsigned char sqlite3CtypeMap[256] = {
 #define SQLITE_SORTER_PMASZ 250
 #endif
 
-/* Statement journals spill to disk when their size exceeds the following
- * threshold (in bytes). 0 means that statement journals are created and
- * written to disk immediately (the default behavior for SQLite versions
- * before 3.12.0).  -1 means always keep the entire statement journal in
- * memory.  (The statement journal is also always held entirely in memory
- * if journal_mode=MEMORY or if temp_store=MEMORY, regardless of this
- * setting.)
- */
-#ifndef SQLITE_STMTJRNL_SPILL
-#define SQLITE_STMTJRNL_SPILL (64*1024)
-#endif
-
 /*
  * The following singleton contains the global configuration for
  * the SQLite library.
  */
 SQLITE_WSD struct Sqlite3Config sqlite3Config = {
 	SQLITE_DEFAULT_MEMSTATUS,	/* bMemstat */
-	1,			/* bCoreMutex */
-	SQLITE_THREADSAFE == 1,	/* bFullMutex */
 	SQLITE_USE_URI,		/* bOpenUri */
 	SQLITE_ALLOW_COVERING_INDEX_SCAN,	/* bUseCis */
 	0x7ffffffe,		/* mxStrlen */
 	0,			/* neverCorrupt */
 	512,			/* szLookaside */
 	125,			/* nLookaside */
-	SQLITE_STMTJRNL_SPILL,	/* nStmtSpill */
-	{0, 0, 0, 0, 0, 0, 0, 0},	/* m */
-	{0, 0, 0, 0, 0, 0, 0, 0, 0},	/* mutex */
-	{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},	/* pcache2 */
+	0,			/* nStmtSpill */
 	(void *)0,		/* pHeap */
 	0,			/* nHeap */
 	0, 0,			/* mnHeap, mxHeap */
@@ -236,10 +219,7 @@ SQLITE_WSD struct Sqlite3Config sqlite3Config = {
 	/* All the rest should always be initialized to zero */
 	0,			/* isInit */
 	0,			/* inProgress */
-	0,			/* isMutexInit */
 	0,			/* isMallocInit */
-	0,			/* nRefInitMutex */
-	0,			/* pInitMutex */
 	0,			/* xLog */
 	0,			/* pLogArg */
 #ifdef SQLITE_ENABLE_SQLLOG

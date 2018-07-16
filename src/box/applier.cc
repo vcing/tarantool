@@ -47,6 +47,7 @@
 #include "xrow_io.h"
 #include "error.h"
 #include "session.h"
+#include "cfg.h"
 
 STRS(applier_state, applier_STATE);
 
@@ -98,6 +99,11 @@ applier_log_error(struct applier *applier, struct error *e)
 
 /*
  * Fiber function to write vclock to replication master.
+ * To track connection status, replica answers master
+ * with encoded vclock. In addition to DML requests,
+ * master also sends heartbeat messages every
+ * replication_timeout seconds (introduced in 1.7.7).
+ * On such requests replica also responds with vclock.
  */
 static int
 applier_writer_f(va_list ap)
@@ -106,10 +112,18 @@ applier_writer_f(va_list ap)
 	struct ev_io io;
 	coio_create(&io, applier->io.fd);
 
-	/* Re-connect loop */
 	while (!fiber_is_cancelled()) {
-		fiber_cond_wait_timeout(&applier->writer_cond,
-					replication_timeout);
+		/*
+		 * Tarantool >= 1.7.7 sends periodic heartbeat
+		 * messages so we don't need to send ACKs every
+		 * replication_timeout seconds any more.
+		 */
+		if (applier->version_id >= version_id(1, 7, 7))
+			fiber_cond_wait_timeout(&applier->writer_cond,
+						TIMEOUT_INFINITY);
+		else
+			fiber_cond_wait_timeout(&applier->writer_cond,
+						replication_timeout);
 		/* Send ACKs only when in FOLLOW mode ,*/
 		if (applier->state != APPLIER_SYNC &&
 		    applier->state != APPLIER_FOLLOW)
@@ -210,7 +224,8 @@ applier_connect(struct applier *applier)
 		if (row.type != IPROTO_OK)
 			xrow_decode_error_xc(&row);
 		vclock_create(&applier->vclock);
-		xrow_decode_vclock_xc(&row, &applier->vclock);
+		xrow_decode_request_vote_xc(&row, &applier->vclock,
+					    &applier->remote_is_ro);
 	}
 
 	applier_set_state(applier, APPLIER_CONNECTED);
@@ -292,7 +307,7 @@ applier_join(struct applier *applier)
 				 * server is 1.6. Since we have
 				 * not initialized replication
 				 * vclock yet, do it now. In 1.7+
-				 * this vlcock is not used.
+				 * this vclock is not used.
 				 */
 				xrow_decode_vclock_xc(&row, &replicaset.vclock);
 			}
@@ -357,6 +372,7 @@ applier_subscribe(struct applier *applier)
 	struct ev_io *coio = &applier->io;
 	struct ibuf *ibuf = &applier->ibuf;
 	struct xrow_header row;
+	struct vclock remote_vclock_at_subscribe;
 
 	xrow_encode_subscribe_xc(&row, &REPLICASET_UUID, &INSTANCE_UUID,
 				 &replicaset.vclock);
@@ -398,9 +414,8 @@ applier_subscribe(struct applier *applier)
 		 * In case of successful subscribe, the server
 		 * responds with its current vclock.
 		 */
-		struct vclock vclock;
-		vclock_create(&vclock);
-		xrow_decode_vclock_xc(&row, &vclock);
+		vclock_create(&remote_vclock_at_subscribe);
+		xrow_decode_vclock_xc(&row, &remote_vclock_at_subscribe);
 	}
 	/**
 	 * Tarantool < 1.6.7:
@@ -439,13 +454,31 @@ applier_subscribe(struct applier *applier)
 			applier_set_state(applier, APPLIER_FOLLOW);
 		}
 
+		/*
+		 * Stay 'orphan' until appliers catch up with
+		 * the remote vclock at the time of SUBSCRIBE
+		 * and the lag is less than configured.
+		 */
 		if (applier->state == APPLIER_SYNC &&
-		    applier->lag <= replication_sync_lag) {
+		    applier->lag <= replication_sync_lag &&
+		    vclock_compare(&remote_vclock_at_subscribe,
+				   &replicaset.vclock) <= 0) {
 			/* Applier is synced, switch to "follow". */
 			applier_set_state(applier, APPLIER_FOLLOW);
 		}
 
-		coio_read_xrow(coio, ibuf, &row);
+		/*
+		 * Tarantool < 1.7.7 does not send periodic heartbeat
+		 * messages so we can't assume that if we haven't heard
+		 * from the master for quite a while the connection is
+		 * broken - the master might just be idle.
+		 */
+		if (applier->version_id < version_id(1, 7, 7)) {
+			coio_read_xrow(coio, ibuf, &row);
+		} else {
+			double timeout = replication_disconnect_timeout();
+			coio_read_xrow_timeout_xc(coio, ibuf, &row, timeout);
+		}
 
 		if (iproto_type_is_error(row.type))
 			xrow_decode_error_xc(&row);  /* error */
@@ -474,7 +507,19 @@ applier_subscribe(struct applier *applier)
 			 */
 			vclock_follow(&replicaset.vclock, row.replica_id,
 				      row.lsn);
-			xstream_write_xc(applier->subscribe_stream, &row);
+			if (xstream_write(applier->subscribe_stream, &row) != 0) {
+				struct error *e = diag_last_error(diag_get());
+				/**
+				 * Silently skip ER_TUPLE_FOUND error if such
+				 * option is set in config.
+				 */
+				if (e->type == &type_ClientError &&
+				    box_error_code(e) == ER_TUPLE_FOUND &&
+				    replication_skip_conflict)
+					diag_clear(diag_get());
+				else
+					diag_raise();
+			}
 		}
 		if (applier->state == APPLIER_SYNC ||
 		    applier->state == APPLIER_FOLLOW)

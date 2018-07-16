@@ -35,6 +35,8 @@
  */
 #include "sqliteInt.h"
 #include "box/session.h"
+#include "tarantoolInt.h"
+#include "box/schema.h"
 
 /*
  * The most recently coded instruction was an OP_Column to retrieve the
@@ -75,7 +77,14 @@ sqlite3ColumnDefault(Vdbe * v, Table * pTab, int i, int iReg)
 		Column *pCol = &pTab->aCol[i];
 		VdbeComment((v, "%s.%s", pTab->zName, pCol->zName));
 		assert(i < pTab->nCol);
-		sqlite3ValueFromExpr(sqlite3VdbeDb(v), pCol->pDflt,
+
+		Expr *expr = NULL;
+		struct space *space =
+			space_cache_find(SQLITE_PAGENO_TO_SPACEID(pTab->tnum));
+		if (space != NULL && space->def->fields != NULL)
+			expr = space->def->fields[i].default_value_expr;
+		sqlite3ValueFromExpr(sqlite3VdbeDb(v),
+				     expr,
 				     pCol->affinity, &pValue);
 		if (pValue) {
 			sqlite3VdbeAppendP4(v, pValue, P4_MEM);
@@ -121,7 +130,6 @@ sqlite3Update(Parse * pParse,		/* The parser context */
 				 */
 	u8 *aToOpen;		/* 1 for tables and indices to be opened */
 	u8 chngPk;		/* PRIMARY KEY changed */
-	AuthContext sContext;	/* The authorization context */
 	NameContext sNC;	/* The name-context to resolve expressions in */
 	int okOnePass;		/* True for one-pass algorithm without the FIFO */
 	int hasFK;		/* True if foreign key processing is required */
@@ -147,7 +155,6 @@ sqlite3Update(Parse * pParse,		/* The parser context */
 	int regOld = 0;		/* Content of OLD.* table in triggers */
 	int regKey = 0;		/* composite PRIMARY KEY value */
 
-	memset(&sContext, 0, sizeof(sContext));
 	db = pParse->db;
 	if (pParse->nErr || db->mallocFailed) {
 		goto update_cleanup;
@@ -165,7 +172,7 @@ sqlite3Update(Parse * pParse,		/* The parser context */
 	 */
 #ifndef SQLITE_OMIT_TRIGGER
 	pTrigger = sqlite3TriggersExist(pTab, TK_UPDATE, pChanges, &tmask);
-	isView = pTab->pSelect != 0;
+	isView = space_is_view(pTab);
 	assert(pTrigger || tmask == 0);
 #else
 #define pTrigger 0
@@ -222,9 +229,7 @@ sqlite3Update(Parse * pParse,		/* The parser context */
 
 	/* Resolve the column names in all the expressions of the
 	 * of the UPDATE statement.  Also find the column index
-	 * for each column to be updated in the pChanges array.  For each
-	 * column to be updated, make sure we have authorization to change
-	 * that column.
+	 * for each column to be updated in the pChanges array.
 	 */
 	chngPk = 0;
 	for (i = 0; i < pChanges->nExpr; i++) {
@@ -232,13 +237,17 @@ sqlite3Update(Parse * pParse,		/* The parser context */
 			goto update_cleanup;
 		}
 		for (j = 0; j < pTab->nCol; j++) {
-			if (strcmp
-			    (pTab->aCol[j].zName, pChanges->a[i].zName) == 0) {
-				if (pPk
-					   && (pTab->aCol[j].
-					       colFlags & COLFLAG_PRIMKEY) !=
-					   0) {
+			if (strcmp(pTab->aCol[j].zName,
+				   pChanges->a[i].zName) == 0) {
+				if (pPk && table_column_is_in_pk(pTab, j)) {
 					chngPk = 1;
+				}
+				if (aXRef[j] != -1) {
+					sqlite3ErrorMsg(pParse,
+							"set id list: duplicate"
+							" column name %s",
+							pChanges->a[i].zName);
+					goto update_cleanup;
 				}
 				aXRef[j] = i;
 				break;
@@ -250,21 +259,6 @@ sqlite3Update(Parse * pParse,		/* The parser context */
 			pParse->checkSchema = 1;
 			goto update_cleanup;
 		}
-#ifndef SQLITE_OMIT_AUTHORIZATION
-		{
-			int rc;
-			rc = sqlite3AuthCheck(pParse, SQLITE_UPDATE,
-					      pTab->zName,
-					      j <
-					      0 ? "ROWID" : pTab->aCol[j].zName,
-					      db->mdb.zDbSName);
-			if (rc == SQLITE_DENY) {
-				goto update_cleanup;
-			} else if (rc == SQLITE_IGNORE) {
-				aXRef[j] = -1;
-			}
-		}
-#endif
 	}
 	assert(chngPk == 0 || chngPk == 1);
 
@@ -284,16 +278,17 @@ sqlite3Update(Parse * pParse,		/* The parser context */
 	 */
 	for (j = 0, pIdx = pTab->pIndex; pIdx; pIdx = pIdx->pNext, j++) {
 		int reg;
+		int nIdxCol = index_column_count(pIdx);
 		if (chngPk || hasFK || pIdx->pPartIdxWhere || pIdx == pPk) {
 			reg = ++pParse->nMem;
-			pParse->nMem += pIdx->nColumn;
+			pParse->nMem += nIdxCol;
 		} else {
 			reg = 0;
-			for (i = 0; i < pIdx->nKeyCol; i++) {
+			for (i = 0; i < nIdxCol; i++) {
 				i16 iIdxCol = pIdx->aiColumn[i];
 				if (iIdxCol < 0 || aXRef[iIdxCol] >= 0) {
 					reg = ++pParse->nMem;
-					pParse->nMem += pIdx->nColumn;
+					pParse->nMem += nIdxCol;
 					break;
 				}
 			}
@@ -309,7 +304,7 @@ sqlite3Update(Parse * pParse,		/* The parser context */
 		goto update_cleanup;
 	if (pParse->nested == 0)
 		sqlite3VdbeCountChanges(v);
-	sqlite3BeginWriteOperation(pParse, 1);
+	sql_set_multi_write(pParse, true);
 
 	/* Allocate required registers. */
 	regOldPk = regNewPk = ++pParse->nMem;
@@ -323,11 +318,6 @@ sqlite3Update(Parse * pParse,		/* The parser context */
 	}
 	regNew = pParse->nMem + 1;
 	pParse->nMem += pTab->nCol;
-
-	/* Start the view context. */
-	if (isView) {
-		sqlite3AuthContextPush(pParse, &sContext, pTab->zName);
-	}
 
 	/* If we are trying to update a view, realize that view into
 	 * an ephemeral table.
@@ -359,7 +349,7 @@ sqlite3Update(Parse * pParse,		/* The parser context */
 		nPk = nKey;
 	} else {
 		assert(pPk != 0);
-		nPk = pPk->nKeyCol;
+		nPk = index_column_count(pPk);
 	}
 	iPk = pParse->nMem + 1;
 	pParse->nMem += nPk;
@@ -403,8 +393,7 @@ sqlite3Update(Parse * pParse,		/* The parser context */
 				   sqlite3IndexAffinityStr(pParse->db, pPk);
 		sqlite3VdbeAddOp4(v, OP_MakeRecord, iPk, nPk, regKey,
 					  zAff, nPk);
-		sqlite3VdbeAddOp4Int(v, OP_IdxInsert, iEph, regKey, iPk,
-				     nPk);
+		sqlite3VdbeAddOp2(v, OP_IdxInsert, iEph, regKey);
 		/* Set flag to save memory allocating one by malloc. */
 		sqlite3VdbeChangeP5(v, 1);
 	}
@@ -492,7 +481,7 @@ sqlite3Update(Parse * pParse,		/* The parser context */
 		for (i = 0; i < pTab->nCol; i++) {
 			if (oldmask == 0xffffffff
 			    || (i < 32 && (oldmask & MASKBIT32(i)) != 0)
-			    || (pTab->aCol[i].colFlags & COLFLAG_PRIMKEY) != 0) {
+			    || table_column_is_in_pk(pTab, i)) {
 				testcase(oldmask != 0xffffffff && i == 31);
 				sqlite3ExprCodeGetColumnOfTable(v, pTab,
 								iDataCur, i,
@@ -628,9 +617,6 @@ sqlite3Update(Parse * pParse,		/* The parser context */
 				  ((hasFK || chngKey
 				    || pPk != 0) ? 0 : OPFLAG_ISNOOP),
 				  regNewRowid);
-		if (!pParse->nested) {
-			sqlite3VdbeAppendP4(v, pTab, P4_TABLE);
-		}
 #else
 		if (hasFK || chngPk || pPk != 0) {
 			sqlite3VdbeAddOp2(v, OP_Delete, iDataCur, 0);
@@ -645,7 +631,7 @@ sqlite3Update(Parse * pParse,		/* The parser context */
 		}
 
 		/* Insert the new index entries and the new record. */
-		sqlite3CompleteInsertion(pParse, pTab, iIdxCur, aRegIdx, 0, onError);
+		vdbe_emit_insertion_completion(v, iIdxCur, aRegIdx[0], onError);
 
 		/* Do any ON CASCADE, SET NULL or SET DEFAULT operations required to
 		 * handle rows (possibly in other tables) that refer via a foreign key
@@ -693,11 +679,10 @@ sqlite3Update(Parse * pParse,		/* The parser context */
 	}
 
  update_cleanup:
-	sqlite3AuthContextPop(&sContext);
 	sqlite3DbFree(db, aXRef);	/* Also frees aRegIdx[] and aToOpen[] */
 	sqlite3SrcListDelete(db, pTabList);
 	sqlite3ExprListDelete(db, pChanges);
-	sqlite3ExprDelete(db, pWhere);
+	sql_expr_free(db, pWhere, false);
 	return;
 }
 

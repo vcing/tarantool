@@ -33,7 +33,7 @@
 
 /**
  * Point lookup is a special case of read iterator that is designed for
- * retrieving one value from index by a full key (all parts are present).
+ * retrieving one value from an LSM tree by a full key (all parts are present).
  *
  * Iterator collects necessary history of the given key from different sources
  * (txw, cache, mems, runs) that consists of some number of sequential upserts
@@ -45,11 +45,13 @@
  * and, if the result is the latest version of the key, adds it to cache.
  */
 
+#include <stdbool.h>
+
 #if defined(__cplusplus)
 extern "C" {
 #endif /* defined(__cplusplus) */
 
-struct vy_index;
+struct vy_lsm;
 struct vy_tx;
 struct vy_read_view;
 struct tuple;
@@ -57,11 +59,18 @@ struct tuple;
 /**
  * Given a key that has all index parts (including primary index
  * parts in case of a secondary index), lookup the corresponding
- * tuple in the index. The tuple is returned in @ret with its
+ * tuple in the LSM tree. The tuple is returned in @ret with its
  * reference counter elevated.
+ *
+ * The caller must guarantee that if the tuple looked up by this
+ * function is modified, the transaction will be sent to read view.
+ * This is needed to avoid inserting a stale value into the cache.
+ * In other words, vy_tx_track() must be called for the search key
+ * before calling this function unless this is a primary index and
+ * the tuple is already tracked in a secondary index.
  */
 int
-vy_point_lookup(struct vy_index *index, struct vy_tx *tx,
+vy_point_lookup(struct vy_lsm *lsm, struct vy_tx *tx,
 		const struct vy_read_view **rv,
 		struct tuple *key, struct tuple **ret);
 

@@ -52,7 +52,6 @@ const char *tarantoolErrorMessage();
 int is_tarantool_error(int rc);
 
 /* Storage interface. */
-int tarantoolSqlite3CloseCursor(BtCursor * pCur);
 const void *tarantoolSqlite3PayloadFetch(BtCursor * pCur, u32 * pAmt);
 
 /**
@@ -74,10 +73,14 @@ int tarantoolSqlite3Previous(BtCursor * pCur, int *pRes);
 int tarantoolSqlite3MovetoUnpacked(BtCursor * pCur, UnpackedRecord * pIdxKey,
 				   int *pRes);
 int tarantoolSqlite3Count(BtCursor * pCur, i64 * pnEntry);
-int tarantoolSqlite3Insert(BtCursor * pCur, const CursorPayload * pX);
-int tarantoolSqlite3Replace(BtCursor * pCur, const CursorPayload * pX);
+int tarantoolSqlite3Insert(struct space *space, const char *tuple,
+			   const char *tuple_end);
+int tarantoolSqlite3Replace(struct space *space, const char *tuple,
+			    const char *tuple_end);
 int tarantoolSqlite3Delete(BtCursor * pCur, u8 flags);
-int tarantoolSqlite3ClearTable(int iTable);
+int
+sql_delete_by_key(struct space *space, char *key, uint32_t key_size);
+int tarantoolSqlite3ClearTable(struct space *space);
 
 /* Rename table pTab with zNewName by inserting new tuple to _space.
  * SQL statement, which creates table with new name is saved in pzSqlStmt.
@@ -96,7 +99,19 @@ int tarantoolSqlite3RenameParentTable(int iTab, const char *zOldParentName,
 /* Interface for ephemeral tables. */
 int tarantoolSqlite3EphemeralCreate(BtCursor * pCur, uint32_t filed_count,
 				    struct coll *aColl);
-int tarantoolSqlite3EphemeralInsert(BtCursor * pCur, const CursorPayload * pX);
+/**
+ * Insert tuple into ephemeral space.
+ * In contrast to ordinary spaces, there is no need to create and
+ * fill request or handle transaction routine.
+ *
+ * @param space Ephemeral space.
+ * @param tuple Tuple to be inserted.
+ * @param tuple_end End of tuple to be inserted.
+ *
+ * @retval SQLITE_OK on success, SQLITE_TARANTOOL_ERROR otherwise.
+ */
+int tarantoolSqlite3EphemeralInsert(struct space *space, const char *tuple,
+				    const char *tuple_end);
 int tarantoolSqlite3EphemeralDelete(BtCursor * pCur);
 int tarantoolSqlite3EphemeralCount(BtCursor * pCur, i64 * pnEntry);
 int tarantoolSqlite3EphemeralDrop(BtCursor * pCur);
@@ -111,12 +126,13 @@ int tarantoolSqlite3EphemeralGetMaxId(BtCursor * pCur, uint32_t fieldno,
 int tarantoolSqlite3IdxKeyCompare(BtCursor * pCur, UnpackedRecord * pUnpacked,
 				  int *res);
 
-/*
+/**
  * The function assumes the cursor is open on _schema.
- * Increment max_id and store updated tuple in the cursor
- * object.
+ * Increment max_id and store updated value it output parameter.
+ * @param[out] New space id, available for usage.
  */
-int tarantoolSqlite3IncrementMaxid(BtCursor * pCur);
+int
+tarantoolSqlite3IncrementMaxid(uint64_t *space_max_id);
 
 /*
  * Render "format" array for _space entry.
@@ -146,9 +162,12 @@ int tarantoolSqlite3MakeIdxParts(Index * index, void *buf);
  */
 int tarantoolSqlite3MakeIdxOpts(Index * index, const char *zSql, void *buf);
 
-/*
- * Fetch maximum value from ineger column number `fieldno` of space_id/index_id
- * Return 0 on success, -1 otherwise
+/**
+ * Extract next id from _sequence space.
+ * If index is empty - return 0 in max_id and success status
+ *
+ * @param[out] max_id Fetched value.
+ * @retval 0 on success, -1 otherwise.
  */
-int tarantoolSqlGetMaxId(uint32_t space_id, uint32_t index_id, uint32_t fieldno,
-			 uint64_t * max_id);
+int
+tarantoolSqlNextSeqId(uint64_t *max_id);

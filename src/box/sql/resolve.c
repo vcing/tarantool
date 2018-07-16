@@ -115,7 +115,7 @@ resolveAlias(Parse * pParse,	/* Parsing context */
 	}
 	ExprSetProperty(pDup, EP_Alias);
 
-	/* Before calling sqlite3ExprDelete(), set the EP_Static flag. This
+	/* Before calling sql_expr_free(), set the EP_Static flag. This
 	 * prevents ExprDelete() from deleting the Expr structure itself,
 	 * allowing it to be repopulated by the memcpy() on the following line.
 	 * The pExpr->u.zToken might point into memory that will be freed by the
@@ -123,7 +123,7 @@ resolveAlias(Parse * pParse,	/* Parsing context */
 	 * make a copy of the token before doing the sqlite3DbFree().
 	 */
 	ExprSetProperty(pExpr, EP_Static);
-	sqlite3ExprDelete(db, pExpr);
+	sql_expr_free(db, pExpr, false);
 	memcpy(pExpr, pDup, sizeof(*pExpr));
 	if (!ExprHasProperty(pExpr, EP_IntValue) && pExpr->u.zToken != 0) {
 		assert((pExpr->flags & (EP_Reduced | EP_TokenOnly)) == 0);
@@ -462,9 +462,9 @@ lookupName(Parse * pParse,	/* The parsing context */
 
 	/* Clean up and return
 	 */
-	sqlite3ExprDelete(db, pExpr->pLeft);
+	sql_expr_free(db, pExpr->pLeft, false);
 	pExpr->pLeft = 0;
-	sqlite3ExprDelete(db, pExpr->pRight);
+	sql_expr_free(db, pExpr->pRight, false);
 	pExpr->pRight = 0;
 	pExpr->op = (isTrigger ? TK_TRIGGER : TK_COLUMN);
  lookupname_end:
@@ -591,7 +591,7 @@ resolveExprStep(Walker * pWalker, Expr * pExpr)
 #endif
 	switch (pExpr->op) {
 
-#if defined(SQLITE_ENABLE_UPDATE_DELETE_LIMIT) && !defined(SQLITE_OMIT_SUBQUERY)
+#if defined(SQLITE_ENABLE_UPDATE_DELETE_LIMIT)
 		/* The special operator TK_ROW means use the rowid for the first
 		 * column in the FROM clause.  This is used by the LIMIT and ORDER BY
 		 * clause processing on UPDATE and DELETE statements.
@@ -608,8 +608,7 @@ resolveExprStep(Walker * pWalker, Expr * pExpr)
 			pExpr->affinity = SQLITE_AFF_INTEGER;
 			break;
 		}
-#endif				/* defined(SQLITE_ENABLE_UPDATE_DELETE_LIMIT)
-				   && !defined(SQLITE_OMIT_SUBQUERY) */
+#endif				/* defined(SQLITE_ENABLE_UPDATE_DELETE_LIMIT) */
 
 		/* A lone identifier is the name of a column.
 		 */
@@ -696,25 +695,6 @@ resolveExprStep(Walker * pWalker, Expr * pExpr)
 						    'u' ? 8388608 : 125829120;
 					}
 				}
-#ifndef SQLITE_OMIT_AUTHORIZATION
-				{
-					int auth =
-					    sqlite3AuthCheck(pParse,
-							     SQLITE_FUNCTION, 0,
-							     pDef->zName, 0);
-					if (auth != SQLITE_OK) {
-						if (auth == SQLITE_DENY) {
-							sqlite3ErrorMsg(pParse,
-									"not authorized to use function: %s",
-									pDef->
-									zName);
-							pNC->nErr++;
-						}
-						pExpr->op = TK_NULL;
-						return WRC_Prune;
-					}
-				}
-#endif
 				if (pDef->
 				    funcFlags & (SQLITE_FUNC_CONSTANT |
 						 SQLITE_FUNC_SLOCHNG)) {
@@ -791,11 +771,9 @@ resolveExprStep(Walker * pWalker, Expr * pExpr)
 			 */
 			return WRC_Prune;
 		}
-#ifndef SQLITE_OMIT_SUBQUERY
 	case TK_SELECT:
 	case TK_EXISTS:
 		testcase(pExpr->op == TK_EXISTS);
-#endif
 	case TK_IN:{
 			testcase(pExpr->op == TK_IN);
 			if (ExprHasProperty(pExpr, EP_xIsSelect)) {
@@ -1049,7 +1027,7 @@ resolveCompoundOrderBy(Parse * pParse,	/* Parsing context.  Leave error messages
 						    resolveOrderByTermToExprList
 						    (pParse, pSelect, pDup);
 					}
-					sqlite3ExprDelete(db, pDup);
+					sql_expr_free(db, pDup, false);
 				}
 			}
 			if (iCol > 0) {
@@ -1071,7 +1049,7 @@ resolveCompoundOrderBy(Parse * pParse,	/* Parsing context.  Leave error messages
 					assert(pParent->pLeft == pE);
 					pParent->pLeft = pNew;
 				}
-				sqlite3ExprDelete(db, pE);
+				sql_expr_free(db, pE, false);
 				pItem->u.x.iOrderByCol = (u16) iCol;
 				pItem->done = 1;
 			} else {
@@ -1295,8 +1273,6 @@ resolveSelectStep(Walker * pWalker, Select * p)
 			if (pItem->pSelect) {
 				NameContext *pNC;	/* Used to iterate name contexts */
 				int nRef = 0;	/* Refcount for pOuterNC and outer contexts */
-				const char *zSavedContext =
-				    pParse->zAuthContext;
 
 				/* Count the total number of references to pOuterNC and all of its
 				 * parent contexts. After resolving references to expressions in
@@ -1307,12 +1283,9 @@ resolveSelectStep(Walker * pWalker, Select * p)
 				for (pNC = pOuterNC; pNC; pNC = pNC->pNext)
 					nRef += pNC->nRef;
 
-				if (pItem->zName)
-					pParse->zAuthContext = pItem->zName;
 				sqlite3ResolveSelectNames(pParse,
 							  pItem->pSelect,
 							  pOuterNC);
-				pParse->zAuthContext = zSavedContext;
 				if (pParse->nErr || db->mallocFailed)
 					return WRC_Abort;
 

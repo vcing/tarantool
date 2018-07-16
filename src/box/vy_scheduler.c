@@ -41,7 +41,6 @@
 #include <tarantool_ev.h>
 
 #include "checkpoint.h"
-#include "coio_task.h"
 #include "diag.h"
 #include "errcode.h"
 #include "errinj.h"
@@ -49,7 +48,7 @@
 #include "fiber_cond.h"
 #include "salad/stailq.h"
 #include "say.h"
-#include "vy_index.h"
+#include "vy_lsm.h"
 #include "vy_log.h"
 #include "vy_mem.h"
 #include "vy_range.h"
@@ -72,7 +71,7 @@ enum { VY_YIELD_LOOPS = 2 };
 #define VY_SCHEDULER_TIMEOUT_MIN	1
 #define VY_SCHEDULER_TIMEOUT_MAX	60
 
-static int vy_worker_f(va_list);
+static void *vy_worker_f(void *);
 static int vy_scheduler_f(va_list);
 
 struct vy_task;
@@ -83,7 +82,7 @@ struct vy_task_ops {
 	 * which is too heavy for the tx thread (like IO or compression).
 	 * Returns 0 on success. On failure returns -1 and sets diag.
 	 */
-	int (*execute)(struct vy_task *task);
+	int (*execute)(struct vy_scheduler *scheduler, struct vy_task *task);
 	/**
 	 * This function is called by the scheduler upon task completion.
 	 * It may be used to finish the task from the tx thread context.
@@ -94,7 +93,7 @@ struct vy_task_ops {
 	/**
 	 * This function is called by the scheduler if either ->execute
 	 * or ->complete failed. It may be used to undo changes done to
-	 * the index when preparing the task.
+	 * the LSM tree when preparing the task.
 	 *
 	 * If @in_shutdown is set, the callback is invoked from the
 	 * engine destructor.
@@ -109,8 +108,14 @@ struct vy_task {
 	int status;
 	/** If ->execute fails, the error is stored here. */
 	struct diag diag;
-	/** Index this task is for. */
-	struct vy_index *index;
+	/** LSM tree this task is for. */
+	struct vy_lsm *lsm;
+	/**
+	 * Copies of lsm->key/cmp_def to protect from
+	 * multithread read/write on alter.
+	 */
+	struct key_def *cmp_def;
+	struct key_def *key_def;
 	/** Range to compact. */
 	struct vy_range *range;
 	/** Run written by this task. */
@@ -131,12 +136,6 @@ struct vy_task {
 	 */
 	struct stailq_entry link;
 	/**
-	 * An estimate of the maximal number of statements that
-	 * can be written by the task. Used to create a bloom
-	 * filter of the perfect size.
-	 */
-	size_t max_output_count;
-	/**
 	 * Index options may be modified while a task is in
 	 * progress so we save them here to safely access them
 	 * from another thread.
@@ -149,11 +148,11 @@ struct vy_task {
  * Allocate a new task to be executed by a worker thread.
  * When preparing an asynchronous task, this function must
  * be called before yielding the current fiber in order to
- * pin the index the task is for so that a concurrent fiber
+ * pin the LSM tree the task is for so that a concurrent fiber
  * does not free it from under us.
  */
 static struct vy_task *
-vy_task_new(struct mempool *pool, struct vy_index *index,
+vy_task_new(struct mempool *pool, struct vy_lsm *lsm,
 	    const struct vy_task_ops *ops)
 {
 	struct vy_task *task = mempool_alloc(pool);
@@ -164,8 +163,19 @@ vy_task_new(struct mempool *pool, struct vy_index *index,
 	}
 	memset(task, 0, sizeof(*task));
 	task->ops = ops;
-	task->index = index;
-	vy_index_ref(index);
+	task->lsm = lsm;
+	task->cmp_def = key_def_dup(lsm->cmp_def);
+	if (task->cmp_def == NULL) {
+		mempool_free(pool, task);
+		return NULL;
+	}
+	task->key_def = key_def_dup(lsm->key_def);
+	if (task->key_def == NULL) {
+		key_def_delete(task->cmp_def);
+		mempool_free(pool, task);
+		return NULL;
+	}
+	vy_lsm_ref(lsm);
 	diag_create(&task->diag);
 	return task;
 }
@@ -174,7 +184,9 @@ vy_task_new(struct mempool *pool, struct vy_index *index,
 static void
 vy_task_delete(struct mempool *pool, struct vy_task *task)
 {
-	vy_index_unref(task->index);
+	key_def_delete(task->cmp_def);
+	key_def_delete(task->key_def);
+	vy_lsm_unref(task->lsm);
 	diag_destroy(&task->diag);
 	TRASH(task);
 	mempool_free(pool, task);
@@ -183,21 +195,22 @@ vy_task_delete(struct mempool *pool, struct vy_task *task)
 static bool
 vy_dump_heap_less(struct heap_node *a, struct heap_node *b)
 {
-	struct vy_index *i1 = container_of(a, struct vy_index, in_dump);
-	struct vy_index *i2 = container_of(b, struct vy_index, in_dump);
+	struct vy_lsm *i1 = container_of(a, struct vy_lsm, in_dump);
+	struct vy_lsm *i2 = container_of(b, struct vy_lsm, in_dump);
 
 	/*
-	 * Indexes that are currently being dumped or can't be scheduled
-	 * for dump right now are moved off the top of the heap.
+	 * LSM trees that are currently being dumped or can't be
+	 * scheduled for dump right now are moved off the top of
+	 * the heap.
 	 */
 	if (i1->is_dumping != i2->is_dumping)
 		return i1->is_dumping < i2->is_dumping;
 	if (i1->pin_count != i2->pin_count)
 		return i1->pin_count < i2->pin_count;
 
-	/* Older indexes are dumped first. */
-	int64_t i1_generation = vy_index_generation(i1);
-	int64_t i2_generation = vy_index_generation(i2);
+	/* Older LSM trees are dumped first. */
+	int64_t i1_generation = vy_lsm_generation(i1);
+	int64_t i2_generation = vy_lsm_generation(i2);
 	if (i1_generation != i2_generation)
 		return i1_generation < i2_generation;
 	/*
@@ -208,7 +221,7 @@ vy_dump_heap_less(struct heap_node *a, struct heap_node *b)
 	 * ahead of secondary indexes of the same space, i.e. it must
 	 * be dumped last.
 	 */
-	return i1->id > i2->id;
+	return i1->index_id > i2->index_id;
 }
 
 #define HEAP_NAME vy_dump_heap
@@ -222,13 +235,13 @@ vy_dump_heap_less(struct heap_node *a, struct heap_node *b)
 static bool
 vy_compact_heap_less(struct heap_node *a, struct heap_node *b)
 {
-	struct vy_index *i1 = container_of(a, struct vy_index, in_compact);
-	struct vy_index *i2 = container_of(b, struct vy_index, in_compact);
+	struct vy_lsm *i1 = container_of(a, struct vy_lsm, in_compact);
+	struct vy_lsm *i2 = container_of(b, struct vy_lsm, in_compact);
 	/*
-	 * Prefer indexes whose read amplification will be reduced
+	 * Prefer LSM trees whose read amplification will be reduced
 	 * most as a result of compaction.
 	 */
-	return vy_index_compact_priority(i1) > vy_index_compact_priority(i2);
+	return vy_lsm_compact_priority(i1) > vy_lsm_compact_priority(i2);
 }
 
 #define HEAP_NAME vy_compact_heap
@@ -267,7 +280,7 @@ vy_scheduler_start_workers(struct vy_scheduler *scheduler)
 	for (int i = 0; i < scheduler->worker_pool_size; i++) {
 		char name[FIBER_NAME_MAX];
 		snprintf(name, sizeof(name), "vinyl.writer.%d", i);
-		if (cord_costart(&scheduler->worker_pool[i], name,
+		if (cord_start(&scheduler->worker_pool[i], name,
 				 vy_worker_f, scheduler) != 0)
 			panic("failed to start vinyl worker thread");
 	}
@@ -350,6 +363,7 @@ vy_scheduler_destroy(struct vy_scheduler *scheduler)
 	/* Stop scheduler fiber. */
 	scheduler->scheduler_fiber = NULL;
 	/* Sic: fiber_cancel() can't be used here. */
+	fiber_cond_signal(&scheduler->dump_cond);
 	fiber_cond_signal(&scheduler->scheduler_cond);
 
 	if (scheduler->is_worker_pool_running)
@@ -369,58 +383,55 @@ vy_scheduler_destroy(struct vy_scheduler *scheduler)
 }
 
 void
-vy_scheduler_add_index(struct vy_scheduler *scheduler,
-		       struct vy_index *index)
+vy_scheduler_add_lsm(struct vy_scheduler *scheduler, struct vy_lsm *lsm)
 {
-	assert(index->in_dump.pos == UINT32_MAX);
-	assert(index->in_compact.pos == UINT32_MAX);
-	vy_dump_heap_insert(&scheduler->dump_heap, &index->in_dump);
-	vy_compact_heap_insert(&scheduler->compact_heap, &index->in_compact);
+	assert(lsm->in_dump.pos == UINT32_MAX);
+	assert(lsm->in_compact.pos == UINT32_MAX);
+	vy_dump_heap_insert(&scheduler->dump_heap, &lsm->in_dump);
+	vy_compact_heap_insert(&scheduler->compact_heap, &lsm->in_compact);
 }
 
 void
-vy_scheduler_remove_index(struct vy_scheduler *scheduler,
-			  struct vy_index *index)
+vy_scheduler_remove_lsm(struct vy_scheduler *scheduler, struct vy_lsm *lsm)
 {
-	assert(index->in_dump.pos != UINT32_MAX);
-	assert(index->in_compact.pos != UINT32_MAX);
-	vy_dump_heap_delete(&scheduler->dump_heap, &index->in_dump);
-	vy_compact_heap_delete(&scheduler->compact_heap, &index->in_compact);
-	index->in_dump.pos = UINT32_MAX;
-	index->in_compact.pos = UINT32_MAX;
+	assert(lsm->in_dump.pos != UINT32_MAX);
+	assert(lsm->in_compact.pos != UINT32_MAX);
+	vy_dump_heap_delete(&scheduler->dump_heap, &lsm->in_dump);
+	vy_compact_heap_delete(&scheduler->compact_heap, &lsm->in_compact);
+	lsm->in_dump.pos = UINT32_MAX;
+	lsm->in_compact.pos = UINT32_MAX;
 }
 
 static void
-vy_scheduler_update_index(struct vy_scheduler *scheduler,
-			  struct vy_index *index)
+vy_scheduler_update_lsm(struct vy_scheduler *scheduler, struct vy_lsm *lsm)
 {
-	if (index->is_dropped) {
-		/* Dropped indexes are exempted from scheduling. */
-		assert(index->in_dump.pos == UINT32_MAX);
-		assert(index->in_compact.pos == UINT32_MAX);
+	if (lsm->is_dropped) {
+		/* Dropped LSM trees are exempted from scheduling. */
+		assert(lsm->in_dump.pos == UINT32_MAX);
+		assert(lsm->in_compact.pos == UINT32_MAX);
 		return;
 	}
-	assert(index->in_dump.pos != UINT32_MAX);
-	assert(index->in_compact.pos != UINT32_MAX);
-	vy_dump_heap_update(&scheduler->dump_heap, &index->in_dump);
-	vy_compact_heap_update(&scheduler->compact_heap, &index->in_compact);
+	assert(lsm->in_dump.pos != UINT32_MAX);
+	assert(lsm->in_compact.pos != UINT32_MAX);
+	vy_dump_heap_update(&scheduler->dump_heap, &lsm->in_dump);
+	vy_compact_heap_update(&scheduler->compact_heap, &lsm->in_compact);
 }
 
 static void
-vy_scheduler_pin_index(struct vy_scheduler *scheduler, struct vy_index *index)
+vy_scheduler_pin_lsm(struct vy_scheduler *scheduler, struct vy_lsm *lsm)
 {
-	assert(!index->is_dumping);
-	if (index->pin_count++ == 0)
-		vy_scheduler_update_index(scheduler, index);
+	assert(!lsm->is_dumping);
+	if (lsm->pin_count++ == 0)
+		vy_scheduler_update_lsm(scheduler, lsm);
 }
 
 static void
-vy_scheduler_unpin_index(struct vy_scheduler *scheduler, struct vy_index *index)
+vy_scheduler_unpin_lsm(struct vy_scheduler *scheduler, struct vy_lsm *lsm)
 {
-	assert(!index->is_dumping);
-	assert(index->pin_count > 0);
-	if (--index->pin_count == 0)
-		vy_scheduler_update_index(scheduler, index);
+	assert(!lsm->is_dumping);
+	assert(lsm->pin_count > 0);
+	if (--lsm->pin_count == 0)
+		vy_scheduler_update_lsm(scheduler, lsm);
 }
 
 void
@@ -467,22 +478,21 @@ vy_scheduler_complete_dump(struct vy_scheduler *scheduler)
 	int64_t min_generation = scheduler->generation;
 	struct heap_node *pn = vy_dump_heap_top(&scheduler->dump_heap);
 	if (pn != NULL) {
-		struct vy_index *index;
-		index = container_of(pn, struct vy_index, in_dump);
-		min_generation = vy_index_generation(index);
+		struct vy_lsm *lsm = container_of(pn, struct vy_lsm, in_dump);
+		min_generation = vy_lsm_generation(lsm);
 	}
 	if (min_generation == scheduler->dump_generation) {
 		/*
-		 * There are still indexes that must be dumped
+		 * There are still LSM trees that must be dumped
 		 * during the current dump round.
 		 */
 		return;
 	}
 
 	/*
-	 * The oldest index data is newer than @dump_generation,
-	 * so the current dump round has been finished. Notify
-	 * about dump completion.
+	 * The oldest LSM tree data is newer than @dump_generation,
+	 * so the current dump round has been finished. Notify about
+	 * dump completion.
 	 */
 	double now = ev_monotonic_now(loop());
 	double dump_duration = now - scheduler->dump_start;
@@ -571,19 +581,19 @@ vy_scheduler_end_checkpoint(struct vy_scheduler *scheduler)
 }
 
 /**
- * Allocate a new run for an index and write the information
+ * Allocate a new run for an LSM tree and write the information
  * about it to the metadata log so that we could still find
  * and delete it in case a write error occured. This function
  * is called from dump/compaction task constructor.
  */
 static struct vy_run *
-vy_run_prepare(struct vy_run_env *run_env, struct vy_index *index)
+vy_run_prepare(struct vy_run_env *run_env, struct vy_lsm *lsm)
 {
 	struct vy_run *run = vy_run_new(run_env, vy_log_next_id());
 	if (run == NULL)
 		return NULL;
 	vy_log_tx_begin();
-	vy_log_prepare_run(index->commit_lsn, run->id);
+	vy_log_prepare_run(lsm->id, run->id);
 	if (vy_log_tx_commit() < 0) {
 		vy_run_unref(run);
 		return NULL;
@@ -622,48 +632,97 @@ vy_run_discard(struct vy_run *run)
 }
 
 static int
-vy_task_dump_execute(struct vy_task *task)
+vy_task_write_run(struct vy_scheduler *scheduler, struct vy_task *task)
 {
-	struct vy_index *index = task->index;
+	struct vy_lsm *lsm = task->lsm;
+	struct vy_stmt_stream *wi = task->wi;
 
-	return vy_run_write(task->new_run, index->env->path,
-			    index->space_id, index->id, task->wi,
-			    task->page_size, index->cmp_def,
-			    index->key_def, task->max_output_count,
-			    task->bloom_fpr);
+	ERROR_INJECT(ERRINJ_VY_RUN_WRITE,
+		     {diag_set(ClientError, ER_INJECTION,
+			       "vinyl dump"); return -1;});
+
+	struct errinj *inj = errinj(ERRINJ_VY_RUN_WRITE_TIMEOUT, ERRINJ_DOUBLE);
+	if (inj != NULL && inj->dparam > 0)
+		usleep(inj->dparam * 1000000);
+
+	struct vy_run_writer writer;
+	if (vy_run_writer_create(&writer, task->new_run, lsm->env->path,
+				 lsm->space_id, lsm->index_id,
+				 task->cmp_def, task->key_def,
+				 task->page_size, task->bloom_fpr) != 0)
+		goto fail;
+
+	if (wi->iface->start(wi) != 0)
+		goto fail_abort_writer;
+	int rc;
+	struct tuple *stmt = NULL;
+	while ((rc = wi->iface->next(wi, &stmt)) == 0 && stmt != NULL) {
+		inj = errinj(ERRINJ_VY_RUN_WRITE_STMT_TIMEOUT, ERRINJ_DOUBLE);
+		if (inj != NULL && inj->dparam > 0)
+			usleep(inj->dparam * 1000000);
+
+		rc = vy_run_writer_append_stmt(&writer, stmt);
+		if (rc != 0)
+			break;
+
+		if (!scheduler->is_worker_pool_running) {
+			diag_set(FiberIsCancelled);
+			rc = -1;
+			break;
+		}
+	}
+	wi->iface->stop(wi);
+
+	if (rc == 0)
+		rc = vy_run_writer_commit(&writer);
+	if (rc != 0)
+		goto fail_abort_writer;
+
+	return 0;
+
+fail_abort_writer:
+	vy_run_writer_abort(&writer);
+fail:
+	return -1;
+}
+
+static int
+vy_task_dump_execute(struct vy_scheduler *scheduler, struct vy_task *task)
+{
+	return vy_task_write_run(scheduler, task);
 }
 
 static int
 vy_task_dump_complete(struct vy_scheduler *scheduler, struct vy_task *task)
 {
-	struct vy_index *index = task->index;
+	struct vy_lsm *lsm = task->lsm;
 	struct vy_run *new_run = task->new_run;
 	int64_t dump_lsn = new_run->dump_lsn;
-	struct tuple_format *key_format = index->env->key_format;
+	struct tuple_format *key_format = lsm->env->key_format;
 	struct vy_mem *mem, *next_mem;
 	struct vy_slice **new_slices, *slice;
 	struct vy_range *range, *begin_range, *end_range;
 	struct tuple *min_key, *max_key;
 	int i, loops = 0;
 
-	assert(index->is_dumping);
+	assert(lsm->is_dumping);
 
 	if (vy_run_is_empty(new_run)) {
 		/*
 		 * In case the run is empty, we can discard the run
 		 * and delete dumped in-memory trees right away w/o
 		 * inserting slices into ranges. However, we need
-		 * to log index dump anyway.
+		 * to log LSM tree dump anyway.
 		 */
 		vy_log_tx_begin();
-		vy_log_dump_index(index->commit_lsn, dump_lsn);
+		vy_log_dump_lsm(lsm->id, dump_lsn);
 		if (vy_log_tx_commit() < 0)
 			goto fail;
 		vy_run_discard(new_run);
 		goto delete_mems;
 	}
 
-	assert(new_run->info.min_lsn > index->dump_lsn);
+	assert(new_run->info.min_lsn > lsm->dump_lsn);
 	assert(new_run->info.max_lsn <= dump_lsn);
 
 	/*
@@ -681,28 +740,28 @@ vy_task_dump_complete(struct vy_scheduler *scheduler, struct vy_task *task)
 		tuple_unref(min_key);
 		goto fail;
 	}
-	begin_range = vy_range_tree_psearch(index->tree, min_key);
-	end_range = vy_range_tree_nsearch(index->tree, max_key);
+	begin_range = vy_range_tree_psearch(lsm->tree, min_key);
+	end_range = vy_range_tree_nsearch(lsm->tree, max_key);
 	tuple_unref(min_key);
 	tuple_unref(max_key);
 
 	/*
 	 * For each intersected range allocate a slice of the new run.
 	 */
-	new_slices = calloc(index->range_count, sizeof(*new_slices));
+	new_slices = calloc(lsm->range_count, sizeof(*new_slices));
 	if (new_slices == NULL) {
-		diag_set(OutOfMemory, index->range_count * sizeof(*new_slices),
+		diag_set(OutOfMemory, lsm->range_count * sizeof(*new_slices),
 			 "malloc", "struct vy_slice *");
 		goto fail;
 	}
 	for (range = begin_range, i = 0; range != end_range;
-	     range = vy_range_tree_next(index->tree, range), i++) {
+	     range = vy_range_tree_next(lsm->tree, range), i++) {
 		slice = vy_slice_new(vy_log_next_id(), new_run,
-				     range->begin, range->end, index->cmp_def);
+				     range->begin, range->end, lsm->cmp_def);
 		if (slice == NULL)
 			goto fail_free_slices;
 
-		assert(i < index->range_count);
+		assert(i < lsm->range_count);
 		new_slices[i] = slice;
 		/*
 		 * It's OK to yield here for the range tree can only
@@ -716,10 +775,10 @@ vy_task_dump_complete(struct vy_scheduler *scheduler, struct vy_task *task)
 	 * Log change in metadata.
 	 */
 	vy_log_tx_begin();
-	vy_log_create_run(index->commit_lsn, new_run->id, dump_lsn);
+	vy_log_create_run(lsm->id, new_run->id, dump_lsn);
 	for (range = begin_range, i = 0; range != end_range;
-	     range = vy_range_tree_next(index->tree, range), i++) {
-		assert(i < index->range_count);
+	     range = vy_range_tree_next(lsm->tree, range), i++) {
+		assert(i < lsm->range_count);
 		slice = new_slices[i];
 		vy_log_insert_slice(range->id, new_run->id, slice->id,
 				    tuple_data_or_null(slice->begin),
@@ -728,15 +787,15 @@ vy_task_dump_complete(struct vy_scheduler *scheduler, struct vy_task *task)
 		if (++loops % VY_YIELD_LOOPS == 0)
 			fiber_sleep(0); /* see comment above */
 	}
-	vy_log_dump_index(index->commit_lsn, dump_lsn);
+	vy_log_dump_lsm(lsm->id, dump_lsn);
 	if (vy_log_tx_commit() < 0)
 		goto fail_free_slices;
 
 	/*
 	 * Account the new run.
 	 */
-	vy_index_add_run(index, new_run);
-	vy_stmt_counter_add_disk(&index->stat.disk.dump.out, &new_run->count);
+	vy_lsm_add_run(lsm, new_run);
+	vy_stmt_counter_add_disk(&lsm->stat.disk.dump.out, &new_run->count);
 
 	/* Drop the reference held by the task. */
 	vy_run_unref(new_run);
@@ -745,23 +804,23 @@ vy_task_dump_complete(struct vy_scheduler *scheduler, struct vy_task *task)
 	 * Add new slices to ranges.
 	 */
 	for (range = begin_range, i = 0; range != end_range;
-	     range = vy_range_tree_next(index->tree, range), i++) {
-		assert(i < index->range_count);
+	     range = vy_range_tree_next(lsm->tree, range), i++) {
+		assert(i < lsm->range_count);
 		slice = new_slices[i];
-		vy_index_unacct_range(index, range);
+		vy_lsm_unacct_range(lsm, range);
 		vy_range_add_slice(range, slice);
-		vy_index_acct_range(index, range);
-		vy_range_update_compact_priority(range, &index->opts);
+		vy_lsm_acct_range(lsm, range);
+		vy_range_update_compact_priority(range, &lsm->opts);
 		if (!vy_range_is_scheduled(range))
-			vy_range_heap_update(&index->range_heap,
+			vy_range_heap_update(&lsm->range_heap,
 					     &range->heap_node);
 		range->version++;
 		/*
 		 * If we yield here, a concurrent fiber will see
 		 * a range with a run slice containing statements
-		 * present in the in-memory trees of the index.
+		 * present in the in-memory indexes of the LSM tree.
 		 * This is OK, because read iterator won't use the
-		 * new run slice until index->dump_lsn is bumped,
+		 * new run slice until lsm->dump_lsn is bumped,
 		 * which is only done after in-memory trees are
 		 * removed (see vy_read_iterator_add_disk()).
 		 */
@@ -774,34 +833,34 @@ delete_mems:
 	/*
 	 * Delete dumped in-memory trees.
 	 */
-	rlist_foreach_entry_safe(mem, &index->sealed, in_sealed, next_mem) {
+	rlist_foreach_entry_safe(mem, &lsm->sealed, in_sealed, next_mem) {
 		if (mem->generation > scheduler->dump_generation)
 			continue;
-		vy_stmt_counter_add(&index->stat.disk.dump.in, &mem->count);
-		vy_index_delete_mem(index, mem);
+		vy_stmt_counter_add(&lsm->stat.disk.dump.in, &mem->count);
+		vy_lsm_delete_mem(lsm, mem);
 	}
-	index->dump_lsn = dump_lsn;
-	index->stat.disk.dump.count++;
+	lsm->dump_lsn = dump_lsn;
+	lsm->stat.disk.dump.count++;
 
 	/* The iterator has been cleaned up in a worker thread. */
 	task->wi->iface->close(task->wi);
 
-	index->is_dumping = false;
-	vy_scheduler_update_index(scheduler, index);
+	lsm->is_dumping = false;
+	vy_scheduler_update_lsm(scheduler, lsm);
 
-	if (index->id != 0)
-		vy_scheduler_unpin_index(scheduler, index->pk);
+	if (lsm->index_id != 0)
+		vy_scheduler_unpin_lsm(scheduler, lsm->pk);
 
 	assert(scheduler->dump_task_count > 0);
 	scheduler->dump_task_count--;
 
-	say_info("%s: dump completed", vy_index_name(index));
+	say_info("%s: dump completed", vy_lsm_name(lsm));
 
 	vy_scheduler_complete_dump(scheduler);
 	return 0;
 
 fail_free_slices:
-	for (i = 0; i < index->range_count; i++) {
+	for (i = 0; i < lsm->range_count; i++) {
 		slice = new_slices[i];
 		if (slice != NULL)
 			vy_slice_delete(slice);
@@ -817,21 +876,21 @@ static void
 vy_task_dump_abort(struct vy_scheduler *scheduler, struct vy_task *task,
 		   bool in_shutdown)
 {
-	struct vy_index *index = task->index;
+	struct vy_lsm *lsm = task->lsm;
 
-	assert(index->is_dumping);
+	assert(lsm->is_dumping);
 
 	/* The iterator has been cleaned up in a worker thread. */
 	task->wi->iface->close(task->wi);
 
 	/*
 	 * It's no use alerting the user if the server is
-	 * shutting down or the index was dropped.
+	 * shutting down or the LSM tree was dropped.
 	 */
-	if (!in_shutdown && !index->is_dropped) {
+	if (!in_shutdown && !lsm->is_dropped) {
 		struct error *e = diag_last_error(&task->diag);
 		error_log(e);
-		say_error("%s: dump failed", vy_index_name(index));
+		say_error("%s: dump failed", vy_lsm_name(lsm));
 	}
 
 	/* The metadata log is unavailable on shutdown. */
@@ -840,36 +899,36 @@ vy_task_dump_abort(struct vy_scheduler *scheduler, struct vy_task *task,
 	else
 		vy_run_unref(task->new_run);
 
-	index->is_dumping = false;
-	vy_scheduler_update_index(scheduler, index);
+	lsm->is_dumping = false;
+	vy_scheduler_update_lsm(scheduler, lsm);
 
-	if (index->id != 0)
-		vy_scheduler_unpin_index(scheduler, index->pk);
+	if (lsm->index_id != 0)
+		vy_scheduler_unpin_lsm(scheduler, lsm->pk);
 
 	assert(scheduler->dump_task_count > 0);
 	scheduler->dump_task_count--;
 
 	/*
-	 * If the index was dropped during dump, we abort the
-	 * dump task, but we should still poke the scheduler
+	 * If the LSM tree was dropped during dump, we abort
+	 * the dump task, but we should still poke the scheduler
 	 * to check if the current dump round is complete.
-	 * If we don't and this index happens to be the last
+	 * If we don't and this LSM tree happens to be the last
 	 * one of the current generation, the scheduler will
 	 * never be notified about dump completion and hence
 	 * memory will never be released.
 	 */
-	if (index->is_dropped)
+	if (lsm->is_dropped)
 		vy_scheduler_complete_dump(scheduler);
 }
 
 /**
- * Create a task to dump an index.
+ * Create a task to dump an LSM tree.
  *
  * On success the task is supposed to dump all in-memory
  * trees created at @scheduler->dump_generation.
  */
 static int
-vy_task_dump_new(struct vy_scheduler *scheduler, struct vy_index *index,
+vy_task_dump_new(struct vy_scheduler *scheduler, struct vy_lsm *lsm,
 		 struct vy_task **p_task)
 {
 	static struct vy_task_ops dump_ops = {
@@ -878,21 +937,21 @@ vy_task_dump_new(struct vy_scheduler *scheduler, struct vy_index *index,
 		.abort = vy_task_dump_abort,
 	};
 
-	assert(!index->is_dropped);
-	assert(!index->is_dumping);
-	assert(index->pin_count == 0);
-	assert(vy_index_generation(index) == scheduler->dump_generation);
+	assert(!lsm->is_dropped);
+	assert(!lsm->is_dumping);
+	assert(lsm->pin_count == 0);
+	assert(vy_lsm_generation(lsm) == scheduler->dump_generation);
 	assert(scheduler->dump_generation < scheduler->generation);
 
 	struct errinj *inj = errinj(ERRINJ_VY_INDEX_DUMP, ERRINJ_INT);
-	if (inj != NULL && inj->iparam == (int)index->id) {
+	if (inj != NULL && inj->iparam == (int)lsm->index_id) {
 		diag_set(ClientError, ER_INJECTION, "vinyl index dump");
 		goto err;
 	}
 
 	/* Rotate the active tree if it needs to be dumped. */
-	if (index->mem->generation == scheduler->dump_generation &&
-	    vy_index_rotate_mem(index) != 0)
+	if (lsm->mem->generation == scheduler->dump_generation &&
+	    vy_lsm_rotate_mem(lsm) != 0)
 		goto err;
 
 	/*
@@ -900,9 +959,8 @@ vy_task_dump_new(struct vy_scheduler *scheduler, struct vy_index *index,
 	 * eligible for dump are over.
 	 */
 	int64_t dump_lsn = -1;
-	size_t max_output_count = 0;
 	struct vy_mem *mem, *next_mem;
-	rlist_foreach_entry_safe(mem, &index->sealed, in_sealed, next_mem) {
+	rlist_foreach_entry_safe(mem, &lsm->sealed, in_sealed, next_mem) {
 		if (mem->generation > scheduler->dump_generation)
 			continue;
 		vy_mem_wait_pinned(mem);
@@ -911,40 +969,38 @@ vy_task_dump_new(struct vy_scheduler *scheduler, struct vy_index *index,
 			 * The tree is empty so we can delete it
 			 * right away, without involving a worker.
 			 */
-			vy_index_delete_mem(index, mem);
+			vy_lsm_delete_mem(lsm, mem);
 			continue;
 		}
 		dump_lsn = MAX(dump_lsn, mem->max_lsn);
-		max_output_count += mem->tree.size;
 	}
 
-	if (max_output_count == 0) {
-		/* Nothing to do, pick another index. */
-		vy_scheduler_update_index(scheduler, index);
+	if (dump_lsn < 0) {
+		/* Nothing to do, pick another LSM tree. */
+		vy_scheduler_update_lsm(scheduler, lsm);
 		vy_scheduler_complete_dump(scheduler);
 		return 0;
 	}
 
 	struct vy_task *task = vy_task_new(&scheduler->task_pool,
-					   index, &dump_ops);
+					   lsm, &dump_ops);
 	if (task == NULL)
 		goto err;
 
-	struct vy_run *new_run = vy_run_prepare(scheduler->run_env, index);
+	struct vy_run *new_run = vy_run_prepare(scheduler->run_env, lsm);
 	if (new_run == NULL)
 		goto err_run;
 
-	assert(dump_lsn >= 0);
 	new_run->dump_lsn = dump_lsn;
 
 	struct vy_stmt_stream *wi;
-	bool is_last_level = (index->run_count == 0);
-	wi = vy_write_iterator_new(index->cmp_def, index->disk_format,
-				   index->upsert_format, index->id == 0,
-				   is_last_level, scheduler->read_views);
+	bool is_last_level = (lsm->run_count == 0);
+	wi = vy_write_iterator_new(task->cmp_def, lsm->disk_format,
+				   lsm->index_id == 0, is_last_level,
+				   scheduler->read_views);
 	if (wi == NULL)
 		goto err_wi;
-	rlist_foreach_entry(mem, &index->sealed, in_sealed) {
+	rlist_foreach_entry(mem, &lsm->sealed, in_sealed) {
 		if (mem->generation > scheduler->dump_generation)
 			continue;
 		if (vy_write_iterator_new_mem(wi, mem) != 0)
@@ -953,28 +1009,27 @@ vy_task_dump_new(struct vy_scheduler *scheduler, struct vy_index *index,
 
 	task->new_run = new_run;
 	task->wi = wi;
-	task->max_output_count = max_output_count;
-	task->bloom_fpr = index->opts.bloom_fpr;
-	task->page_size = index->opts.page_size;
+	task->bloom_fpr = lsm->opts.bloom_fpr;
+	task->page_size = lsm->opts.page_size;
 
-	index->is_dumping = true;
-	vy_scheduler_update_index(scheduler, index);
+	lsm->is_dumping = true;
+	vy_scheduler_update_lsm(scheduler, lsm);
 
-	if (index->id != 0) {
+	if (lsm->index_id != 0) {
 		/*
-		 * The primary index must be dumped after all
-		 * secondary indexes of the same space - see
-		 * vy_dump_heap_less(). To make sure it isn't
-		 * picked by the scheduler while all secondary
-		 * indexes are being dumped, temporarily remove
+		 * The primary index LSM tree must be dumped after
+		 * all secondary index LSM trees of the same space,
+		 * see vy_dump_heap_less(). To make sure it isn't
+		 * picked by the scheduler while all secondary index
+		 * LSM trees are being dumped, temporarily remove
 		 * it from the dump heap.
 		 */
-		vy_scheduler_pin_index(scheduler, index->pk);
+		vy_scheduler_pin_lsm(scheduler, lsm->pk);
 	}
 
 	scheduler->dump_task_count++;
 
-	say_info("%s: dump started", vy_index_name(index));
+	say_info("%s: dump started", vy_lsm_name(lsm));
 	*p_task = task;
 	return 0;
 
@@ -986,26 +1041,20 @@ err_run:
 	vy_task_delete(&scheduler->task_pool, task);
 err:
 	diag_log();
-	say_error("%s: could not start dump", vy_index_name(index));
+	say_error("%s: could not start dump", vy_lsm_name(lsm));
 	return -1;
 }
 
 static int
-vy_task_compact_execute(struct vy_task *task)
+vy_task_compact_execute(struct vy_scheduler *scheduler, struct vy_task *task)
 {
-	struct vy_index *index = task->index;
-
-	return vy_run_write(task->new_run, index->env->path,
-			    index->space_id, index->id, task->wi,
-			    task->page_size, index->cmp_def,
-			    index->key_def, task->max_output_count,
-			    task->bloom_fpr);
+	return vy_task_write_run(scheduler, task);
 }
 
 static int
 vy_task_compact_complete(struct vy_scheduler *scheduler, struct vy_task *task)
 {
-	struct vy_index *index = task->index;
+	struct vy_lsm *lsm = task->lsm;
 	struct vy_range *range = task->range;
 	struct vy_run *new_run = task->new_run;
 	struct vy_slice *first_slice = task->first_slice;
@@ -1021,8 +1070,8 @@ vy_task_compact_complete(struct vy_scheduler *scheduler, struct vy_task *task)
 	 * compacted runs.
 	 */
 	if (!vy_run_is_empty(new_run)) {
-		new_slice = vy_slice_new(vy_log_next_id(), new_run, NULL, NULL,
-					 index->cmp_def);
+		new_slice = vy_slice_new(vy_log_next_id(), new_run,
+					 NULL, NULL, lsm->cmp_def);
 		if (new_slice == NULL)
 			return -1;
 	}
@@ -1039,7 +1088,7 @@ vy_task_compact_complete(struct vy_scheduler *scheduler, struct vy_task *task)
 	}
 	for (slice = first_slice; ; slice = rlist_next_entry(slice, in_range)) {
 		run = slice->run;
-		if (run->compacted_slice_count == run->refs)
+		if (run->compacted_slice_count == run->slice_count)
 			rlist_add_entry(&unused_runs, run, in_unused);
 		slice->run->compacted_slice_count = 0;
 		if (slice == last_slice)
@@ -1059,8 +1108,7 @@ vy_task_compact_complete(struct vy_scheduler *scheduler, struct vy_task *task)
 	rlist_foreach_entry(run, &unused_runs, in_unused)
 		vy_log_drop_run(run->id, gc_lsn);
 	if (new_slice != NULL) {
-		vy_log_create_run(index->commit_lsn, new_run->id,
-				  new_run->dump_lsn);
+		vy_log_create_run(lsm->id, new_run->id, new_run->dump_lsn);
 		vy_log_insert_slice(range->id, new_run->id, new_slice->id,
 				    tuple_data_or_null(new_slice->begin),
 				    tuple_data_or_null(new_slice->end));
@@ -1071,13 +1119,29 @@ vy_task_compact_complete(struct vy_scheduler *scheduler, struct vy_task *task)
 		return -1;
 	}
 
+	if (gc_lsn < 0) {
+		/*
+		 * If there is no last snapshot, i.e. we are in
+		 * the middle of join, we can delete compacted
+		 * run files right away.
+		 */
+		vy_log_tx_begin();
+		rlist_foreach_entry(run, &unused_runs, in_unused) {
+			if (vy_run_remove_files(lsm->env->path, lsm->space_id,
+						lsm->index_id, run->id) == 0) {
+				vy_log_forget_run(run->id);
+			}
+		}
+		vy_log_tx_try_commit();
+	}
+
 	/*
 	 * Account the new run if it is not empty,
 	 * otherwise discard it.
 	 */
 	if (new_slice != NULL) {
-		vy_index_add_run(index, new_run);
-		vy_stmt_counter_add_disk(&index->stat.disk.compact.out,
+		vy_lsm_add_run(lsm, new_run);
+		vy_stmt_counter_add_disk(&lsm->stat.disk.compact.out,
 					 &new_run->count);
 		/* Drop the reference held by the task. */
 		vy_run_unref(new_run);
@@ -1093,29 +1157,29 @@ vy_task_compact_complete(struct vy_scheduler *scheduler, struct vy_task *task)
 	 * the compacted slices were.
 	 */
 	RLIST_HEAD(compacted_slices);
-	vy_index_unacct_range(index, range);
+	vy_lsm_unacct_range(lsm, range);
 	if (new_slice != NULL)
 		vy_range_add_slice_before(range, new_slice, first_slice);
 	for (slice = first_slice; ; slice = next_slice) {
 		next_slice = rlist_next_entry(slice, in_range);
 		vy_range_remove_slice(range, slice);
 		rlist_add_entry(&compacted_slices, slice, in_range);
-		vy_stmt_counter_add_disk(&index->stat.disk.compact.in,
+		vy_stmt_counter_add_disk(&lsm->stat.disk.compact.in,
 					 &slice->count);
 		if (slice == last_slice)
 			break;
 	}
 	range->n_compactions++;
 	range->version++;
-	vy_index_acct_range(index, range);
-	vy_range_update_compact_priority(range, &index->opts);
-	index->stat.disk.compact.count++;
+	vy_lsm_acct_range(lsm, range);
+	vy_range_update_compact_priority(range, &lsm->opts);
+	lsm->stat.disk.compact.count++;
 
 	/*
 	 * Unaccount unused runs and delete compacted slices.
 	 */
 	rlist_foreach_entry(run, &unused_runs, in_unused)
-		vy_index_remove_run(index, run);
+		vy_lsm_remove_run(lsm, run);
 	rlist_foreach_entry_safe(slice, &compacted_slices,
 				 in_range, next_slice) {
 		vy_slice_wait_pinned(slice);
@@ -1126,11 +1190,11 @@ vy_task_compact_complete(struct vy_scheduler *scheduler, struct vy_task *task)
 	task->wi->iface->close(task->wi);
 
 	assert(range->heap_node.pos == UINT32_MAX);
-	vy_range_heap_insert(&index->range_heap, &range->heap_node);
-	vy_scheduler_update_index(scheduler, index);
+	vy_range_heap_insert(&lsm->range_heap, &range->heap_node);
+	vy_scheduler_update_lsm(scheduler, lsm);
 
 	say_info("%s: completed compacting range %s",
-		 vy_index_name(index), vy_range_str(range));
+		 vy_lsm_name(lsm), vy_range_str(range));
 	return 0;
 }
 
@@ -1138,7 +1202,7 @@ static void
 vy_task_compact_abort(struct vy_scheduler *scheduler, struct vy_task *task,
 		      bool in_shutdown)
 {
-	struct vy_index *index = task->index;
+	struct vy_lsm *lsm = task->lsm;
 	struct vy_range *range = task->range;
 
 	/* The iterator has been cleaned up in worker. */
@@ -1146,13 +1210,13 @@ vy_task_compact_abort(struct vy_scheduler *scheduler, struct vy_task *task,
 
 	/*
 	 * It's no use alerting the user if the server is
-	 * shutting down or the index was dropped.
+	 * shutting down or the LSM tree was dropped.
 	 */
-	if (!in_shutdown && !index->is_dropped) {
+	if (!in_shutdown && !lsm->is_dropped) {
 		struct error *e = diag_last_error(&task->diag);
 		error_log(e);
 		say_error("%s: failed to compact range %s",
-			  vy_index_name(index), vy_range_str(range));
+			  vy_lsm_name(lsm), vy_range_str(range));
 	}
 
 	/* The metadata log is unavailable on shutdown. */
@@ -1162,12 +1226,12 @@ vy_task_compact_abort(struct vy_scheduler *scheduler, struct vy_task *task,
 		vy_run_unref(task->new_run);
 
 	assert(range->heap_node.pos == UINT32_MAX);
-	vy_range_heap_insert(&index->range_heap, &range->heap_node);
-	vy_scheduler_update_index(scheduler, index);
+	vy_range_heap_insert(&lsm->range_heap, &range->heap_node);
+	vy_scheduler_update_lsm(scheduler, lsm);
 }
 
 static int
-vy_task_compact_new(struct vy_scheduler *scheduler, struct vy_index *index,
+vy_task_compact_new(struct vy_scheduler *scheduler, struct vy_lsm *lsm,
 		    struct vy_task **p_task)
 {
 	static struct vy_task_ops compact_ops = {
@@ -1179,33 +1243,33 @@ vy_task_compact_new(struct vy_scheduler *scheduler, struct vy_index *index,
 	struct heap_node *range_node;
 	struct vy_range *range;
 
-	assert(!index->is_dropped);
+	assert(!lsm->is_dropped);
 
-	range_node = vy_range_heap_top(&index->range_heap);
+	range_node = vy_range_heap_top(&lsm->range_heap);
 	assert(range_node != NULL);
 	range = container_of(range_node, struct vy_range, heap_node);
 	assert(range->compact_priority > 1);
 
-	if (vy_index_split_range(index, range) ||
-	    vy_index_coalesce_range(index, range)) {
-		vy_scheduler_update_index(scheduler, index);
+	if (vy_lsm_split_range(lsm, range) ||
+	    vy_lsm_coalesce_range(lsm, range)) {
+		vy_scheduler_update_lsm(scheduler, lsm);
 		return 0;
 	}
 
 	struct vy_task *task = vy_task_new(&scheduler->task_pool,
-					   index, &compact_ops);
+					   lsm, &compact_ops);
 	if (task == NULL)
 		goto err_task;
 
-	struct vy_run *new_run = vy_run_prepare(scheduler->run_env, index);
+	struct vy_run *new_run = vy_run_prepare(scheduler->run_env, lsm);
 	if (new_run == NULL)
 		goto err_run;
 
 	struct vy_stmt_stream *wi;
 	bool is_last_level = (range->compact_priority == range->slice_count);
-	wi = vy_write_iterator_new(index->cmp_def, index->disk_format,
-				   index->upsert_format, index->id == 0,
-				   is_last_level, scheduler->read_views);
+	wi = vy_write_iterator_new(task->cmp_def, lsm->disk_format,
+				   lsm->index_id == 0, is_last_level,
+				   scheduler->read_views);
 	if (wi == NULL)
 		goto err_wi;
 
@@ -1214,11 +1278,8 @@ vy_task_compact_new(struct vy_scheduler *scheduler, struct vy_index *index,
 	rlist_foreach_entry(slice, &range->slices, in_range) {
 		if (vy_write_iterator_new_slice(wi, slice) != 0)
 			goto err_wi_sub;
-
-		task->max_output_count += slice->count.rows;
 		new_run->dump_lsn = MAX(new_run->dump_lsn,
 					slice->run->dump_lsn);
-
 		/* Remember the slices we are compacting. */
 		if (task->first_slice == NULL)
 			task->first_slice = slice;
@@ -1233,19 +1294,19 @@ vy_task_compact_new(struct vy_scheduler *scheduler, struct vy_index *index,
 	task->range = range;
 	task->new_run = new_run;
 	task->wi = wi;
-	task->bloom_fpr = index->opts.bloom_fpr;
-	task->page_size = index->opts.page_size;
+	task->bloom_fpr = lsm->opts.bloom_fpr;
+	task->page_size = lsm->opts.page_size;
 
 	/*
 	 * Remove the range we are going to compact from the heap
 	 * so that it doesn't get selected again.
 	 */
-	vy_range_heap_delete(&index->range_heap, range_node);
+	vy_range_heap_delete(&lsm->range_heap, range_node);
 	range_node->pos = UINT32_MAX;
-	vy_scheduler_update_index(scheduler, index);
+	vy_scheduler_update_lsm(scheduler, lsm);
 
 	say_info("%s: started compacting range %s, runs %d/%d",
-		 vy_index_name(index), vy_range_str(range),
+		 vy_lsm_name(lsm), vy_range_str(range),
                  range->compact_priority, range->slice_count);
 	*p_task = task;
 	return 0;
@@ -1259,17 +1320,17 @@ err_run:
 err_task:
 	diag_log();
 	say_error("%s: could not start compacting range %s: %s",
-		  vy_index_name(index), vy_range_str(range));
+		  vy_lsm_name(lsm), vy_range_str(range));
 	return -1;
 }
 
 /**
- * Create a task for dumping an index. The new task is returned
- * in @ptask. If there's no index that needs to be dumped @ptask
+ * Create a task for dumping an LSM tree. The new task is returned
+ * in @ptask. If there's no LSM tree that needs to be dumped @ptask
  * is set to NULL.
  *
- * We only dump an index if it needs to be snapshotted or the quota
- * on memory usage is exceeded. In either case, the oldest index
+ * We only dump an LSM tree if it needs to be snapshotted or the quota
+ * on memory usage is exceeded. In either case, the oldest LSM tree
  * is selected, because dumping it will free the maximal amount of
  * memory due to log structured design of the memory allocator.
  *
@@ -1289,38 +1350,38 @@ retry:
 		return 0;
 	}
 	/*
-	 * Look up the oldest index eligible for dump.
+	 * Look up the oldest LSM tree eligible for dump.
 	 */
 	struct heap_node *pn = vy_dump_heap_top(&scheduler->dump_heap);
 	if (pn == NULL) {
 		/*
-		 * There is no vinyl index and so no task to schedule.
+		 * There is no LSM tree and so no task to schedule.
 		 * Complete the current dump round.
 		 */
 		vy_scheduler_complete_dump(scheduler);
 		return 0;
 	}
-	struct vy_index *index = container_of(pn, struct vy_index, in_dump);
-	if (!index->is_dumping && index->pin_count == 0 &&
-	    vy_index_generation(index) == scheduler->dump_generation) {
+	struct vy_lsm *lsm = container_of(pn, struct vy_lsm, in_dump);
+	if (!lsm->is_dumping && lsm->pin_count == 0 &&
+	    vy_lsm_generation(lsm) == scheduler->dump_generation) {
 		/*
-		 * Dump is in progress and there is an index that
+		 * Dump is in progress and there is an LSM tree that
 		 * contains data that must be dumped at the current
 		 * round. Try to create a task for it.
 		 */
-		if (vy_task_dump_new(scheduler, index, ptask) != 0)
+		if (vy_task_dump_new(scheduler, lsm, ptask) != 0)
 			return -1;
 		if (*ptask != NULL)
 			return 0; /* new task */
 		/*
 		 * All in-memory trees eligible for dump were empty
 		 * and so were deleted without involving a worker
-		 * thread. Check another index.
+		 * thread. Check another LSM tree.
 		 */
 		goto retry;
 	}
 	/*
-	 * Dump is in progress, but all eligible indexes are
+	 * Dump is in progress, but all eligible LSM trees are
 	 * already being dumped. Wait until the current round
 	 * is complete.
 	 */
@@ -1349,13 +1410,13 @@ retry:
 	struct heap_node *pn = vy_compact_heap_top(&scheduler->compact_heap);
 	if (pn == NULL)
 		return 0; /* nothing to do */
-	struct vy_index *index = container_of(pn, struct vy_index, in_compact);
-	if (vy_index_compact_priority(index) <= 1)
+	struct vy_lsm *lsm = container_of(pn, struct vy_lsm, in_compact);
+	if (vy_lsm_compact_priority(lsm) <= 1)
 		return 0; /* nothing to do */
-	if (vy_task_compact_new(scheduler, index, ptask) != 0)
+	if (vy_task_compact_new(scheduler, lsm, ptask) != 0)
 		return -1;
 	if (*ptask == NULL)
-		goto retry; /* index dropped or range split/coalesced */
+		goto retry; /* LSM tree dropped or range split/coalesced */
 	return 0; /* new task */
 }
 
@@ -1399,7 +1460,7 @@ static int
 vy_scheduler_complete_task(struct vy_scheduler *scheduler,
 			   struct vy_task *task)
 {
-	if (task->index->is_dropped) {
+	if (task->lsm->is_dropped) {
 		if (task->ops->abort)
 			task->ops->abort(scheduler, task, false);
 		return 0;
@@ -1544,11 +1605,10 @@ wait:
 	return 0;
 }
 
-static int
-vy_worker_f(va_list va)
+static void *
+vy_worker_f(void *arg)
 {
-	struct vy_scheduler *scheduler = va_arg(va, struct vy_scheduler *);
-	coio_enable();
+	struct vy_scheduler *scheduler = arg;
 	struct vy_task *task = NULL;
 
 	tt_pthread_mutex_lock(&scheduler->mutex);
@@ -1568,7 +1628,7 @@ vy_worker_f(va_list va)
 		assert(task != NULL);
 
 		/* Execute task */
-		task->status = task->ops->execute(task);
+		task->status = task->ops->execute(scheduler, task);
 		if (task->status != 0) {
 			struct diag *diag = diag_get();
 			assert(!diag_is_empty(diag));
@@ -1580,5 +1640,5 @@ vy_worker_f(va_list va)
 		stailq_add_tail_entry(&scheduler->output_queue, task, link);
 	}
 	tt_pthread_mutex_unlock(&scheduler->mutex);
-	return 0;
+	return NULL;
 }

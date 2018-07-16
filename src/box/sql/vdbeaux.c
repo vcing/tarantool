@@ -66,6 +66,7 @@ sqlite3VdbeCreate(Parse * pParse)
 	p->magic = VDBE_MAGIC_INIT;
 	p->pParse = pParse;
 	p->autoCommit = (char)box_txn() == 0 ? 1 : 0;
+	p->schema_ver = box_schema_version();
 	if (!p->autoCommit) {
 		p->psql_txn = in_txn()->psql_txn;
 		p->nDeferredCons = p->psql_txn->nDeferredConsSave;
@@ -413,6 +414,16 @@ sqlite3VdbeAddOp4Int(Vdbe * p,	/* Add the opcode to this VM */
 	return addr;
 }
 
+int
+sqlite3VdbeAddOp4Ptr(Vdbe *p, int op, int p1, int p2, int p3, void *ptr)
+{
+	int addr = sqlite3VdbeAddOp3(p, op, p1, p2, p3);
+	VdbeOp *pOp = &p->aOp[addr];
+	pOp->p4type = P4_PTR;
+	pOp->p4.p = ptr;
+	return addr;
+}
+
 /* Insert the end of a co-routine
  */
 void
@@ -581,7 +592,6 @@ opIterNext(VdbeOpIter * p)
  *
  *   *  OP_Halt with P1=SQLITE_CONSTRAINT and P2=ON_CONFLICT_ACTION_ABORT.
  *   *  OP_HaltIfNull with P1=SQLITE_CONSTRAINT and P2=ON_CONFLICT_ACTION_ABORT.
- *   *  OP_Destroy
  *   *  OP_FkCounter with P2==0 (immediate foreign key constraint)
  *
  * Then check that the value of Parse.mayAbort is true if an
@@ -603,11 +613,9 @@ sqlite3VdbeAssertMayAbort(Vdbe * v, int mayAbort)
 
 	while ((pOp = opIterNext(&sIter)) != 0) {
 		int opcode = pOp->opcode;
-		if (opcode == OP_Destroy ||
-		    ((opcode == OP_Halt || opcode == OP_HaltIfNull)
-			&& ((pOp->p1 & 0xff) == SQLITE_CONSTRAINT
-			    && pOp->p2 == ON_CONFLICT_ACTION_ABORT))
-		    ) {
+		if ((opcode == OP_Halt || opcode == OP_HaltIfNull) &&
+		    (pOp->p1 & 0xff) == SQLITE_CONSTRAINT &&
+	            pOp->p2 == ON_CONFLICT_ACTION_ABORT){
 			hasAbort = 1;
 			break;
 		}
@@ -639,16 +647,13 @@ sqlite3VdbeAssertMayAbort(Vdbe * v, int mayAbort)
  * (2) Compute the maximum number of arguments used by any SQL function
  *     and store that value in *pMaxFuncArgs.
  *
- * (3) Update the Vdbe.readOnly and Vdbe.bIsReader flags to accurately
- *     indicate what the prepared statement actually does.
+ * (3) Initialize the p4.xAdvance pointer on opcodes that use it.
  *
- * (4) Initialize the p4.xAdvance pointer on opcodes that use it.
+ * (4) Reclaim the memory allocated for storing labels.
  *
- * (5) Reclaim the memory allocated for storing labels.
- *
- * This routine will only function correctly if the mkopcodeh.tcl generator
+ * This routine will only function correctly if the mkopcodeh.sh generator
  * script numbers the opcodes correctly.  Changes to this routine must be
- * coordinated with changes to mkopcodeh.tcl.
+ * coordinated with changes to mkopcodeh.sh.
  */
 static void
 resolveP2Values(Vdbe * p, int *pMaxFuncArgs)
@@ -657,41 +662,20 @@ resolveP2Values(Vdbe * p, int *pMaxFuncArgs)
 	Op *pOp;
 	Parse *pParse = p->pParse;
 	int *aLabel = pParse->aLabel;
-	p->readOnly = 1;
-	p->bIsReader = 0;
 	pOp = &p->aOp[p->nOp - 1];
 	while (1) {
 
 		/* Only JUMP opcodes and the short list of special opcodes in the switch
-		 * below need to be considered.  The mkopcodeh.tcl generator script groups
+		 * below need to be considered.  The mkopcodeh.sh generator script groups
 		 * all these opcodes together near the front of the opcode list.  Skip
 		 * any opcode that does not need processing by virtual of the fact that
 		 * it is larger than SQLITE_MX_JUMP_OPCODE, as a performance optimization.
 		 */
 		if (pOp->opcode <= SQLITE_MX_JUMP_OPCODE) {
-			/* NOTE: Be sure to update mkopcodeh.tcl when adding or removing
+			/* NOTE: Be sure to update mkopcodeh.sh when adding or removing
 			 * cases from this switch!
 			 */
 			switch (pOp->opcode) {
-			case OP_Transaction:{
-					if (pOp->p2 != 0)
-						p->readOnly = 0;
-					/* fall thru */
-					FALLTHROUGH;
-				}
-			case OP_AutoCommit:
-			case OP_Savepoint:{
-					p->bIsReader = 1;
-					break;
-				}
-#ifndef SQLITE_OMIT_WAL
-			case OP_Checkpoint:
-#endif
-			case OP_JournalMode:{
-					p->readOnly = 0;
-					p->bIsReader = 1;
-					break;
-				}
 			case OP_Next:
 			case OP_NextIfOpen:
 			case OP_SorterNext:{
@@ -1389,7 +1373,7 @@ displayComment(const Op * pOp,	/* The opcode to be commented */
 }
 #endif				/* SQLITE_DEBUG */
 
-#if VDBE_DISPLAY_P4 && defined(SQLITE_ENABLE_CURSOR_HINTS)
+#if defined(SQLITE_ENABLE_CURSOR_HINTS)
 /*
  * Translate the P4.pExpr value for an OP_CursorHint opcode into text
  * that can be displayed in the P4 column of EXPLAIN output.
@@ -1514,9 +1498,8 @@ displayP4Expr(StrAccum * p, Expr * pExpr)
 		sqlite3StrAccumAppend(p, ")", 1);
 	}
 }
-#endif				/* VDBE_DISPLAY_P4 && defined(SQLITE_ENABLE_CURSOR_HINTS) */
+#endif				/* defined(SQLITE_ENABLE_CURSOR_HINTS) */
 
-#if VDBE_DISPLAY_P4
 /*
  * Compute a string that describes the P4 parameter for an opcode.
  * Use zTemp for any required temporary buffer space.
@@ -1629,10 +1612,6 @@ displayP4(Op * pOp, char *zTemp, int nTemp)
 			zTemp[0] = 0;
 			break;
 		}
-	case P4_TABLE:{
-			sqlite3XPrintf(&x, "%s", pOp->p4.pTab->zName);
-			break;
-		}
 	default:{
 			zP4 = pOp->p4.z;
 			if (zP4 == 0) {
@@ -1645,7 +1624,6 @@ displayP4(Op * pOp, char *zTemp, int nTemp)
 	assert(zP4 != 0);
 	return zP4;
 }
-#endif				/* VDBE_DISPLAY_P4 */
 
 
 #if defined(VDBE_PROFILE) || defined(SQLITE_DEBUG)
@@ -1762,7 +1740,6 @@ sqlite3VdbeFrameDelete(VdbeFrame * p)
 	sqlite3DbFree(p->v->db, p);
 }
 
-#ifndef SQLITE_OMIT_EXPLAIN
 /*
  * Give a listing of the program in the virtual machine.
  *
@@ -1959,7 +1936,6 @@ sqlite3VdbeList(Vdbe * p)
 	}
 	return rc;
 }
-#endif				/* SQLITE_OMIT_EXPLAIN */
 
 #ifdef SQLITE_DEBUG
 /*
@@ -2168,7 +2144,6 @@ sqlite3VdbeMakeReady(Vdbe * p,	/* The VDBE */
 	assert(EIGHT_BYTE_ALIGNMENT(&x.pSpace[x.nFree]));
 
 	resolveP2Values(p, &nArg);
-	p->usesStmtJournal = (u8) (pParse->isMultiWrite && pParse->mayAbort);
 	if (pParse->explain && nMem < 10) {
 		nMem = 10;
 	}
@@ -2238,7 +2213,7 @@ sqlite3VdbeFreeCursor(Vdbe * p, VdbeCursor * pCx)
 		}
 	case CURTYPE_TARANTOOL:{
 		assert(pCx->uc.pCursor != 0);
-		sqlite3CloseCursor(pCx->uc.pCursor);
+		sql_cursor_close(pCx->uc.pCursor);
 			break;
 		}
 	}
@@ -2411,6 +2386,7 @@ sqlite3VdbeSetColName(Vdbe * p,			/* Vdbe being configured */
 		return SQLITE_NOMEM_BKPT;
 	}
 	assert(p->aColName != 0);
+	assert(var == COLNAME_NAME);
 	pColName = &(p->aColName[idx + var * p->nResColumn]);
 	rc = sqlite3VdbeMemSetStr(pColName, zName, -1, 1, xDel);
 	assert(rc != 0 || !zName || (pColName->flags & MEM_Term) != 0);
@@ -2432,22 +2408,14 @@ checkActiveVdbeCnt(sqlite3 * db)
 {
 	Vdbe *p;
 	int cnt = 0;
-	int nWrite = 0;
-	int nRead = 0;
 	p = db->pVdbe;
 	while (p) {
 		if (sqlite3_stmt_busy((sqlite3_stmt *) p)) {
 			cnt++;
-			if (p->readOnly == 0)
-				nWrite++;
-			if (p->bIsReader)
-				nRead++;
 		}
 		p = p->pNext;
 	}
 	assert(cnt == db->nVdbeActive);
-	assert(nWrite == db->nVdbeWrite);
-	assert(nRead == db->nVdbeRead);
 }
 #else
 #define checkActiveVdbeCnt(x)
@@ -2603,7 +2571,7 @@ sqlite3VdbeHalt(Vdbe * p)
 	/* No commit or rollback needed if the program never started or if the
 	 * SQL statement does not read or write a database file.
 	 */
-	if (p->pc >= 0 && p->bIsReader) {
+	if (p->pc >= 0) {
 		int mrc;	/* Primary error code from p->rc */
 		int eStatementOp = 0;
 		int isSpecialError;	/* Set to true if a 'special' error */
@@ -2625,7 +2593,7 @@ sqlite3VdbeHalt(Vdbe * p)
 			 * pagerStress() in pager.c), the rollback is required to restore
 			 * the pager to a consistent state.
 			 */
-			if (!p->readOnly || mrc != SQLITE_INTERRUPT) {
+			if (mrc != SQLITE_INTERRUPT) {
 				if ((mrc == SQLITE_NOMEM || mrc == SQLITE_FULL)
 				    && p->autoCommit == 0) {
 					eStatementOp = SAVEPOINT_ROLLBACK;
@@ -2661,7 +2629,11 @@ sqlite3VdbeHalt(Vdbe * p)
 				&& !isSpecialError)) {
 				rc = sqlite3VdbeCheckFk(p, 1);
 				if (rc != SQLITE_OK) {
-					if (NEVER(p->readOnly)) {
+					/* Close all opened cursors if
+					 * they exist and free all
+					 * VDBE frames.
+					 */
+					if (NEVER(p->pDelFrame)) {
 						closeCursorsAndFree(p);
 						return SQLITE_ERROR;
 					}
@@ -2677,7 +2649,7 @@ sqlite3VdbeHalt(Vdbe * p)
 						    SQL_TARANTOOL_ERROR;
 					closeCursorsAndFree(p);
 				}
-				if (rc == SQLITE_BUSY && p->readOnly) {
+				if (rc == SQLITE_BUSY && !p->pDelFrame) {
 					closeCursorsAndFree(p);
 					return SQLITE_BUSY;
 				} else if (rc != SQLITE_OK) {
@@ -2757,19 +2729,18 @@ sqlite3VdbeHalt(Vdbe * p)
 	/* We have successfully halted and closed the VM.  Record this fact. */
 	if (p->pc >= 0) {
 		db->nVdbeActive--;
-		if (!p->readOnly)
-			db->nVdbeWrite--;
-		if (p->bIsReader)
-			db->nVdbeRead--;
-		assert(db->nVdbeActive >= db->nVdbeRead);
-		assert(db->nVdbeRead >= db->nVdbeWrite);
-		assert(db->nVdbeWrite >= 0);
 	}
 	p->magic = VDBE_MAGIC_HALT;
 	checkActiveVdbeCnt(db);
 	if (db->mallocFailed) {
 		p->rc = SQLITE_NOMEM_BKPT;
 	}
+
+	/* Release all region memory which was allocated
+	 * to hold tuples to be inserted into ephemeral spaces.
+	 */
+	if (!box_txn())
+		fiber_gc();
 
 	assert(db->nVdbeActive > 0 || p->autoCommit == 0 ||
 		       p->anonymous_savepoint == NULL);
@@ -3035,7 +3006,6 @@ sqlite3VdbeDelete(Vdbe * p)
 	if (NEVER(p == 0))
 		return;
 	db = p->db;
-	assert(sqlite3_mutex_held(db->mutex));
 	sqlite3VdbeClearObject(db, p);
 	if (p->pPrev) {
 		p->pPrev->pNext = p->pNext;
@@ -3866,6 +3836,13 @@ sqlite3MemCompare(const Mem * pMem1, const Mem * pMem2, const struct coll * pCol
 		 */
 		if (pColl) {
 			return vdbeCompareMemString(pMem1, pMem2, pColl, 0);
+		} else {
+			size_t n = pMem1->n < pMem2->n ? pMem1->n : pMem2->n;
+			int res;
+			res = memcmp(pMem1->z, pMem2->z, n);
+			if (res == 0)
+				res = (int)pMem1->n - (int)pMem2->n;
+			return res;
 		}
 		/* If a NULL pointer was passed as the collate function, fall through
 		 * to the blob case and use memcmp().
@@ -4200,7 +4177,6 @@ sqlite3VdbeIdxKeyCompare(sqlite3 * db,			/* Database connection */
 void
 sqlite3VdbeSetChanges(sqlite3 * db, int nChange)
 {
-	assert(sqlite3_mutex_held(db->mutex));
 	db->nChange = nChange;
 	db->nTotalChange += nChange;
 }
@@ -4752,7 +4728,7 @@ table_column_is_nullable(struct Table *tab, uint32_t column)
 {
 	/* Temporary hack: until Tarantoool's ephemeral spaces are on-boarded,
 	*  views are not handled properly in Tarantool as well. */
-	if (!(tab->tabFlags | TF_Ephemeral || tab->pSelect != NULL)) {
+	if (!(tab->tabFlags | TF_Ephemeral || space_is_view(tab))) {
 		uint32_t space_id = SQLITE_PAGENO_TO_SPACEID(tab->tnum);
 		struct space *space = space_cache_find(space_id);
 

@@ -46,6 +46,8 @@
 extern "C" {
 #endif /* defined(__cplusplus) */
 
+struct vy_history;
+
 /**
  * A record in tuple cache
  */
@@ -127,11 +129,9 @@ struct vy_cache_env {
  * Initialize common cache environment.
  * @param e - the environment.
  * @param slab_cache - source of memory.
- * @param mem_quota - memory limit for the cache.
  */
 void
-vy_cache_env_create(struct vy_cache_env *env, struct slab_cache *slab_cache,
-		    size_t mem_quota);
+vy_cache_env_create(struct vy_cache_env *env, struct slab_cache *slab_cache);
 
 /**
  * Destroy and free resources of cache environment.
@@ -141,7 +141,18 @@ void
 vy_cache_env_destroy(struct vy_cache_env *e);
 
 /**
- * Tuple cache (of one particular index)
+ * Set memory limit for the cache.
+ * @param e - the environment.
+ * @param quota - memory limit for the cache.
+ *
+ * This function blocks until it manages to free enough memory
+ * to fit in the new limit.
+ */
+void
+vy_cache_env_set_quota(struct vy_cache_env *e, size_t quota);
+
+/**
+ * Tuple cache (of one particular LSM tree)
  */
 struct vy_cache {
 	/**
@@ -254,34 +265,37 @@ vy_cache_iterator_open(struct vy_cache_iterator *itr, struct vy_cache *cache,
 		       const struct tuple *key, const struct vy_read_view **rv);
 
 /**
- * Advance a cache iterator to the next statement.
- * The next statement is returned in @ret (NULL if EOF).
+ * Advance a cache iterator to the next key.
+ * The key history is returned in @history (empty if EOF).
  * @stop flag is set if a chain was found in the cache
  * and so there shouldn't be statements preceding the
- * returned statement in memory or on disk.
+ * returned statement in memory or on disk. The function
+ * returns 0 on success, -1 on memory allocation error.
  */
-void
+NODISCARD int
 vy_cache_iterator_next(struct vy_cache_iterator *itr,
-		       struct tuple **ret, bool *stop);
+		       struct vy_history *history, bool *stop);
 
 /**
- * Advance a cache iterator to the statement following @last_stmt.
- * The statement is returned in @ret (NULL if EOF).
+ * Advance a cache iterator to the key following @last_stmt.
+ * The key history is returned in @history (empty if EOF).
+ * Returns 0 on success, -1 on memory allocation error.
  */
-void
+NODISCARD int
 vy_cache_iterator_skip(struct vy_cache_iterator *itr,
 		       const struct tuple *last_stmt,
-		       struct tuple **ret, bool *stop);
+		       struct vy_history *history, bool *stop);
 
 /**
  * Check if a cache iterator was invalidated and needs to be restored.
- * If it does, set the iterator position to the statement following
- * @last_stmt and return 1, otherwise return 0.
+ * If it does, set the iterator position to the first key following
+ * @last_stmt and return 1, otherwise return 0. Returns -1 on memory
+ * allocation error.
  */
-int
+NODISCARD int
 vy_cache_iterator_restore(struct vy_cache_iterator *itr,
 			  const struct tuple *last_stmt,
-			  struct tuple **ret, bool *stop);
+			  struct vy_history *history, bool *stop);
 
 /**
  * Close a cache iterator.

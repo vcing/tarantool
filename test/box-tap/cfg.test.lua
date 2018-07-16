@@ -6,7 +6,7 @@ local socket = require('socket')
 local fio = require('fio')
 local uuid = require('uuid')
 local msgpack = require('msgpack')
-test:plan(80)
+test:plan(91)
 
 --------------------------------------------------------------------------------
 -- Invalid values
@@ -27,12 +27,33 @@ invalid('memtx_min_tuple_size', 1000000000)
 invalid('replication', '//guest@localhost:3301')
 invalid('replication_timeout', -1)
 invalid('replication_timeout', 0)
+invalid('replication_sync_lag', -1)
+invalid('replication_sync_lag', 0)
+invalid('replication_connect_timeout', -1)
+invalid('replication_connect_timeout', 0)
+invalid('replication_connect_quorum', -1)
 invalid('wal_mode', 'invalid')
 invalid('rows_per_wal', -1)
 invalid('listen', '//!')
 invalid('log', ':')
 invalid('log', 'syslog:xxx=')
 invalid('log_level', 'unknown')
+invalid('vinyl_read_threads', 0)
+invalid('vinyl_write_threads', 1)
+invalid('vinyl_range_size', 0)
+invalid('vinyl_page_size', 0)
+invalid('vinyl_run_count_per_level', 0)
+invalid('vinyl_run_size_ratio', 1)
+invalid('vinyl_bloom_fpr', 0)
+invalid('vinyl_bloom_fpr', 1.1)
+
+local function invalid_combinations(name, val)
+    local status, result = pcall(box.cfg, val)
+    test:ok(not status and result:match('Illegal'), 'invalid '..name)
+end
+
+invalid_combinations("log, log_nonblock", {log = "1.log", log_nonblock = true})
+invalid_combinations("log, log_format", {log = "syslog:identity=tarantool", log_format = 'json'})
 
 test:is(type(box.cfg), 'function', 'box is not started')
 
@@ -66,6 +87,7 @@ test:ok(status and result[1] == 1, "box.tuple without box.cfg")
 os.execute("rm -rf vinyl")
 box.cfg{
     log="tarantool.log",
+    log_nonblock=false,
     memtx_memory=104857600,
     wal_mode = "", -- "" means default value
 }
@@ -150,7 +172,7 @@ function run_script(code)
 end
 
 -- gh-715: Cannot switch to/from 'fsync'
-code = [[ box.cfg{ log="tarantool.log", wal_mode = 'fsync' }; ]]
+code = [[ box.cfg{ log="tarantool.log", log_nonblock = false, wal_mode = 'fsync' }; ]]
 test:is(run_script(code), 0, 'wal_mode fsync')
 
 code = [[ box.cfg{ wal_mode = 'fsync' }; box.cfg { wal_mode = 'fsync' }; ]]
@@ -177,7 +199,7 @@ test:is(run_script(code), PANIC, 'snap_dir is invalid')
 code = [[ box.cfg{ wal_dir='invalid' } ]]
 test:is(run_script(code), PANIC, 'wal_dir is invalid')
 
-test:is(box.cfg.log_nonblock, true, "log_nonblock default value")
+test:isnil(box.cfg.log_nonblock, "log_nonblock default value")
 code = [[
 box.cfg{log_nonblock = false }
 os.exit(box.cfg.log_nonblock == false and 0 or 1)
@@ -258,36 +280,6 @@ box.cfg{vinyl_page_size = 2 * 1024 * 1024, vinyl_range_size = 2 * 1024 * 1024}
 os.exit(0)
 ]]
 test:is(run_script(code), 0, "page size equal with range")
-
---
--- there is at least one vinyl reader thread.
---
-code = [[
-box.cfg{vinyl_read_threads = 0}
-os.exit(0)
-]]
-test:is(run_script(code), PANIC, "vinyl_read_threads = 0")
-
-code = [[
-box.cfg{vinyl_read_threads = 1}
-os.exit(0)
-]]
-test:is(run_script(code), 0, "vinyl_read_threads = 1")
-
---
--- gh-2150 one vinyl worker thread is reserved for dumps
---
-code = [[
-box.cfg{vinyl_write_threads = 1}
-os.exit(0)
-]]
-test:is(run_script(code), PANIC, "vinyl_write_threads = 1")
-
-code = [[
-box.cfg{vinyl_write_threads = 2}
-os.exit(0)
-]]
-test:is(run_script(code), 0, "vinyl_write_threads = 2")
 
 -- test memtx options upgrade
 code = [[

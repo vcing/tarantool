@@ -457,8 +457,13 @@ memtx_bitset_index_count(struct index *base, enum iterator_type type,
 static const struct index_vtab memtx_bitset_index_vtab = {
 	/* .destroy = */ memtx_bitset_index_destroy,
 	/* .commit_create = */ generic_index_commit_create,
-	/* .commit_drop = */ generic_index_commit_drop,
+	/* .abort_create = */ memtx_index_abort_create,
+	/* .commit_modify = */ generic_index_commit_modify,
+	/* .commit_drop = */ memtx_index_commit_drop,
 	/* .update_def = */ generic_index_update_def,
+	/* .depends_on_pk = */ generic_index_depends_on_pk,
+	/* .def_change_requires_rebuild = */
+		memtx_index_def_change_requires_rebuild,
 	/* .size = */ memtx_bitset_index_size,
 	/* .bsize = */ memtx_bitset_index_bsize,
 	/* .min = */ generic_index_min,
@@ -471,6 +476,7 @@ static const struct index_vtab memtx_bitset_index_vtab = {
 	/* .create_snapshot_iterator = */
 		generic_index_create_snapshot_iterator,
 	/* .info = */ generic_index_info,
+	/* .reset_stat = */ generic_index_reset_stat,
 	/* .begin_build = */ generic_index_begin_build,
 	/* .reserve = */ generic_index_reserve,
 	/* .build_next = */ generic_index_build_next,

@@ -514,3 +514,127 @@ s:format()[3].custom_field
 s:drop()
 ---
 ...
+--
+-- gh-2937: allow to specify collation in field definition.
+--
+format = {}
+---
+...
+format[1] = {name = 'field1', type = 'string', collation = 'unicode'}
+---
+...
+format[2] = {'field2', 'any', collation = 'unicode_ci'}
+---
+...
+format[3] = {type = 'scalar', name = 'field3', collation = 'unicode'}
+---
+...
+s = box.schema.create_space('test', {format = format})
+---
+...
+s:format()
+---
+- [{'type': 'string', 'name': 'field1', 'collation': 1}, {'type': 'any', 'name': 'field2',
+    'collation': 2}, {'type': 'scalar', 'name': 'field3', 'collation': 1}]
+...
+s:drop()
+---
+...
+-- Check that collation is allowed only for stings, scalar and any types.
+format = {}
+---
+...
+format[1] = {'field1', 'unsigned', collation = 'unicode'}
+---
+...
+s = box.schema.create_space('test', {format = format})
+---
+- error: 'Failed to create space ''test'': collation is reasonable only for string,
+    scalar and any fields'
+...
+format[1] = {'field2', 'array', collation = 'unicode_ci'}
+---
+...
+s = box.schema.create_space('test', {format = format})
+---
+- error: 'Failed to create space ''test'': collation is reasonable only for string,
+    scalar and any fields'
+...
+-- Check that error is raised when collation doesn't exists.
+format = {}
+---
+...
+format[1] = {'field1', 'unsigend', collation = 'test_coll'}
+---
+...
+s = box.schema.create_space('test', {format = format})
+---
+- error: 'Illegal parameters, format[1]: collation was not found by name ''test_coll'''
+...
+-- Check that error is raised when collation with wrong id is used.
+_space = box.space[box.schema.SPACE_ID]
+---
+...
+utils = require('utils')
+---
+...
+EMPTY_MAP = utils.setmap({})
+---
+...
+format = {{name = 'field1', type = 'string', collation = 666}}
+---
+...
+surrogate_space = {12345, 1, 'test', 'memtx', 0, EMPTY_MAP, format}
+---
+...
+_space:insert(surrogate_space)
+---
+- error: 'Wrong collation options (field 1): collation was not found by ID'
+...
+--
+-- gh-2783
+-- A ddl operation shoud fail before trying to lock a ddl latch
+-- in a multi-statement transaction.
+-- If operation tries to lock already an locked latch then the
+-- current transaction will be silently rolled back under our feet.
+-- This is confusing. So check for multi-statement transaction
+-- before locking the latch.
+--
+test_latch = box.schema.space.create('test_latch')
+---
+...
+_ = test_latch:create_index('primary', {unique = true, parts = {1, 'unsigned'}})
+---
+...
+fiber = require('fiber')
+---
+...
+c = fiber.channel(1)
+---
+...
+test_run:cmd("setopt delimiter ';'")
+---
+- true
+...
+_ = fiber.create(function()
+    test_latch:create_index("sec", {unique = true, parts = {2, 'unsigned'}})
+    c:put(true)
+end);
+---
+...
+box.begin()
+test_latch:create_index("sec2", {unique = true, parts = {2, 'unsigned'}})
+box.commit();
+---
+- error: DDL does not support multi-statement transactions
+...
+test_run:cmd("setopt delimiter ''");
+---
+- true
+...
+_ = c:get()
+---
+...
+test_latch:drop() -- this is where everything stops
+---
+...

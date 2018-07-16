@@ -90,6 +90,15 @@ sysview_index_bsize(struct index *index)
 	return 0;
 }
 
+static bool
+sysview_index_def_change_requires_rebuild(struct index *index,
+					  const struct index_def *new_def)
+{
+	(void)index;
+	(void)new_def;
+	return true;
+}
+
 static struct iterator *
 sysview_index_create_iterator(struct index *base, enum iterator_type type,
 			      const char *key, uint32_t part_count)
@@ -161,8 +170,13 @@ sysview_index_get(struct index *base, const char *key,
 static const struct index_vtab sysview_index_vtab = {
 	/* .destroy = */ sysview_index_destroy,
 	/* .commit_create = */ generic_index_commit_create,
+	/* .abort_create = */ generic_index_abort_create,
+	/* .commit_modify = */ generic_index_commit_modify,
 	/* .commit_drop = */ generic_index_commit_drop,
 	/* .update_def = */ generic_index_update_def,
+	/* .depends_on_pk = */ generic_index_depends_on_pk,
+	/* .def_change_requires_rebuild = */
+		sysview_index_def_change_requires_rebuild,
 	/* .size = */ generic_index_size,
 	/* .bsize = */ sysview_index_bsize,
 	/* .min = */ generic_index_min,
@@ -175,6 +189,7 @@ static const struct index_vtab sysview_index_vtab = {
 	/* .create_snapshot_iterator = */
 		generic_index_create_snapshot_iterator,
 	/* .info = */ generic_index_info,
+	/* .reset_stat = */ generic_index_reset_stat,
 	/* .begin_build = */ generic_index_begin_build,
 	/* .reserve = */ generic_index_reserve,
 	/* .build_next = */ generic_index_build_next,

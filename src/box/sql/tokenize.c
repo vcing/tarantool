@@ -609,11 +609,9 @@ sqlite3RunParser(Parse * pParse, const char *zSql, char **pzErrMsg)
 	assert(nErr == 0);
 	pParse->zTail = &zSql[i];
 #ifdef YYTRACKMAXSTACKDEPTH
-	sqlite3_mutex_enter(sqlite3MallocMutex());
 	sqlite3StatusHighwater(SQLITE_STATUS_PARSER_STACK,
 			       sqlite3ParserStackPeak(pEngine)
 	    );
-	sqlite3_mutex_leave(sqlite3MallocMutex());
 #endif				/* YYDEBUG */
 	sqlite3ParserFree(pEngine, sqlite3_free);
 	if (db->mallocFailed) {
@@ -641,11 +639,6 @@ sqlite3RunParser(Parse * pParse, const char *zSql, char **pzErrMsg)
 		sqlite3WithDelete(db, pParse->pWithToFree);
 	sqlite3DeleteTrigger(db, pParse->pNewTrigger);
 	sqlite3DbFree(db, pParse->pVList);
-	while (pParse->pAinc) {
-		AutoincInfo *p = pParse->pAinc;
-		pParse->pAinc = p->pNext;
-		sqlite3DbFree(db, p);
-	}
 	while (pParse->pZombieTab) {
 		Table *p = pParse->pZombieTab;
 		pParse->pZombieTab = p->pNextZombie;
@@ -653,4 +646,30 @@ sqlite3RunParser(Parse * pParse, const char *zSql, char **pzErrMsg)
 	}
 	assert(nErr == 0 || pParse->rc != SQLITE_OK);
 	return nErr;
+}
+
+int
+sql_expr_compile(sqlite3 *db, const char *expr, struct Expr **result)
+{
+	const char *outer = "SELECT ";
+	int len = strlen(outer) + strlen(expr);
+	char *stmt = (char *) region_alloc(&fiber()->gc, len + 1);
+	if (stmt == NULL) {
+		diag_set(OutOfMemory, len + 1, "region_alloc", "stmt");
+		return -1;
+	}
+	sprintf(stmt, "%s%s", outer, expr);
+
+	struct Parse parser;
+	memset(&parser, 0, sizeof(parser));
+	parser.db = db;
+	parser.parse_only = true;
+	char *unused;
+	if (sqlite3RunParser(&parser, stmt, &unused) != SQLITE_OK) {
+		diag_set(ClientError, ER_SQL_EXECUTE, expr);
+		return -1;
+	}
+	*result = parser.parsed_expr;
+	sqlite3ParserReset(&parser);
+	return 0;
 }

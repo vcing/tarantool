@@ -8,6 +8,7 @@ lua_source(lua_sources lua/schema.lua)
 lua_source(lua_sources lua/tuple.lua)
 lua_source(lua_sources lua/session.lua)
 lua_source(lua_sources lua/checkpoint_daemon.lua)
+lua_source(lua_sources lua/feedback_daemon.lua)
 lua_source(lua_sources lua/net_box.lua)
 lua_source(lua_sources lua/upgrade.lua)
 lua_source(lua_sources lua/console.lua)
@@ -21,6 +22,7 @@ add_custom_target(box_generate_lua_sources
 set_property(DIRECTORY PROPERTY ADDITIONAL_MAKE_CLEAN_FILES ${lua_sources})
 
 include_directories(${ZSTD_INCLUDE_DIRS})
+include_directories(${CMAKE_BINARY_DIR}/src/box/sql)
 
 add_library(box_error STATIC error.cc errcode.c)
 target_link_libraries(box_error core stat)
@@ -37,7 +39,9 @@ add_library(tuple STATIC
     tuple_format.c
     tuple_update.c
     tuple_compare.cc
+    tuple_extract_key.cc
     tuple_hash.cc
+    tuple_bloom.c
     tuple_dictionary.c
     key_def.cc
     coll_def.c
@@ -46,7 +50,7 @@ add_library(tuple STATIC
     field_def.c
     opt_def.c
 )
-target_link_libraries(tuple box_error core ${MSGPUCK_LIBRARIES} ${ICU_LIBRARIES} misc bit)
+target_link_libraries(tuple json_path box_error core ${MSGPUCK_LIBRARIES} ${ICU_LIBRARIES} misc bit)
 
 add_library(xlog STATIC xlog.c)
 target_link_libraries(xlog core box_error crc32 ${ZSTD_LIBRARIES})
@@ -75,7 +79,7 @@ add_library(box STATIC
     vy_mem.c
     vy_run.c
     vy_range.c
-    vy_index.c
+    vy_lsm.c
     vy_tx.c
     vy_write_iterator.c
     vy_read_iterator.c
@@ -83,6 +87,7 @@ add_library(box STATIC
     vy_cache.c
     vy_log.c
     vy_upsert.c
+    vy_history.c
     vy_read_set.c
     vy_scheduler.c
     request.c

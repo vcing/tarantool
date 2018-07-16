@@ -39,6 +39,7 @@
 
 #include "diag.h"
 #include "tuple.h"
+#include "vy_history.h"
 
 /** {{{ vy_mem_env */
 
@@ -97,8 +98,7 @@ vy_mem_tree_extent_free(void *ctx, void *p)
 struct vy_mem *
 vy_mem_new(struct vy_mem_env *env, int64_t generation,
 	   const struct key_def *cmp_def, struct tuple_format *format,
-	   struct tuple_format *format_with_colmask,
-	   struct tuple_format *upsert_format, uint32_t schema_version)
+	   struct tuple_format *format_with_colmask, uint32_t schema_version)
 {
 	struct vy_mem *index = calloc(1, sizeof(*index));
 	if (!index) {
@@ -116,8 +116,6 @@ vy_mem_new(struct vy_mem_env *env, int64_t generation,
 	tuple_format_ref(format);
 	index->format_with_colmask = format_with_colmask;
 	tuple_format_ref(format_with_colmask);
-	index->upsert_format = upsert_format;
-	tuple_format_ref(upsert_format);
 	vy_mem_tree_create(&index->tree, cmp_def,
 			   vy_mem_tree_extent_alloc,
 			   vy_mem_tree_extent_free, index);
@@ -127,29 +125,11 @@ vy_mem_new(struct vy_mem_env *env, int64_t generation,
 }
 
 void
-vy_mem_update_formats(struct vy_mem *mem, struct tuple_format *new_format,
-		      struct tuple_format *new_format_with_colmask,
-		      struct tuple_format *new_upsert_format)
-{
-	assert(mem->count.rows == 0);
-	tuple_format_unref(mem->format);
-	tuple_format_unref(mem->format_with_colmask);
-	tuple_format_unref(mem->upsert_format);
-	mem->format = new_format;
-	mem->format_with_colmask = new_format_with_colmask;
-	mem->upsert_format = new_upsert_format;
-	tuple_format_ref(mem->format);
-	tuple_format_ref(mem->format_with_colmask);
-	tuple_format_ref(mem->upsert_format);
-}
-
-void
 vy_mem_delete(struct vy_mem *index)
 {
 	index->env->tree_extent_size -= index->tree_extent_size;
 	tuple_format_unref(index->format);
 	tuple_format_unref(index->format_with_colmask);
-	tuple_format_unref(index->upsert_format);
 	fiber_cond_destroy(&index->pin_cond);
 	TRASH(index);
 	free(index);
@@ -180,7 +160,8 @@ vy_mem_insert_upsert(struct vy_mem *mem, const struct tuple *stmt)
 {
 	assert(vy_stmt_type(stmt) == IPROTO_UPSERT);
 	/* Check if the statement can be inserted in the vy_mem. */
-	assert(stmt->format_id == tuple_format_id(mem->upsert_format));
+	assert(stmt->format_id == tuple_format_id(mem->format_with_colmask) ||
+	       stmt->format_id == tuple_format_id(mem->format));
 	/* The statement must be from a lsregion. */
 	assert(!vy_stmt_is_refable(stmt));
 	size_t size = tuple_size(stmt);
@@ -212,7 +193,7 @@ vy_mem_insert_upsert(struct vy_mem *mem, const struct tuple *stmt)
 	 * UPSERT, n = threshold + 1,
 	 * UPSERT, n = threshold + 1, all following ones have
 	 *         ...                threshold + 1.
-	 * These values are used by vy_index_commit to squash
+	 * These values are used by vy_lsm_commit_upsert to squash
 	 * UPSERTs subsequence.
 	 */
 	vy_mem_tree_iterator_next(&mem->tree, &inserted);
@@ -287,26 +268,6 @@ vy_mem_rollback_stmt(struct vy_mem *mem, const struct tuple *stmt)
 /* }}} vy_mem */
 
 /* {{{ vy_mem_iterator support functions */
-
-/**
- * Copy current statement into the out parameter. It is necessary
- * because vy_mem stores its tuples in the lsregion allocated
- * area, and lsregion tuples can't be referenced or unreferenced.
- */
-static int
-vy_mem_iterator_copy_to(struct vy_mem_iterator *itr, struct tuple **ret)
-{
-	assert(itr->curr_stmt != NULL);
-	if (itr->last_stmt)
-		tuple_unref(itr->last_stmt);
-	itr->last_stmt = vy_stmt_dup(itr->curr_stmt, tuple_format(itr->curr_stmt));
-	*ret = itr->last_stmt;
-	if (itr->last_stmt != NULL) {
-		vy_stmt_counter_acct_tuple(&itr->stat->get, *ret);
-		return 0;
-	}
-	return -1;
-}
 
 /**
  * Get a stmt by current position
@@ -470,7 +431,6 @@ vy_mem_iterator_open(struct vy_mem_iterator *itr, struct vy_mem_iterator_stat *s
 
 	itr->curr_pos = vy_mem_tree_invalid_iterator();
 	itr->curr_stmt = NULL;
-	itr->last_stmt = NULL;
 
 	itr->search_started = false;
 }
@@ -481,7 +441,7 @@ vy_mem_iterator_open(struct vy_mem_iterator *itr, struct vy_mem_iterator_stat *s
  * @retval 1 Not found
  */
 static NODISCARD int
-vy_mem_iterator_next_key_impl(struct vy_mem_iterator *itr)
+vy_mem_iterator_next_key(struct vy_mem_iterator *itr)
 {
 	if (!itr->search_started)
 		return vy_mem_iterator_start(itr);
@@ -508,22 +468,13 @@ vy_mem_iterator_next_key_impl(struct vy_mem_iterator *itr)
 	return vy_mem_iterator_find_lsn(itr, itr->iterator_type, itr->key);
 }
 
-NODISCARD int
-vy_mem_iterator_next_key(struct vy_mem_iterator *itr, struct tuple **ret)
-{
-	*ret = NULL;
-	if (vy_mem_iterator_next_key_impl(itr) == 0)
-		return vy_mem_iterator_copy_to(itr, ret);
-	return 0;
-}
-
 /*
  * Find next (lower, older) record with the same key as current
  * @retval 0 Found
  * @retval 1 Not found
  */
 static NODISCARD int
-vy_mem_iterator_next_lsn_impl(struct vy_mem_iterator *itr)
+vy_mem_iterator_next_lsn(struct vy_mem_iterator *itr)
 {
 	assert(itr->search_started);
 	if (!itr->curr_stmt) /* End of search. */
@@ -548,35 +499,44 @@ vy_mem_iterator_next_lsn_impl(struct vy_mem_iterator *itr)
 	return 1;
 }
 
-NODISCARD int
-vy_mem_iterator_next_lsn(struct vy_mem_iterator *itr, struct tuple **ret)
+/**
+ * Append statements for the current key to a statement history
+ * until a terminal statement is found. Returns 0 on success, -1
+ * on memory allocation error.
+ */
+static NODISCARD int
+vy_mem_iterator_get_history(struct vy_mem_iterator *itr,
+			    struct vy_history *history)
 {
-	*ret = NULL;
-	if (vy_mem_iterator_next_lsn_impl(itr) == 0)
-		return vy_mem_iterator_copy_to(itr, ret);
+	do {
+		struct tuple *stmt = (struct tuple *)itr->curr_stmt;
+		vy_stmt_counter_acct_tuple(&itr->stat->get, stmt);
+		if (vy_history_append_stmt(history, stmt) != 0)
+			return -1;
+		if (vy_history_is_terminal(history))
+			break;
+	} while (vy_mem_iterator_next_lsn(itr) == 0);
+	return 0;
+}
+
+NODISCARD int
+vy_mem_iterator_next(struct vy_mem_iterator *itr,
+		     struct vy_history *history)
+{
+	vy_history_cleanup(history);
+	if (vy_mem_iterator_next_key(itr) == 0)
+		return vy_mem_iterator_get_history(itr, history);
 	return 0;
 }
 
 NODISCARD int
 vy_mem_iterator_skip(struct vy_mem_iterator *itr,
-		     const struct tuple *last_stmt, struct tuple **ret)
+		     const struct tuple *last_stmt,
+		     struct vy_history *history)
 {
-	*ret = NULL;
 	assert(!itr->search_started || itr->version == itr->mem->version);
 
-	/*
-	 * Check if the iterator is already positioned
-	 * at the statement following last_stmt.
-	 */
-	if (itr->search_started &&
-	    (itr->curr_stmt == NULL || last_stmt == NULL ||
-	     iterator_direction(itr->iterator_type) *
-	     vy_tuple_compare(itr->curr_stmt, last_stmt,
-			      itr->mem->cmp_def) > 0)) {
-		if (itr->curr_stmt != NULL)
-			*ret = itr->last_stmt;
-		return 0;
-	}
+	vy_history_cleanup(history);
 
 	const struct tuple *key = itr->key;
 	enum iterator_type iterator_type = itr->iterator_type;
@@ -595,13 +555,14 @@ vy_mem_iterator_skip(struct vy_mem_iterator *itr,
 		itr->curr_stmt = NULL;
 
 	if (itr->curr_stmt != NULL)
-		return vy_mem_iterator_copy_to(itr, ret);
+		return vy_mem_iterator_get_history(itr, history);
 	return 0;
 }
 
 NODISCARD int
 vy_mem_iterator_restore(struct vy_mem_iterator *itr,
-			const struct tuple *last_stmt, struct tuple **ret)
+			const struct tuple *last_stmt,
+			struct vy_history *history)
 {
 	if (!itr->search_started || itr->version == itr->mem->version)
 		return 0;
@@ -624,9 +585,9 @@ vy_mem_iterator_restore(struct vy_mem_iterator *itr,
 	if (prev_stmt == itr->curr_stmt)
 		return 0;
 
-	*ret = NULL;
+	vy_history_cleanup(history);
 	if (itr->curr_stmt != NULL &&
-	    vy_mem_iterator_copy_to(itr, ret) < 0)
+	    vy_mem_iterator_get_history(itr, history) != 0)
 		return -1;
 	return 1;
 }
@@ -634,8 +595,6 @@ vy_mem_iterator_restore(struct vy_mem_iterator *itr,
 void
 vy_mem_iterator_close(struct vy_mem_iterator *itr)
 {
-	if (itr->last_stmt != NULL)
-		tuple_unref(itr->last_stmt);
 	TRASH(itr);
 }
 

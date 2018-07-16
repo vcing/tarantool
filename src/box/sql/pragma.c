@@ -36,6 +36,7 @@
 #include <box/index.h>
 #include <box/box.h>
 #include <box/tuple.h>
+#include "box/schema.h"
 #include "sqliteInt.h"
 #include "vdbeInt.h"
 #include "box/session.h"
@@ -64,6 +65,7 @@
  * ../tool/mkpragmatab.tcl.
  */
 #include "pragma.h"
+#include "tarantoolInt.h"
 
 /*
  * Interpret the given string as a safety level.  Return 0 for OFF,
@@ -181,24 +183,6 @@ actionName(u8 action)
 #endif
 
 /*
- * Parameter eMode must be one of the PAGER_JOURNALMODE_XXX constants
- * defined in pager.h. This function returns the associated lowercase
- * journal-mode name.
- */
-const char *
-sqlite3JournalModename(int eMode)
-{
-	static char *const azModeName[] = {
-		"delete", "persist", "off", "truncate", "memory"
-	};
-	assert(eMode >= 0 && eMode <= ArraySize(azModeName));
-
-	if (eMode == ArraySize(azModeName))
-		return 0;
-	return azModeName[eMode];
-}
-
-/*
  * Locate a pragma in the aPragmaName[] array.
  */
 static const PragmaName *
@@ -221,6 +205,34 @@ pragmaLocate(const char *zName)
 	return lwr > upr ? 0 : &aPragmaName[mid];
 }
 
+#ifdef PRINT_PRAGMA
+#undef PRINT_PRAGMA
+#endif
+#define PRINT_PRAGMA(pragma_name, pragma_flag) do {			       \
+	int nCoolSpaces = 30 - strlen(pragma_name);			       \
+	if (user_session->sql_flags & (pragma_flag)) {			       \
+		printf("%s %*c --  [true] \n", pragma_name, nCoolSpaces, ' '); \
+	} else {							       \
+		printf("%s %*c --  [false] \n", pragma_name, nCoolSpaces, ' ');\
+	}								       \
+} while (0)
+
+static void
+printActivePragmas(struct session *user_session)
+{
+	int i;
+	for (i = 0; i < ArraySize(aPragmaName); ++i) {
+		if (aPragmaName[i].ePragTyp == PragTyp_FLAG)
+			PRINT_PRAGMA(aPragmaName[i].zName, aPragmaName[i].iArg);
+	}
+
+	printf("Other available pragmas: \n");
+	for (i = 0; i < ArraySize(aPragmaName); ++i) {
+		if (aPragmaName[i].ePragTyp != PragTyp_FLAG)
+			printf("-- %s \n", aPragmaName[i].zName);
+	}
+}
+
 /*
  * Process a pragma statement.
  *
@@ -238,7 +250,6 @@ pragmaLocate(const char *zName)
  */
 void
 sqlite3Pragma(Parse * pParse, Token * pId,	/* First part of [schema.]id field */
-	      Token * pId2,	/* Second part of [schema.]id field, or NULL */
 	      Token * pValue,	/* Token for <value>, or NULL */
 	      Token * pValue2,	/* Token for <value2>, or NULL */
 	      int minusFlag	/* True if a '-' sign preceded <value> */
@@ -249,21 +260,21 @@ sqlite3Pragma(Parse * pParse, Token * pId,	/* First part of [schema.]id field */
 	char *zTable = 0;	/* Nul-terminated UTF-8 string <value2> or NULL */
 	int rc;			/* return value form SQLITE_FCNTL_PRAGMA */
 	sqlite3 *db = pParse->db;	/* The database connection */
-	Db *pDb;		/* The specific database being pragmaed */
 	Vdbe *v = sqlite3GetVdbe(pParse);	/* Prepared statement */
 	const PragmaName *pPragma;	/* The pragma */
 	struct session *user_session = current_session();
-	(void)pId2;
 
 	if (v == 0)
 		return;
 	sqlite3VdbeRunOnlyOnce(v);
 	pParse->nMem = 2;
-	pDb = &db->mdb;
 
 	zLeft = sqlite3NameFromToken(db, pId);
-	if (!zLeft)
+	if (!zLeft) {
+		printActivePragmas(user_session);
 		return;
+	}
+
 	if (minusFlag) {
 		zRight = sqlite3MPrintf(db, "-%T", pValue);
 	} else {
@@ -281,8 +292,7 @@ sqlite3Pragma(Parse * pParse, Token * pId,	/* First part of [schema.]id field */
 
 	/* Make sure the database schema is loaded if the pragma requires that */
 	if ((pPragma->mPragFlg & PragFlg_NeedSchema) != 0) {
-		if (sqlite3ReadSchema(pParse))
-			goto pragma_out;
+		assert(db->pSchema != NULL);
 	}
 	/* Register the result column names for pragmas that return results */
 	if ((pPragma->mPragFlg & PragFlg_NoColumns) == 0
@@ -345,20 +355,13 @@ sqlite3Pragma(Parse * pParse, Token * pId,	/* First part of [schema.]id field */
 			pTab = sqlite3LocateTable(pParse, LOCATE_NOERR, zRight);
 			if (pTab) {
 				int i, k;
-				int nHidden = 0;
 				Column *pCol;
 				Index *pPk = sqlite3PrimaryKeyIndex(pTab);
 				pParse->nMem = 6;
-				sqlite3CodeVerifySchema(pParse);
 				sqlite3ViewGetColumnNames(pParse, pTab);
 				for (i = 0, pCol = pTab->aCol; i < pTab->nCol;
 				     i++, pCol++) {
-					if (IsHiddenColumn(pCol)) {
-						nHidden++;
-						continue;
-					}
-					if ((pCol->
-					     colFlags & COLFLAG_PRIMKEY) == 0) {
+					if (!table_column_is_in_pk(pTab, i)) {
 						k = 0;
 					} else if (pPk == 0) {
 						k = 1;
@@ -369,19 +372,21 @@ sqlite3Pragma(Parse * pParse, Token * pId,	/* First part of [schema.]id field */
 						     i; k++) {
 						}
 					}
-					assert(pCol->pDflt == 0
-					       || pCol->pDflt->op == TK_SPAN);
 					bool nullable = table_column_is_nullable(pTab, i);
-					char *type = sqlite3ColumnType(pCol, "");
+					uint32_t space_id =
+						SQLITE_PAGENO_TO_SPACEID(
+							pTab->tnum);
+					struct space *space =
+						space_cache_find(space_id);
+					char *expr_str = space->
+						def->fields[i].default_value;
 					sqlite3VdbeMultiLoad(v, 1, "issisi",
-							     i - nHidden,
-							     pCol->zName,
-							     type,
+							     i, pCol->zName,
+							     field_type_strs[
+							     sqlite3ColumnType
+							     (pCol)],
 							     nullable == 0,
-							     pCol->
-							     pDflt ? pCol->
-							     pDflt->u.zToken
-							     : 0, k);
+							     expr_str, k);
 					sqlite3VdbeAddOp2(v, OP_ResultRow, 1,
 							  6);
 				}
@@ -393,8 +398,7 @@ sqlite3Pragma(Parse * pParse, Token * pId,	/* First part of [schema.]id field */
 			Index *pIdx;
 			HashElem *i;
 			pParse->nMem = 4;
-			sqlite3CodeVerifySchema(pParse);
-			for (i = sqliteHashFirst(&pDb->pSchema->tblHash); i;
+			for (i = sqliteHashFirst(&db->pSchema->tblHash); i;
 			     i = sqliteHashNext(i)) {
 				Table *pTab = sqliteHashData(i);
 				sqlite3VdbeMultiLoad(v, 1, "ssii",
@@ -429,16 +433,14 @@ sqlite3Pragma(Parse * pParse, Token * pId,	/* First part of [schema.]id field */
 						 * version with more rows and
 						 * columns)
 						 */
-						mx = pIdx->nColumn;
 						pParse->nMem = 6;
 					} else {
 						/* PRAGMA index_info (legacy
 						 * version)
 						 */
-						mx = pIdx->nKeyCol;
 						pParse->nMem = 3;
 					}
-					sqlite3CodeVerifySchema(pParse);
+					mx = index_column_count(pIdx);
 					assert(pParse->nMem <=
 					       pPragma->nPragCName);
 					for (i = 0; i < mx; i++) {
@@ -454,18 +456,22 @@ sqlite3Pragma(Parse * pParse, Token * pId,	/* First part of [schema.]id field */
 								     aCol[cnum].
 								     zName);
 						if (pPragma->iArg) {
+							const char *c_n;
+							struct coll *coll;
+							coll = sql_index_collation(pIdx, i);
+							if (coll != NULL)
+								c_n = coll->name;
+							else
+								c_n = "BINARY";
 							sqlite3VdbeMultiLoad(v,
 									     4,
 									     "isi",
 									     pIdx->
 									     aSortOrder
 									     [i],
-									     pIdx->
-									     azColl
-									     [i],
+									     c_n,
 									     i <
-									     pIdx->
-									     nKeyCol);
+									     mx);
 						}
 						sqlite3VdbeAddOp2(v,
 								  OP_ResultRow,
@@ -481,10 +487,10 @@ sqlite3Pragma(Parse * pParse, Token * pId,	/* First part of [schema.]id field */
 				Index *pIdx;
 				Table *pTab;
 				int i;
-				pTab = sqlite3FindTable(db, zRight);
-				if (pTab) {
+				pTab = sqlite3HashFind(&db->pSchema->tblHash,
+						       zRight);
+				if (pTab != NULL) {
 					pParse->nMem = 5;
-					sqlite3CodeVerifySchema(pParse);
 					for (pIdx = pTab->pIndex, i = 0; pIdx;
 					     pIdx = pIdx->pNext, i++) {
 						const char *azOrigin[] =
@@ -493,7 +499,7 @@ sqlite3Pragma(Parse * pParse, Token * pId,	/* First part of [schema.]id field */
 								     "isisi", i,
 								     pIdx->
 								     zName,
-								     IsUniqueIndex
+								     index_is_unique
 								     (pIdx),
 								     azOrigin
 								     [pIdx->
@@ -541,13 +547,13 @@ sqlite3Pragma(Parse * pParse, Token * pId,	/* First part of [schema.]id field */
 			if (zRight) {
 				FKey *pFK;
 				Table *pTab;
-				pTab = sqlite3FindTable(db, zRight);
-				if (pTab) {
+				pTab = sqlite3HashFind(&db->pSchema->tblHash,
+						       zRight);
+				if (pTab != NULL) {
 					pFK = pTab->pFKey;
 					if (pFK) {
 						int i = 0;
 						pParse->nMem = 8;
-						sqlite3CodeVerifySchema(pParse);
 						while (pFK) {
 							int j;
 							for (j = 0;
@@ -597,8 +603,7 @@ sqlite3Pragma(Parse * pParse, Token * pId,	/* First part of [schema.]id field */
 			pParse->nMem += 4;
 			regKey = ++pParse->nMem;
 			regRow = ++pParse->nMem;
-			sqlite3CodeVerifySchema(pParse);
-			k = sqliteHashFirst(&db->mdb.pSchema->tblHash);
+			k = sqliteHashFirst(&db->pSchema->tblHash);
 			while (k) {
 				if (zRight) {
 					pTab =
@@ -619,8 +624,9 @@ sqlite3Pragma(Parse * pParse, Token * pId,	/* First part of [schema.]id field */
 				for (i = 1, pFK = pTab->pFKey; pFK;
 				     i++, pFK = pFK->pNextFrom) {
 					pParent =
-					    sqlite3FindTable(db, pFK->zTo);
-					if (pParent == 0)
+						sqlite3HashFind(&db->pSchema->tblHash,
+								pFK->zTo);
+					if (pParent == NULL)
 						continue;
 					pIdx = 0;
 					x = sqlite3FkLocateIndex(pParse,
@@ -657,7 +663,8 @@ sqlite3Pragma(Parse * pParse, Token * pId,	/* First part of [schema.]id field */
 				for (i = 1, pFK = pTab->pFKey; pFK;
 				     i++, pFK = pFK->pNextFrom) {
 					pParent =
-					    sqlite3FindTable(db, pFK->zTo);
+						sqlite3HashFind(&db->pSchema->tblHash,
+								pFK->zTo);
 					pIdx = 0;
 					aiCols = 0;
 					if (pParent) {
@@ -820,7 +827,6 @@ sqlite3Pragma(Parse * pParse, Token * pId,	/* First part of [schema.]id field */
 			    && (pPragma->mPragFlg & PragFlg_ReadOnly) == 0) {
 				/* Write the specified cookie value */
 				static const VdbeOpList setCookie[] = {
-					{OP_Transaction, 0, 1, 0},	/* 0 */
 					{OP_SetCookie, 0, 0, 0},	/* 1 */
 				};
 				VdbeOp *aOp;
@@ -834,13 +840,11 @@ sqlite3Pragma(Parse * pParse, Token * pId,	/* First part of [schema.]id field */
 				if (ONLY_IF_REALLOC_STRESS(aOp == 0))
 					break;
 				aOp[0].p1 = 0;
-				aOp[1].p1 = 0;
-				aOp[1].p2 = iCookie;
-				aOp[1].p3 = sqlite3Atoi(zRight);
+				aOp[0].p2 = iCookie;
+				aOp[0].p3 = sqlite3Atoi(zRight);
 			} else {
 				/* Read the specified cookie value */
 				static const VdbeOpList readCookie[] = {
-					{OP_Transaction, 0, 0, 0},	/* 0 */
 					{OP_ReadCookie, 0, 1, 0},	/* 1 */
 					{OP_ResultRow, 1, 1, 0}
 				};
@@ -862,17 +866,6 @@ sqlite3Pragma(Parse * pParse, Token * pId,	/* First part of [schema.]id field */
 			break;
 		}
 
-		/* *  PRAGMA shrink_memory *
-		 *
-		 * IMPLEMENTATION-OF: R-23445-46109 This pragma causes the
-		 * database * connection on which it is invoked to free
-		 * up as much memory as it * can, by calling
-		 * sqlite3_db_release_memory().
-		 */
-	case PragTyp_SHRINK_MEMORY:
-		sqlite3_db_release_memory(db);
-		break;
-
 		/* *   PRAGMA busy_timeout *   PRAGMA busy_timeout = N *
 		 *
 		 * Call sqlite3_busy_timeout(db, N).  Return the current
@@ -888,49 +881,6 @@ sqlite3Pragma(Parse * pParse, Token * pId,	/* First part of [schema.]id field */
 				sqlite3_busy_timeout(db, sqlite3Atoi(zRight));
 			}
 			returnSingleInt(v, db->busyTimeout);
-			break;
-		}
-
-		/* *   PRAGMA soft_heap_limit *   PRAGMA
-		 * soft_heap_limit = N *
-		 *
-		 * IMPLEMENTATION-OF: R-26343-45930 This pragma invokes
-		 * the * sqlite3_soft_heap_limit64() interface with the
-		 * argument N, if N is * specified and is a
-		 * non-negative integer. * IMPLEMENTATION-OF:
-		 * R-64451-07163 The soft_heap_limit pragma always *
-		 * returns the same integer that would be returned by
-		 * the * sqlite3_soft_heap_limit64(-1) C-language
-		 * function.
-		 */
-	case PragTyp_SOFT_HEAP_LIMIT:{
-			sqlite3_int64 N;
-			if (zRight
-			    && sqlite3DecOrHexToI64(zRight, &N) == SQLITE_OK) {
-				sqlite3_soft_heap_limit64(N);
-			}
-			returnSingleInt(v, sqlite3_soft_heap_limit64(-1));
-			break;
-		}
-
-		/* *   PRAGMA threads *   PRAGMA threads = N *
-		 *
-		 * Configure the maximum number of worker threads. Return
-		 * the new * maximum, which might be less than
-		 * requested.
-		 */
-	case PragTyp_THREADS:{
-			sqlite3_int64 N;
-			if (zRight
-			    && sqlite3DecOrHexToI64(zRight, &N) == SQLITE_OK
-			    && N >= 0) {
-				sqlite3_limit(db, SQLITE_LIMIT_WORKER_THREADS,
-					      (int)(N & 0x7fffffff));
-			}
-			returnSingleInt(v,
-					sqlite3_limit(db,
-						      SQLITE_LIMIT_WORKER_THREADS,
-						      -1));
 			break;
 		}
 	}			/* End of the PRAGMA switch */

@@ -42,7 +42,7 @@
 #include "iterator_type.h"
 #include "salad/stailq.h"
 #include "trivia/util.h"
-#include "vy_index.h"
+#include "vy_lsm.h"
 #include "vy_stat.h"
 #include "vy_read_set.h"
 #include "vy_read_view.h"
@@ -55,6 +55,7 @@ struct tuple;
 struct tx_manager;
 struct vy_mem;
 struct vy_tx;
+struct vy_history;
 
 /** Transaction state. */
 enum tx_state {
@@ -76,8 +77,8 @@ enum tx_state {
 struct txv {
 	/** Transaction. */
 	struct vy_tx *tx;
-	/** Index this operation is for. */
-	struct vy_index *index;
+	/** LSM tree this operation is for. */
+	struct vy_lsm *lsm;
 	/** In-memory tree to insert the statement into. */
 	struct vy_mem *mem;
 	/** Statement of this operation. */
@@ -106,10 +107,10 @@ struct txv {
 
 /**
  * Index of all modifications made by a transaction.
- * Ordered by index, then by key in the index.
+ * Ordered by LSM tree, then by key.
  */
 struct write_set_key {
-	struct vy_index *index;
+	struct vy_lsm *lsm;
 	const struct tuple *stmt;
 };
 
@@ -123,10 +124,10 @@ rb_gen_ext_key(MAYBE_UNUSED static inline, write_set_, write_set_t, struct txv,
 		in_set, write_set_cmp, struct write_set_key *, write_set_key_cmp);
 
 static inline struct txv *
-write_set_search_key(write_set_t *tree, struct vy_index *index,
+write_set_search_key(write_set_t *tree, struct vy_lsm *lsm,
 		     const struct tuple *stmt)
 {
-	struct write_set_key key = { .index = index, .stmt = stmt };
+	struct write_set_key key = { .lsm = lsm, .stmt = stmt };
 	return write_set_search(tree, &key);
 }
 
@@ -141,7 +142,7 @@ struct vy_tx {
 	struct stailq log;
 	/**
 	 * Writes of the transaction segregated by the changed
-	 * vy_index object.
+	 * vy_lsm object.
 	 */
 	write_set_t write_set;
 	/**
@@ -261,15 +262,6 @@ tx_manager_new(void);
 void
 tx_manager_delete(struct tx_manager *xm);
 
-/** Create or reuse an instance of a read view. */
-struct vy_read_view *
-tx_manager_read_view(struct tx_manager *xm);
-
-/** Dereference and possibly destroy a read view. */
-void
-tx_manager_destroy_read_view(struct tx_manager *xm,
-			     const struct vy_read_view *read_view);
-
 /*
  * Determine the lowest possible vlsn, i.e. the level below
  * which the history could be compacted.
@@ -281,6 +273,14 @@ tx_manager_destroy_read_view(struct tx_manager *xm,
  */
 int64_t
 tx_manager_vlsn(struct tx_manager *xm);
+
+/** Initialize a tx object. */
+void
+vy_tx_create(struct tx_manager *xm, struct vy_tx *tx);
+
+/** Destroy a tx object. */
+void
+vy_tx_destroy(struct vy_tx *tx);
 
 /** Begin a new transaction. */
 struct vy_tx *
@@ -327,7 +327,7 @@ vy_tx_rollback_to_savepoint(struct vy_tx *tx, void *svp);
  * to will be aborted.
  *
  * @param tx            Transaction that invoked the read.
- * @param index         Index that was read from.
+ * @param lsm           LSM tree that was read from.
  * @param left          Left boundary of the read interval.
  * @param left_belongs  Set if the left boundary belongs to
  *                      the interval.
@@ -339,7 +339,7 @@ vy_tx_rollback_to_savepoint(struct vy_tx *tx, void *svp);
  * @retval -1 Memory error.
  */
 int
-vy_tx_track(struct vy_tx *tx, struct vy_index *index,
+vy_tx_track(struct vy_tx *tx, struct vy_lsm *lsm,
 	    struct tuple *left, bool left_belongs,
 	    struct tuple *right, bool right_belongs);
 
@@ -347,7 +347,7 @@ vy_tx_track(struct vy_tx *tx, struct vy_index *index,
  * Remember a point read in the conflict manager index.
  *
  * @param tx    Transaction that invoked the read.
- * @param index Index that was read from.
+ * @param lsm   LSM tree that was read from.
  * @param stmt  Key that was read.
  *
  * @retval  0 Success.
@@ -360,12 +360,11 @@ vy_tx_track(struct vy_tx *tx, struct vy_index *index,
  * transaction read it from its own write set.
  */
 int
-vy_tx_track_point(struct vy_tx *tx, struct vy_index *index,
-		  struct tuple *stmt);
+vy_tx_track_point(struct vy_tx *tx, struct vy_lsm *lsm, struct tuple *stmt);
 
 /** Add a statement to a transaction. */
 int
-vy_tx_set(struct vy_tx *tx, struct vy_index *index, struct tuple *stmt);
+vy_tx_set(struct vy_tx *tx, struct vy_lsm *lsm, struct tuple *stmt);
 
 /**
  * Iterator over the write set of a transaction.
@@ -375,8 +374,8 @@ struct vy_txw_iterator {
 	struct vy_txw_iterator_stat *stat;
 	/** Transaction whose write set is iterated. */
 	struct vy_tx *tx;
-	/** Index of interest. */
-	struct vy_index *index;
+	/** LSM tree of interest. */
+	struct vy_lsm *lsm;
 	/**
 	 * Iterator type.
 	 *
@@ -400,33 +399,39 @@ struct vy_txw_iterator {
 void
 vy_txw_iterator_open(struct vy_txw_iterator *itr,
 		     struct vy_txw_iterator_stat *stat,
-		     struct vy_tx *tx, struct vy_index *index,
+		     struct vy_tx *tx, struct vy_lsm *lsm,
 		     enum iterator_type iterator_type,
 		     const struct tuple *key);
 
 /**
- * Advance a txw iterator to the next statement.
- * The next statement is returned in @ret (NULL if EOF).
+ * Advance a txw iterator to the next key.
+ * The key history is returned in @history (empty if EOF).
+ * Returns 0 on success, -1 on memory allocation error.
  */
-void
-vy_txw_iterator_next(struct vy_txw_iterator *itr, struct tuple **ret);
+NODISCARD int
+vy_txw_iterator_next(struct vy_txw_iterator *itr,
+		     struct vy_history *history);
 
 /**
- * Advance a txw iterator to the statement following @last_stmt.
- * The statement is returned in @ret (NULL if EOF).
+ * Advance a txw iterator to the key following @last_stmt.
+ * The key history is returned in @history (empty if EOF).
+ * Returns 0 on success, -1 on memory allocation error.
  */
-void
+NODISCARD int
 vy_txw_iterator_skip(struct vy_txw_iterator *itr,
-		     const struct tuple *last_stmt, struct tuple **ret);
+		     const struct tuple *last_stmt,
+		     struct vy_history *history);
 
 /**
  * Check if a txw iterator was invalidated and needs to be restored.
- * If it does, set the iterator position to the statement following
- * @last_stmt and return 1, otherwise return 0.
+ * If it does, set the iterator position to the first key following
+ * @last_stmt and return 1, otherwise return 0. Returns -1 on memory
+ * allocation error.
  */
 int
 vy_txw_iterator_restore(struct vy_txw_iterator *itr,
-			const struct tuple *last_stmt, struct tuple **ret);
+			const struct tuple *last_stmt,
+			struct vy_history *history);
 
 /**
  * Close a txw iterator.

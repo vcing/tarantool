@@ -86,8 +86,6 @@ sqlite3InitCallback(void *pInit, int argc, char **argv, char **NotUsed)
 	sqlite3 *db = pData->db;
 	assert(argc == 3);
 	UNUSED_PARAMETER2(NotUsed, argc);
-	assert(sqlite3_mutex_held(db->mutex));
-	DbClearProperty(db, DB_Empty);
 	if (db->mallocFailed) {
 		corruptSchema(pData, argv[0], 0);
 		return 1;
@@ -163,14 +161,9 @@ extern int
 sqlite3InitDatabase(sqlite3 * db)
 {
 	int rc;
-#ifndef SQLITE_OMIT_DEPRECATED
-	int size;
-#endif
-	Db *pDb;
 	InitData initData;
 
-	assert(db->mdb.pSchema);
-	assert(sqlite3_mutex_held(db->mutex));
+	assert(db->pSchema != NULL);
 
 	memset(&initData, 0, sizeof(InitData));
 	initData.db = db;
@@ -183,39 +176,15 @@ sqlite3InitDatabase(sqlite3 * db)
 		goto error_out;
 	}
 
-	/* Create a cursor to hold the database open
-	 */
-	pDb = &db->mdb;
-
 	/* Tarantool: schema_cookie is not used so far, but
 	 * might be used in future. Set it to dummy value.
 	 */
-	pDb->pSchema->schema_cookie = 0;
-
-	if (pDb->pSchema->cache_size == 0) {
-#ifndef SQLITE_OMIT_DEPRECATED
-		size = SQLITE_DEFAULT_CACHE_SIZE;
-		pDb->pSchema->cache_size = size;
-#else
-		pDb->pSchema->cache_size = SQLITE_DEFAULT_CACHE_SIZE;
-#endif
-	}
+	db->pSchema->schema_cookie = 0;
 
 	/* Read the schema information out of the schema tables
 	 */
 	assert(db->init.busy);
 	{
-#ifndef SQLITE_OMIT_AUTHORIZATION
-		{
-			sqlite3_xauth xAuth;
-			xAuth = db->xAuth;
-			db->xAuth = 0;
-#endif
-			rc = SQLITE_OK;
-#ifndef SQLITE_OMIT_AUTHORIZATION
-			db->xAuth = xAuth;
-		}
-#endif
 		rc = initData.rc;
 #ifndef SQLITE_OMIT_ANALYZE
 		if (rc == SQLITE_OK) {
@@ -227,9 +196,6 @@ sqlite3InitDatabase(sqlite3 * db)
 		rc = SQLITE_NOMEM_BKPT;
 		sqlite3ResetAllSchemasOfConnection(db);
 	}
-	if (rc == SQLITE_OK) {
-		DbSetProperty(db, DB_SchemaLoaded);
-	}
 
  error_out:
 	if (rc == SQLITE_NOMEM || rc == SQLITE_IOERR_NOMEM) {
@@ -238,88 +204,6 @@ sqlite3InitDatabase(sqlite3 * db)
 	return rc;
 }
 
-/*
- * Initialize all database files - the main database file
- * Return a success code.
- * After a database is initialized, the DB_SchemaLoaded
- * bit is set in the flags field of the Db structure.
- */
-int
-sqlite3Init(sqlite3 * db)
-{
-	int rc;
-	struct session *user_session = current_session();
-	int commit_internal = !(user_session->sql_flags & SQLITE_InternChanges);
-
-	assert(sqlite3_mutex_held(db->mutex));
-	assert(db->init.busy == 0);
-	rc = SQLITE_OK;
-	db->init.busy = 1;
-	if (!DbHasProperty(db, DB_SchemaLoaded)) {
-		rc = sqlite3InitDatabase(db);
-		if (rc) {
-			sqlite3ResetOneSchema(db);
-		}
-	}
-
-	db->init.busy = 0;
-	if (rc == SQLITE_OK && commit_internal) {
-		sqlite3CommitInternalChanges();
-	}
-
-	return rc;
-}
-
-/*
- * This routine is a no-op if the database schema is already initialized.
- * Otherwise, the schema is loaded. An error code is returned.
- */
-int
-sqlite3ReadSchema(Parse * pParse)
-{
-	int rc = SQLITE_OK;
-	sqlite3 *db = pParse->db;
-	assert(sqlite3_mutex_held(db->mutex));
-	if (!db->init.busy) {
-		rc = sqlite3Init(db);
-	}
-	if (rc != SQLITE_OK) {
-		pParse->rc = rc;
-		pParse->nErr++;
-	}
-	return rc;
-}
-
-/*
- * Convert a schema pointer into the 0 index that indicates
- * that schema refers to a single database.
- * This method is inherited from SQLite, which has several dbs.
- * But we have only one, so it is used only in assertions.
- */
-int
-sqlite3SchemaToIndex(sqlite3 * db, Schema * pSchema)
-{
-	int i = -1000000;
-
-	/* If pSchema is NULL, then return -1000000. This happens when code in
-	 * expr.c is trying to resolve a reference to a transient table (i.e. one
-	 * created by a sub-select). In this case the return value of this
-	 * function should never be used.
-	 *
-	 * We return -1000000 instead of the more usual -1 simply because using
-	 * -1000000 as the incorrect index into db->aDb[] is much
-	 * more likely to cause a segfault than -1 (of course there are assert()
-	 * statements too, but it never hurts to play the odds).
-	 */
-	assert(sqlite3_mutex_held(db->mutex));
-	if (pSchema) {
-		if (db->mdb.pSchema == pSchema) {
-			i = 0;
-		}
-		assert(i == 0);
-	}
-	return i;
-}
 
 /*
  * Free all memory allocations in the pParse object
@@ -363,7 +247,6 @@ sqlite3Prepare(sqlite3 * db,	/* Database handle. */
 	sParse.pReprepare = pReprepare;
 	assert(ppStmt && *ppStmt == 0);
 	/* assert( !db->mallocFailed ); // not true with SQLITE_USE_ALLOCA */
-	assert(sqlite3_mutex_held(db->mutex));
 
 	/* Check to verify that it is possible to get a read lock on all
 	 * database schemas.  The inability to get a read lock indicates that
@@ -416,7 +299,6 @@ sqlite3Prepare(sqlite3 * db,	/* Database handle. */
 	}
 	rc = sParse.rc;
 
-#ifndef SQLITE_OMIT_EXPLAIN
 	if (rc == SQLITE_OK && sParse.pVdbe && sParse.explain) {
 		static const char *const azColName[] = {
 			"addr", "opcode", "p1", "p2", "p3", "p4", "p5",
@@ -439,7 +321,6 @@ sqlite3Prepare(sqlite3 * db,	/* Database handle. */
 					      SQLITE_STATIC);
 		}
 	}
-#endif
 
 	if (db->init.busy == 0) {
 		Vdbe *pVdbe = sParse.pVdbe;
@@ -494,7 +375,6 @@ sqlite3LockAndPrepare(sqlite3 * db,		/* Database handle. */
 	if (!sqlite3SafetyCheckOk(db) || zSql == 0) {
 		return SQLITE_MISUSE_BKPT;
 	}
-	sqlite3_mutex_enter(db->mutex);
 	rc = sqlite3Prepare(db, zSql, nBytes, saveSqlFlag, pOld, ppStmt,
 			    pzTail);
 	if (rc == SQLITE_SCHEMA) {
@@ -502,7 +382,6 @@ sqlite3LockAndPrepare(sqlite3 * db,		/* Database handle. */
 		rc = sqlite3Prepare(db, zSql, nBytes, saveSqlFlag, pOld, ppStmt,
 				    pzTail);
 	}
-	sqlite3_mutex_leave(db->mutex);
 	assert(rc == SQLITE_OK || *ppStmt == 0);
 	return rc;
 }
@@ -523,11 +402,9 @@ sqlite3Reprepare(Vdbe * p)
 	const char *zSql;
 	sqlite3 *db;
 
-	assert(sqlite3_mutex_held(sqlite3VdbeDb(p)->mutex));
 	zSql = sqlite3_sql((sqlite3_stmt *) p);
 	assert(zSql != 0);	/* Reprepare only called for prepare_v2() statements */
 	db = sqlite3VdbeDb(p);
-	assert(sqlite3_mutex_held(db->mutex));
 	rc = sqlite3LockAndPrepare(db, zSql, -1, 0, p, &pNew, 0);
 	if (rc) {
 		if (rc == SQLITE_NOMEM) {

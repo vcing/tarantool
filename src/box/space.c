@@ -38,7 +38,6 @@
 #include "session.h"
 #include "txn.h"
 #include "tuple.h"
-#include "tuple_compare.h"
 #include "tuple_update.h"
 #include "request.h"
 #include "xrow.h"
@@ -246,12 +245,11 @@ space_index_key_def(struct space *space, uint32_t id)
 }
 
 void
-space_swap_index(struct space *lhs, struct space *rhs,
-		 uint32_t lhs_id, uint32_t rhs_id)
+generic_space_swap_index(struct space *old_space, struct space *new_space,
+			 uint32_t old_index_id, uint32_t new_index_id)
 {
-	struct index *tmp = lhs->index_map[lhs_id];
-	lhs->index_map[lhs_id] = rhs->index_map[rhs_id];
-	rhs->index_map[rhs_id] = tmp;
+	SWAP(old_space->index_map[old_index_id],
+	     new_space->index_map[new_index_id]);
 }
 
 void
@@ -279,62 +277,6 @@ index_name_by_id(struct space *space, uint32_t id)
 	if (index != NULL)
 		return index->def->name;
 	return NULL;
-}
-
-int
-space_def_check_compatibility(const struct space_def *old_def,
-			      const struct space_def *new_def,
-			      bool is_space_empty)
-{
-	if (strcmp(new_def->engine_name, old_def->engine_name) != 0) {
-		diag_set(ClientError, ER_ALTER_SPACE, old_def->name,
-			 "can not change space engine");
-		return -1;
-	}
-	if (new_def->id != old_def->id) {
-		diag_set(ClientError, ER_ALTER_SPACE, old_def->name,
-			 "space id is immutable");
-		return -1;
-	}
-	if (is_space_empty)
-		return 0;
-
-	if (new_def->exact_field_count != 0 &&
-	    new_def->exact_field_count != old_def->exact_field_count) {
-		diag_set(ClientError, ER_ALTER_SPACE, old_def->name,
-			 "can not change field count on a non-empty space");
-		return -1;
-	}
-	if (new_def->opts.temporary != old_def->opts.temporary) {
-		diag_set(ClientError, ER_ALTER_SPACE, old_def->name,
-			 "can not switch temporary flag on a non-empty space");
-		return -1;
-	}
-	uint32_t field_count = MIN(new_def->field_count, old_def->field_count);
-	for (uint32_t i = 0; i < field_count; ++i) {
-		enum field_type old_type = old_def->fields[i].type;
-		enum field_type new_type = new_def->fields[i].type;
-		if (! field_type_is_compatible(old_type, new_type)) {
-			const char *msg =
-				tt_sprintf("Can not change a field type from "\
-					   "%s to %s on a not empty space",
-					   field_type_strs[old_type],
-					   field_type_strs[new_type]);
-			diag_set(ClientError, ER_ALTER_SPACE, old_def->name,
-				 msg);
-			return -1;
-		}
-		if (old_def->fields[i].is_nullable &&
-		    !new_def->fields[i].is_nullable) {
-			const char *msg =
-				tt_sprintf("Can not disable is_nullable "\
-					   "on a not empty space");
-			diag_set(ClientError, ER_ALTER_SPACE, old_def->name,
-				 msg);
-			return -1;
-		}
-	}
-	return 0;
 }
 
 /**

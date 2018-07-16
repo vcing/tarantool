@@ -40,10 +40,10 @@ const unsigned char iproto_key_type[IPROTO_KEY_MAX] =
 		/* 0x04 */	MP_DOUBLE, /* IPROTO_TIMESTAMP */
 		/* 0x05 */	MP_UINT,   /* IPROTO_SCHEMA_VERSION */
 		/* 0x06 */	MP_UINT,   /* IPROTO_SERVER_VERSION */
+		/* 0x07 */	MP_UINT,   /* IPROTO_SERVER_IS_RO */
 	/* }}} */
 
 	/* {{{ unused */
-		/* 0x07 */	MP_UINT,
 		/* 0x08 */	MP_UINT,
 		/* 0x09 */	MP_UINT,
 		/* 0x0a */	MP_UINT,
@@ -86,7 +86,7 @@ const unsigned char iproto_key_type[IPROTO_KEY_MAX] =
 	/* 0x26 */	MP_MAP, /* IPROTO_VCLOCK */
 	/* 0x27 */	MP_STR, /* IPROTO_EXPR */
 	/* 0x28 */	MP_ARRAY, /* IPROTO_OPS */
-	/* 0x29 */	MP_STR, /* IPROTO_FIELD_NAME */
+	/* 0x29 */	MP_MAP, /* IPROTO_OPTIONS */
 	/* }}} */
 };
 
@@ -167,7 +167,7 @@ const char *iproto_key_strs[IPROTO_KEY_MAX] = {
 	"vector clock",     /* 0x26 */
 	"expression",       /* 0x27 */
 	"operations",       /* 0x28 */
-	"field name",       /* 0x29 */
+	"options",          /* 0x29 */
 	NULL,               /* 0x2a */
 	NULL,               /* 0x2b */
 	NULL,               /* 0x2c */
@@ -192,9 +192,7 @@ const char *iproto_key_strs[IPROTO_KEY_MAX] = {
 	NULL,               /* 0x3f */
 	"SQL text",         /* 0x40 */
 	"SQL bind",         /* 0x41 */
-	"SQL options",      /* 0x42 */
-	"SQL info",         /* 0x43 */
-	"SQL row count",    /* 0x44 */
+	"SQL info",         /* 0x42 */
 };
 
 const char *vy_page_info_key_strs[VY_PAGE_INFO_KEY_MAX] = {
@@ -214,7 +212,8 @@ const char *vy_run_info_key_strs[VY_RUN_INFO_KEY_MAX] = {
 	"min lsn",
 	"max lsn",
 	"page count",
-	"bloom filter"
+	"bloom filter legacy",
+	"bloom filter",
 };
 
 const char *vy_row_index_key_strs[VY_ROW_INDEX_KEY_MAX] = {

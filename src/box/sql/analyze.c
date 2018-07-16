@@ -156,7 +156,8 @@ openStatTable(Parse * pParse,	/* Parsing context */
 		const char *zTab = aTable[i];
 		Table *pStat;
 		/* The table already exists, because it is a system space */
-		pStat = sqlite3FindTable(db, zTab);
+		pStat = sqlite3HashFind(&db->pSchema->tblHash, zTab);
+		assert(pStat != NULL);
 		aRoot[i] = pStat->tnum;
 		aCreateTbl[i] = 0;
 		if (zWhere) {
@@ -174,10 +175,7 @@ openStatTable(Parse * pParse,	/* Parsing context */
 
 	/* Open the sql_stat[134] tables for writing. */
 	for (i = 0; aTable[i]; i++) {
-		int addr;
-		addr =
-		    sqlite3VdbeAddOp3(v, OP_OpenWrite, iStatCur + i, aRoot[i],
-				      0);
+		int addr = emit_open_cursor(pParse, iStatCur + i, aRoot[i]);
 		v->aOp[addr].p4.pKeyInfo = 0;
 		v->aOp[addr].p4type = P4_KEYINFO;
 		sqlite3VdbeChangeP5(v, aCreateTbl[i]);
@@ -814,6 +812,7 @@ analyzeOneTable(Parse * pParse,	/* Parser context */
 	int iTabCur;		/* Table cursor */
 	Vdbe *v;		/* The virtual machine being built up */
 	int i;			/* Loop counter */
+	int space_ptr_reg = iMem++;
 	int regStat4 = iMem++;	/* Register to hold Stat4Accum object */
 	int regChng = iMem++;	/* Index of changed index field */
 	int regKey = iMem++;	/* Key argument passed to stat_push() */
@@ -833,7 +832,6 @@ analyzeOneTable(Parse * pParse,	/* Parser context */
 		/* Do not gather statistics on system tables */
 		return;
 	}
-	assert(sqlite3SchemaToIndex(db, pTab->pSchema) == 0);
 
 	/* Establish a read-lock on the table at the shared-cache level.
 	 * Open a read-only cursor on the table. Also allocate a cursor number
@@ -847,7 +845,6 @@ analyzeOneTable(Parse * pParse,	/* Parser context */
 	sqlite3VdbeLoadString(v, regTabname, pTab->zName);
 
 	for (pIdx = pTab->pIndex; pIdx; pIdx = pIdx->pNext) {
-		int nCol;	/* Number of columns in pIdx. "N" */
 		int addrRewind;	/* Address of "OP_Rewind iIdxCur" */
 		int addrNextRow;	/* Address of "next_row:" */
 		const char *zIdxName;	/* Name of the index */
@@ -855,15 +852,16 @@ analyzeOneTable(Parse * pParse,	/* Parser context */
 
 		if (pOnlyIdx && pOnlyIdx != pIdx)
 			continue;
+		/* Primary indexes feature automatically generated
+		 * names. Thus, for the sake of clarity, use
+		 * instead more familiar table name.
+		 */
 		if (IsPrimaryKeyIndex(pIdx)) {
-			nCol = pIdx->nKeyCol;
 			zIdxName = pTab->zName;
-			nColTest = nCol;
 		} else {
-			nCol = pIdx->nColumn;
 			zIdxName = pIdx->zName;
-			nColTest = pIdx->uniqNotNull ? pIdx->nKeyCol : nCol;
 		}
+		nColTest = index_column_count(pIdx);
 
 		/* Populate the register containing the index name. */
 		sqlite3VdbeLoadString(v, regIdxname, zIdxName);
@@ -909,8 +907,13 @@ analyzeOneTable(Parse * pParse,	/* Parser context */
 		pParse->nMem = MAX(pParse->nMem, regPrev + nColTest);
 
 		/* Open a read-only cursor on the index being analyzed. */
-		assert(sqlite3SchemaToIndex(db, pIdx->pSchema) == 0);
-		sqlite3VdbeAddOp2(v, OP_OpenRead, iIdxCur, pIdx->tnum);
+		struct space *space =
+			space_by_id(SQLITE_PAGENO_TO_SPACEID(pIdx->tnum));
+		assert(space != NULL);
+		sqlite3VdbeAddOp4Ptr(v, OP_LoadPtr, 0, space_ptr_reg, 0,
+				     (void *) space);
+		sqlite3VdbeAddOp3(v, OP_OpenRead, iIdxCur, pIdx->tnum,
+				  space_ptr_reg);
 		sqlite3VdbeSetP4KeyInfo(pParse, pIdx);
 		VdbeComment((v, "%s", pIdx->zName));
 
@@ -925,8 +928,8 @@ analyzeOneTable(Parse * pParse,	/* Parser context */
 		 * The third argument is only used for STAT4
 		 */
 		sqlite3VdbeAddOp2(v, OP_Count, iIdxCur, regStat4 + 3);
-		sqlite3VdbeAddOp2(v, OP_Integer, pIdx->nKeyCol, regStat4 + 1);
-		sqlite3VdbeAddOp2(v, OP_Integer, pIdx->nKeyCol, regStat4 + 2);
+		sqlite3VdbeAddOp2(v, OP_Integer, nColTest, regStat4 + 1);
+		sqlite3VdbeAddOp2(v, OP_Integer, nColTest, regStat4 + 2);
 		sqlite3VdbeAddOp4(v, OP_Function0, 0, regStat4 + 1, regStat4,
 				  (char *)&statInitFuncdef, P4_FUNCDEF);
 		sqlite3VdbeChangeP5(v, 3);
@@ -964,8 +967,7 @@ analyzeOneTable(Parse * pParse,	/* Parser context */
 			 */
 			sqlite3VdbeAddOp0(v, OP_Goto);
 			addrNextRow = sqlite3VdbeCurrentAddr(v);
-			if (nColTest == 1 && pIdx->nKeyCol == 1
-			    && IsUniqueIndex(pIdx)) {
+			if (nColTest == 1 && index_is_unique(pIdx)) {
 				/* For a single-column UNIQUE index, once we have found a non-NULL
 				 * row, we know that all the rest will be distinct, so skip
 				 * subsequent distinctness tests.
@@ -975,17 +977,13 @@ analyzeOneTable(Parse * pParse,	/* Parser context */
 				VdbeCoverage(v);
 			}
 			for (i = 0; i < nColTest; i++) {
-				char *pColl =
-				    (char *)sqlite3LocateCollSeq(pParse,
-								 pParse->db,
-								 pIdx->
-								 azColl[i]);
+				struct coll *coll = sql_index_collation(pIdx, i);
 				sqlite3VdbeAddOp2(v, OP_Integer, i, regChng);
 				sqlite3VdbeAddOp3(v, OP_Column, iIdxCur,
 						  pIdx->aiColumn[i], regTemp);
 				aGotoChng[i] =
 				    sqlite3VdbeAddOp4(v, OP_Ne, regTemp, 0,
-						      regPrev + i, pColl,
+						      regPrev + i, (char *)coll,
 						      P4_COLLSEQ);
 				sqlite3VdbeChangeP5(v, SQLITE_NULLEQ);
 				VdbeCoverage(v);
@@ -1021,16 +1019,17 @@ analyzeOneTable(Parse * pParse,	/* Parser context */
 		assert(regKey == (regStat4 + 2));
 		Index *pPk = sqlite3PrimaryKeyIndex(pIdx->pTable);
 		int j, k, regKeyStat;
-		regKeyStat = sqlite3GetTempRange(pParse, pPk->nKeyCol);
-		for (j = 0; j < pPk->nKeyCol; j++) {
-			k = sqlite3ColumnOfIndex(pIdx, pPk->aiColumn[j]);
+		int nPkColumn = (int)index_column_count(pPk);
+		regKeyStat = sqlite3GetTempRange(pParse, nPkColumn);
+		for (j = 0; j < nPkColumn; j++) {
+			k = pPk->aiColumn[j];
 			assert(k >= 0 && k < pTab->nCol);
 			sqlite3VdbeAddOp3(v, OP_Column, iIdxCur, k, regKeyStat + j);
 			VdbeComment((v, "%s", pTab->aCol[pPk->aiColumn[j]].zName));
 		}
 		sqlite3VdbeAddOp3(v, OP_MakeRecord, regKeyStat,
-				  pPk->nKeyCol, regKey);
-		sqlite3ReleaseTempRange(pParse, regKeyStat, pPk->nKeyCol);
+				  nPkColumn, regKey);
+		sqlite3ReleaseTempRange(pParse, regKeyStat, nPkColumn);
 
 		assert(regChng == (regStat4 + 1));
 		sqlite3VdbeAddOp4(v, OP_Function0, 1, regStat4, regTemp,
@@ -1045,7 +1044,6 @@ analyzeOneTable(Parse * pParse,	/* Parser context */
 		sqlite3VdbeAddOp4(v, OP_MakeRecord, regTabname, 3, regTemp,
 				  "BBB", 0);
 		sqlite3VdbeAddOp2(v, OP_IdxInsert, iStatCur, regTemp);
-		sqlite3VdbeChangeP5(v, OPFLAG_APPEND);
 
 		/* Add the entries to the stat4 table. */
 
@@ -1054,11 +1052,11 @@ analyzeOneTable(Parse * pParse,	/* Parser context */
 		int regDLt = regStat1 + 2;
 		int regSample = regStat1 + 3;
 		int regCol = regStat1 + 4;
-		int regSampleKey = regCol + nCol;
+		int regSampleKey = regCol + nColTest;
 		int addrNext;
 		int addrIsNull;
 
-		pParse->nMem = MAX(pParse->nMem, regCol + nCol);
+		pParse->nMem = MAX(pParse->nMem, regCol + nColTest);
 
 		addrNext = sqlite3VdbeCurrentAddr(v);
 		callStatGet(v, regStat4, STAT_GET_KEY, regSampleKey);
@@ -1074,17 +1072,15 @@ analyzeOneTable(Parse * pParse,	/* Parser context */
 		 * be taken
 		 */
 		VdbeCoverageNeverTaken(v);
-		for (i = 0; i < nCol; i++) {
+		for (i = 0; i < nColTest; i++) {
 			sqlite3ExprCodeLoadIndexColumn(pParse, pIdx,
 									 iTabCur, i,
 									 regCol + i);
 		}
-		sqlite3VdbeAddOp3(v, OP_MakeRecord, regCol, nCol,
-					regSample);
-		sqlite3VdbeAddOp3(v, OP_MakeRecord, regTabname, 6,
-					regTemp);
-		sqlite3VdbeAddOp2(v, OP_IdxReplace, iStatCur + 1,
-					regTemp);
+		sqlite3VdbeAddOp3(v, OP_MakeRecord, regCol, nColTest,
+				  regSample);
+		sqlite3VdbeAddOp3(v, OP_MakeRecord, regTabname, 6, regTemp);
+		sqlite3VdbeAddOp2(v, OP_IdxReplace, iStatCur + 1, regTemp);
 		sqlite3VdbeAddOp2(v, OP_Goto, 1, addrNext);	/* P1==1 for end-of-loop */
 		sqlite3VdbeJumpHere(v, addrIsNull);
 
@@ -1113,13 +1109,13 @@ static void
 analyzeDatabase(Parse * pParse)
 {
 	sqlite3 *db = pParse->db;
-	Schema *pSchema = db->mdb.pSchema;	/* Schema of database */
+	Schema *pSchema = db->pSchema;	/* Schema of database */
 	HashElem *k;
 	int iStatCur;
 	int iMem;
 	int iTab;
 
-	sqlite3BeginWriteOperation(pParse, 0);
+	sql_set_multi_write(pParse, false);
 	iStatCur = pParse->nTab;
 	pParse->nTab += 3;
 	openStatTable(pParse, iStatCur, 0, 0);
@@ -1143,8 +1139,7 @@ analyzeTable(Parse * pParse, Table * pTab, Index * pOnlyIdx)
 	int iStatCur;
 
 	assert(pTab != 0);
-	assert(sqlite3SchemaToIndex(pParse->db, pTab->pSchema) == 0);
-	sqlite3BeginWriteOperation(pParse, 0);
+	sql_set_multi_write(pParse, false);
 	iStatCur = pParse->nTab;
 	pParse->nTab += 3;
 	if (pOnlyIdx) {
@@ -1175,12 +1170,7 @@ sqlite3Analyze(Parse * pParse, Token * pName)
 	Table *pTab;
 	Vdbe *v;
 
-	/* Read the database schema. If an error occurs, leave an error message
-	 * and code in pParse and return NULL.
-	 */
-	if (SQLITE_OK != sqlite3ReadSchema(pParse)) {
-		return;
-	}
+	assert(db->pSchema != NULL);
 
 	if (pName == 0) {
 		/* Form 1:  Analyze everything */
@@ -1296,22 +1286,21 @@ analysisLoader(void *pData, int argc, char **argv, char **NotUsed)
 	if (argv == 0 || argv[0] == 0 || argv[2] == 0) {
 		return 0;
 	}
-	pTable = sqlite3FindTable(pInfo->db, argv[0]);
-	if (pTable == 0) {
+	pTable = sqlite3HashFind(&pInfo->db->pSchema->tblHash, argv[0]);
+	if (pTable == NULL)
 		return 0;
-	}
 	if (argv[1] == 0) {
 		pIndex = 0;
 	} else if (sqlite3_stricmp(argv[0], argv[1]) == 0) {
 		pIndex = sqlite3PrimaryKeyIndex(pTable);
 	} else {
-		pIndex = sqlite3FindIndex(pInfo->db, argv[1], pTable);
+		pIndex = sqlite3HashFind(&pTable->idxHash, argv[1]);
 	}
 	z = argv[2];
 
 	if (pIndex) {
 		tRowcnt *aiRowEst = 0;
-		int nCol = pIndex->nKeyCol + 1;
+		int nCol = index_column_count(pIndex) + 1;
 		/* Index.aiRowEst may already be set here if there are duplicate
 		 * _sql_stat1 entries for this index. In that case just clobber
 		 * the old data with the new instead of allocating a new array.
@@ -1392,8 +1381,9 @@ initAvgEq(Index * pIdx)
 			tRowcnt nRow;	/* Number of rows in index */
 			i64 nSum100 = 0;	/* Number of terms contributing to sumEq */
 			i64 nDist100;	/* Number of distinct values in index */
+			int nColumn = index_column_count(pIdx);
 
-			if (!pIdx->aiRowEst || iCol >= pIdx->nKeyCol
+			if (!pIdx->aiRowEst || iCol >= nColumn
 			    || pIdx->aiRowEst[iCol + 1] == 0) {
 				nRow = pFinal->anLt[iCol];
 				nDist100 = (i64) 100 *pFinal->anDLt[iCol];
@@ -1512,9 +1502,7 @@ loadStatTbl(sqlite3 * db,	/* Database handle */
 		if (pIdx == 0 || pIdx->nSample)
 			continue;
 
-		nIdxCol = IsPrimaryKeyIndex(pIdx) ?
-			  pIdx->nKeyCol : pIdx->nColumn;
-
+		nIdxCol = index_column_count(pIdx);
 		pIdx->nSampleCol = nIdxCol;
 		nByte = sizeof(IndexSample) * nSample;
 		nByte += sizeof(tRowcnt) * nIdxCol * 3 * nSample;
@@ -1635,19 +1623,17 @@ loadStatTbl(sqlite3 * db,	/* Database handle */
 static int
 loadStat4(sqlite3 * db)
 {
-	int rc = SQLITE_OK;	/* Result codes from subroutines */
 	Table *pTab = 0;	/* Pointer to stat table */
 
 	assert(db->lookaside.bDisable);
-	pTab = sqlite3FindTable(db, "_sql_stat4");
-	if (pTab) {
-		rc = loadStatTbl(db,
-				 pTab,
-				 "SELECT \"tbl\",\"idx\",count(*) FROM \"_sql_stat4\" GROUP BY \"tbl\",\"idx\"",
-				 "SELECT \"tbl\",\"idx\",\"neq\",\"nlt\",\"ndlt\",\"sample\" FROM \"_sql_stat4\"");
-	}
-	
-	return rc;
+	pTab = sqlite3HashFind(&db->pSchema->tblHash, "_sql_stat4");
+	/* _slq_stat4 is a system space, so it always exists. */
+	assert(pTab != NULL);
+	return loadStatTbl(db, pTab,
+			   "SELECT \"tbl\",\"idx\",count(*) FROM \"_sql_stat4\""
+			   " GROUP BY \"tbl\",\"idx\"",
+			   "SELECT \"tbl\",\"idx\",\"neq\",\"nlt\",\"ndlt\","
+			   "\"sample\" FROM \"_sql_stat4\"");
 }
 
 /*
@@ -1677,7 +1663,7 @@ sqlite3AnalysisLoad(sqlite3 * db)
 	int rc = SQLITE_OK;
 
 	/* Clear any prior statistics */
-	for (j = sqliteHashFirst(&db->mdb.pSchema->tblHash); j;
+	for (j = sqliteHashFirst(&db->pSchema->tblHash); j;
 	     j = sqliteHashNext(j)) {
 		Table *pTab = sqliteHashData(j);
 		for (i = sqliteHashFirst(&pTab->idxHash); i;
@@ -1691,13 +1677,11 @@ sqlite3AnalysisLoad(sqlite3 * db)
 
 	/* Load new statistics out of the _sql_stat1 table */
 	sInfo.db = db;
-	if (sqlite3FindTable(db, "_sql_stat1") != 0) {
-		zSql = "SELECT \"tbl\",\"idx\",\"stat\" FROM \"_sql_stat1\"";
-		rc = sqlite3_exec(db, zSql, analysisLoader, &sInfo, 0);
-	}
+	zSql = "SELECT \"tbl\",\"idx\",\"stat\" FROM \"_sql_stat1\"";
+	rc = sqlite3_exec(db, zSql, analysisLoader, &sInfo, 0);
 
 	/* Set appropriate defaults on all indexes not in the _sql_stat1 table */
-	for (j = sqliteHashFirst(&db->mdb.pSchema->tblHash); j;
+	for (j = sqliteHashFirst(&db->pSchema->tblHash); j;
 	     j = sqliteHashNext(j)) {
 		Table *pTab = sqliteHashData(j);
 		for (i = sqliteHashFirst(&pTab->idxHash); i;
@@ -1715,7 +1699,7 @@ sqlite3AnalysisLoad(sqlite3 * db)
 		db->lookaside.bDisable--;
 	}
 
-	for (j = sqliteHashFirst(&db->mdb.pSchema->tblHash); j;
+	for (j = sqliteHashFirst(&db->pSchema->tblHash); j;
 	     j = sqliteHashNext(j)) {
 		Table *pTab = sqliteHashData(j);
 		for (i = sqliteHashFirst(&pTab->idxHash); i;

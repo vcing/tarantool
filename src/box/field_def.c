@@ -31,6 +31,7 @@
 
 #include "field_def.h"
 #include "trivia/util.h"
+#include "key_def.h"
 
 const char *field_type_strs[] = {
 	/* [FIELD_TYPE_ANY]      = */ "any",
@@ -79,9 +80,9 @@ static const bool field_type_compatibility[] = {
 };
 
 bool
-field_type_is_compatible(enum field_type old_type, enum field_type new_type)
+field_type1_contains_type2(enum field_type type1, enum field_type type2)
 {
-	int idx = old_type * field_type_MAX + new_type;
+	int idx = type2 * field_type_MAX + type1;
 	return field_type_compatibility[idx];
 }
 
@@ -92,6 +93,8 @@ const struct opt_def field_def_reg[] = {
 	OPT_DEF("is_nullable", OPT_BOOL, struct field_def, is_nullable),
 	OPT_DEF_ENUM("nullable_action", on_conflict_action, struct field_def,
 		     nullable_action, NULL),
+	OPT_DEF("collation", OPT_UINT32, struct field_def, coll_id),
+	OPT_DEF("default", OPT_STRPTR, struct field_def, default_value),
 	OPT_END,
 };
 
@@ -99,7 +102,10 @@ const struct field_def field_def_default = {
 	.type = FIELD_TYPE_ANY,
 	.name = NULL,
 	.is_nullable = false,
-	.nullable_action = ON_CONFLICT_ACTION_DEFAULT
+	.nullable_action = ON_CONFLICT_ACTION_DEFAULT,
+	.coll_id = COLL_NONE,
+	.default_value = NULL,
+	.default_value_expr = NULL
 };
 
 enum field_type

@@ -110,6 +110,11 @@ struct relay {
 	struct vclock recv_vclock;
 	/** Replicatoin slave version. */
 	uint32_t version_id;
+	/**
+	 * Local vclock at the moment of subscribe, used to check
+	 * dataset on the other side and send missing data rows if any.
+	 */
+	struct vclock local_vclock_at_subscribe;
 
 	/** Relay endpoint */
 	struct cbus_endpoint endpoint;
@@ -124,6 +129,8 @@ struct relay {
 	 * confirmation from the replica.
 	 */
 	struct stailq pending_gc;
+	/** Time when last row was sent to peer. */
+	double last_row_tm;
 
 	struct {
 		/* Align to prevent false-sharing with tx thread */
@@ -433,13 +440,12 @@ relay_subscribe_f(va_list ap)
 	fiber_start(reader, relay, fiber());
 
 	/*
-	 * If the replica happens to be uptodate on subscribe,
+	 * If the replica happens to be up to date on subscribe,
 	 * don't wait for timeout to happen - send a heartbeat
 	 * message right away to update the replication lag as
 	 * soon as possible.
 	 */
-	if (vclock_compare(&r->vclock, &replicaset.vclock) == 0)
-		relay_send_heartbeat(relay);
+	relay_send_heartbeat(relay);
 
 	while (!fiber_is_cancelled()) {
 		double timeout = replication_timeout;
@@ -448,14 +454,8 @@ relay_subscribe_f(va_list ap)
 		if (inj != NULL && inj->dparam != 0)
 			timeout = inj->dparam;
 
-		if (fiber_cond_wait_timeout(&relay->reader_cond, timeout) != 0) {
-			/*
-			 * Timed out waiting for WAL events.
-			 * Send a heartbeat message to update
-			 * the replication lag on the slave.
-			 */
-			relay_send_heartbeat(relay);
-		}
+		fiber_cond_wait_deadline(&relay->reader_cond,
+					 relay->last_row_tm + timeout);
 
 		/*
 		 * The fiber can be woken by IO cancel, by a timeout of
@@ -463,6 +463,9 @@ relay_subscribe_f(va_list ap)
 		 * Handle cbus messages first.
 		 */
 		cbus_process(&relay->endpoint);
+		/* Check for a heartbeat timeout. */
+		if (ev_monotonic_now(loop()) - relay->last_row_tm > timeout)
+			relay_send_heartbeat(relay);
 		/*
 		 * Check that the vclock has been updated and the previous
 		 * status message is delivered
@@ -543,6 +546,7 @@ relay_subscribe(int fd, uint64_t sync, struct replica *replica,
 	relay.version_id = replica_version_id;
 	relay.replica = replica;
 	replica_set_relay(replica, &relay);
+	vclock_copy(&relay.local_vclock_at_subscribe, &replicaset.vclock);
 
 	int rc = cord_costart(&relay.cord, tt_sprintf("relay_%p", &relay),
 			      relay_subscribe_f, &relay);
@@ -560,6 +564,7 @@ static void
 relay_send(struct relay *relay, struct xrow_header *packet)
 {
 	packet->sync = relay->sync;
+	relay->last_row_tm = ev_monotonic_now(loop());
 	coio_write_xrow(&relay->io, packet);
 	fiber_gc();
 
@@ -584,10 +589,16 @@ relay_send_row(struct xstream *stream, struct xrow_header *packet)
 	/*
 	 * We're feeding a WAL, thus responding to SUBSCRIBE request.
 	 * In that case, only send a row if it is not from the same replica
-	 * (i.e. don't send replica's own rows back).
+	 * (i.e. don't send replica's own rows back) or if this row is
+	 * missing on the other side (i.e. in case of sudden power-loss,
+	 * data was not written to WAL, so remote master can't recover
+	 * it). In the latter case packet's LSN is less than or equal to
+	 * local master's LSN at the moment it received 'SUBSCRIBE' request.
 	 */
 	if (relay->replica == NULL ||
-	    packet->replica_id != relay->replica->id) {
+	    packet->replica_id != relay->replica->id ||
+	    packet->lsn <= vclock_get(&relay->local_vclock_at_subscribe,
+				      packet->replica_id)) {
 		relay_send(relay, packet);
 	}
 }

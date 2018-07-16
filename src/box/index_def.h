@@ -178,6 +178,19 @@ void
 index_def_delete(struct index_def *def);
 
 /**
+ * Update 'has_optional_parts' property of key definitions.
+ * @param def Index def, containing key definitions to update.
+ * @param min_field_count Minimal field count. All parts out of
+ *        this value are optional.
+ */
+static inline void
+index_def_update_optionality(struct index_def *def, uint32_t min_field_count)
+{
+	key_def_update_optionality(def->key_def, min_field_count);
+	key_def_update_optionality(def->cmp_def, min_field_count);
+}
+
+/**
  * Add an index definition to a list, preserving the
  * first position of the primary key.
  *
@@ -198,22 +211,6 @@ index_def_list_add(struct rlist *index_def_list, struct index_def *index_def)
 	else
 		rlist_add_tail_entry(index_def_list, index_def, link);
 }
-
-/**
- * True, if the index change by alter requires an index rebuild.
- *
- * Some changes, such as a new page size or bloom_fpr do not
- * take effect immediately, so do not require a rebuild.
- *
- * Others, such as index name change, do not change the data, only
- * metadata, so do not require a rebuild either.
- *
- * Finally, changing index type or number of parts always requires
- * a rebuild.
- */
-bool
-index_def_change_requires_rebuild(const struct index_def *old_index_def,
-				  const struct index_def *new_index_def);
 
 /**
  * Create a new index definition definition.

@@ -170,29 +170,13 @@ sysview_space_drop_primary_key(struct space *space)
 }
 
 static int
-sysview_space_build_secondary_key(struct space *old_space,
-				  struct space *new_space,
-				  struct index *new_index)
+sysview_space_build_index(struct space *src_space, struct index *new_index,
+			  struct tuple_format *new_format)
 {
-	(void)old_space;
-	(void)new_space;
+	(void)src_space;
 	(void)new_index;
+	(void)new_format;
 	return 0;
-}
-
-static int
-sysview_space_prepare_truncate(struct space *old_space, struct space *new_space)
-{
-	(void)old_space;
-	(void)new_space;
-	return 0;
-}
-
-static void
-sysview_space_commit_truncate(struct space *old_space, struct space *new_space)
-{
-	(void)old_space;
-	(void)new_space;
 }
 
 static int
@@ -203,18 +187,11 @@ sysview_space_prepare_alter(struct space *old_space, struct space *new_space)
 	return 0;
 }
 
-static void
-sysview_space_commit_alter(struct space *old_space, struct space *new_space)
-{
-	(void)old_space;
-	(void)new_space;
-}
-
 static int
-sysview_space_check_format(struct space *new_space, struct space *old_space)
+sysview_space_check_format(struct space *space, struct tuple_format *format)
 {
-	(void)old_space;
-	(void)new_space;
+	(void)space;
+	(void)format;
 	unreachable();
 	return 0;
 }
@@ -237,11 +214,9 @@ static const struct space_vtab sysview_space_vtab = {
 	/* .add_primary_key = */ sysview_space_add_primary_key,
 	/* .drop_primary_key = */ sysview_space_drop_primary_key,
 	/* .check_format = */ sysview_space_check_format,
-	/* .build_secondary_key = */ sysview_space_build_secondary_key,
-	/* .prepare_truncate = */ sysview_space_prepare_truncate,
-	/* .commit_truncate = */ sysview_space_commit_truncate,
+	/* .build_index = */ sysview_space_build_index,
+	/* .swap_index = */ generic_space_swap_index,
 	/* .prepare_alter = */ sysview_space_prepare_alter,
-	/* .commit_alter = */ sysview_space_commit_alter,
 };
 
 static void
@@ -413,6 +388,12 @@ sysview_engine_memory_stat(struct engine *engine,
 	(void)stat;
 }
 
+static void
+sysview_engine_reset_stat(struct engine *engine)
+{
+	(void)engine;
+}
+
 static int
 sysview_engine_check_space_def(struct space_def *def)
 {
@@ -441,6 +422,7 @@ static const struct engine_vtab sysview_engine_vtab = {
 	/* .collect_garbage = */ sysview_engine_collect_garbage,
 	/* .backup = */ sysview_engine_backup,
 	/* .memory_stat = */ sysview_engine_memory_stat,
+	/* .reset_stat = */ sysview_engine_reset_stat,
 	/* .check_space_def = */ sysview_engine_check_space_def,
 };
 

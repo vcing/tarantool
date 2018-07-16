@@ -52,7 +52,7 @@ sqlite3DeleteTriggerStep(sqlite3 * db, TriggerStep * pTriggerStep)
 		TriggerStep *pTmp = pTriggerStep;
 		pTriggerStep = pTriggerStep->pNext;
 
-		sqlite3ExprDelete(db, pTmp->pWhere);
+		sql_expr_free(db, pTmp->pWhere, false);
 		sqlite3ExprListDelete(db, pTmp->pExprList);
 		sqlite3SelectDelete(db, pTmp->pSelect);
 		sqlite3IdListDelete(db, pTmp->pIdList);
@@ -123,13 +123,12 @@ sqlite3BeginTrigger(Parse * pParse,	/* The parse context of the CREATE TRIGGER s
 	if (!zName || SQLITE_OK != sqlite3CheckIdentifierName(pParse, zName)) {
 		goto trigger_cleanup;
 	}
-	if (sqlite3HashFind(&(db->mdb.pSchema->trigHash), zName)) {
+	if (sqlite3HashFind(&(db->pSchema->trigHash), zName)) {
 		if (!noErr) {
 			sqlite3ErrorMsg(pParse, "trigger %s already exists",
 					zName);
 		} else {
 			assert(!db->init.busy);
-			sqlite3CodeVerifySchema(pParse);
 		}
 		goto trigger_cleanup;
 	}
@@ -144,32 +143,17 @@ sqlite3BeginTrigger(Parse * pParse,	/* The parse context of the CREATE TRIGGER s
 	/* INSTEAD of triggers are only for views and views only support INSTEAD
 	 * of triggers.
 	 */
-	if (pTab->pSelect && tr_tm != TK_INSTEAD) {
+	if (space_is_view(pTab) && tr_tm != TK_INSTEAD) {
 		sqlite3ErrorMsg(pParse, "cannot create %s trigger on view: %S",
 				(tr_tm == TK_BEFORE) ? "BEFORE" : "AFTER",
 				pTableName, 0);
 		goto trigger_cleanup;
 	}
-	if (!pTab->pSelect && tr_tm == TK_INSTEAD) {
+	if (!space_is_view(pTab) && tr_tm == TK_INSTEAD) {
 		sqlite3ErrorMsg(pParse, "cannot create INSTEAD OF"
 				" trigger on table: %S", pTableName, 0);
 		goto trigger_cleanup;
 	}
-#ifndef SQLITE_OMIT_AUTHORIZATION
-	{
-		assert(sqlite3SchemaToIndex(db, pTab->pSchema) == 0);
-		int code = SQLITE_CREATE_TRIGGER;
-		const char *zDb = db->mdb.zDbSName;
-		const char *zDbTrig = zDb;
-		if (sqlite3AuthCheck(pParse, code, zName, pTab->zName, zDbTrig)) {
-			goto trigger_cleanup;
-		}
-		if (sqlite3AuthCheck
-		    (pParse, SQLITE_INSERT, MASTER_NAME, 0, zDb)) {
-			goto trigger_cleanup;
-		}
-	}
-#endif
 
 	/* INSTEAD OF triggers can only appear on views and BEFORE triggers
 	 * cannot appear on views.  So we might as well translate every
@@ -187,7 +171,7 @@ sqlite3BeginTrigger(Parse * pParse,	/* The parse context of the CREATE TRIGGER s
 	pTrigger->zName = zName;
 	zName = 0;
 	pTrigger->table = sqlite3DbStrDup(db, pTableName->a[0].zName);
-	pTrigger->pSchema = db->mdb.pSchema;
+	pTrigger->pSchema = db->pSchema;
 	pTrigger->pTabSchema = pTab->pSchema;
 	pTrigger->op = (u8) op;
 	pTrigger->tr_tm = tr_tm == TK_BEFORE ? TRIGGER_BEFORE : TRIGGER_AFTER;
@@ -200,7 +184,7 @@ sqlite3BeginTrigger(Parse * pParse,	/* The parse context of the CREATE TRIGGER s
 	sqlite3DbFree(db, zName);
 	sqlite3SrcListDelete(db, pTableName);
 	sqlite3IdListDelete(db, pColumns);
-	sqlite3ExprDelete(db, pWhen);
+	sql_expr_free(db, pWhen, false);
 	if (!pParse->pNewTrigger) {
 		sqlite3DeleteTrigger(db, pTrigger);
 	} else {
@@ -230,7 +214,6 @@ sqlite3FinishTrigger(Parse * pParse,	/* Parser context */
 	if (NEVER(pParse->nErr) || !pTrig)
 		goto triggerfinish_cleanup;
 	zName = pTrig->zName;
-	assert(sqlite3SchemaToIndex(pParse->db, pTrig->pSchema) == 0);
 	pTrig->step_list = pStepList;
 	while (pStepList) {
 		pStepList->pTrig = pTrig;
@@ -260,7 +243,7 @@ sqlite3FinishTrigger(Parse * pParse,	/* Parser context */
 		if (v == 0)
 			goto triggerfinish_cleanup;
 
-		pSysTrigger = sqlite3HashFind(&pParse->db->mdb.pSchema->tblHash,
+		pSysTrigger = sqlite3HashFind(&pParse->db->pSchema->tblHash,
 					      TARANTOOL_SYS_TRIGGER_NAME);
 		if (NEVER(!pSysTrigger))
 			goto triggerfinish_cleanup;
@@ -296,8 +279,7 @@ sqlite3FinishTrigger(Parse * pParse,	/* Parser context */
 		sqlite3VdbeAddOp4(v, OP_Blob, zOptsSz, iFirstCol + 1,
 				  MSGPACK_SUBTYPE, zOpts, P4_DYNAMIC);
 		sqlite3VdbeAddOp3(v, OP_MakeRecord, iFirstCol, 2, iRecord);
-		sqlite3VdbeAddOp4Int(v, OP_IdxInsert, iCursor, iRecord,
-				     iFirstCol, 7);
+		sqlite3VdbeAddOp2(v, OP_IdxInsert, iCursor, iRecord);
 		/* Do not account nested operations: the count of such
 		 * operations depends on Tarantool data dictionary internals,
 		 * such as data layout in system spaces.
@@ -310,7 +292,7 @@ sqlite3FinishTrigger(Parse * pParse,	/* Parser context */
 		iFirstCol = pParse->nMem + 1;
 		pParse->nMem += 2;
 
-		sqlite3BeginWriteOperation(pParse, 0);
+		sql_set_multi_write(pParse, false);
 		sqlite3VdbeAddOp4(v,
 				  OP_String8, 0, iFirstCol, 0,
 				  zName, P4_STATIC);
@@ -324,7 +306,7 @@ sqlite3FinishTrigger(Parse * pParse,	/* Parser context */
 
 	if (db->init.busy) {
 		Trigger *pLink = pTrig;
-		Hash *pHash = &db->mdb.pSchema->trigHash;
+		Hash *pHash = &db->pSchema->trigHash;
 		pTrig = sqlite3HashInsert(pHash, zName, pTrig);
 		if (pTrig) {
 			sqlite3OomFault(db);
@@ -462,7 +444,7 @@ sqlite3TriggerUpdateStep(sqlite3 * db,	/* The database connection */
 		pTriggerStep->orconf = orconf;
 	}
 	sqlite3ExprListDelete(db, pEList);
-	sqlite3ExprDelete(db, pWhere);
+	sql_expr_free(db, pWhere, false);
 	return pTriggerStep;
 }
 
@@ -485,7 +467,7 @@ sqlite3TriggerDeleteStep(sqlite3 * db,	/* Database connection */
 		    sqlite3ExprDup(db, pWhere, EXPRDUP_REDUCE);
 		pTriggerStep->orconf = ON_CONFLICT_ACTION_DEFAULT;
 	}
-	sqlite3ExprDelete(db, pWhere);
+	sql_expr_free(db, pWhere, false);
 	return pTriggerStep;
 }
 
@@ -500,7 +482,7 @@ sqlite3DeleteTrigger(sqlite3 * db, Trigger * pTrigger)
 	sqlite3DeleteTriggerStep(db, pTrigger->step_list);
 	sqlite3DbFree(db, pTrigger->zName);
 	sqlite3DbFree(db, pTrigger->table);
-	sqlite3ExprDelete(db, pTrigger->pWhen);
+	sql_expr_free(db, pTrigger->pWhen, false);
 	sqlite3IdListDelete(db, pTrigger->pColumns);
 	sqlite3DbFree(db, pTrigger);
 }
@@ -522,9 +504,8 @@ sqlite3DropTrigger(Parse * pParse, SrcList * pName, int noErr)
 
 	if (db->mallocFailed)
 		goto drop_trigger_cleanup;
-	if (SQLITE_OK != sqlite3ReadSchema(pParse)) {
-		goto drop_trigger_cleanup;
-	}
+	assert(db->pSchema != NULL);
+
 	/* Do not account nested operations: the count of such
 	 * operations depends on Tarantool data dictionary internals,
 	 * such as data layout in system spaces. Activate the counter
@@ -539,13 +520,11 @@ sqlite3DropTrigger(Parse * pParse, SrcList * pName, int noErr)
 
 	assert(pName->nSrc == 1);
 	zName = pName->a[0].zName;
-	pTrigger = sqlite3HashFind(&(db->mdb.pSchema->trigHash), zName);
+	pTrigger = sqlite3HashFind(&(db->pSchema->trigHash), zName);
 	if (!pTrigger) {
 		if (!noErr) {
 			sqlite3ErrorMsg(pParse, "no such trigger: %S", pName,
 					0);
-		} else {
-			sqlite3CodeVerifySchema(pParse);
 		}
 		pParse->checkSchema = 1;
 		goto drop_trigger_cleanup;
@@ -572,35 +551,22 @@ tableOfTrigger(Trigger * pTrigger)
 void
 sqlite3DropTriggerPtr(Parse * pParse, Trigger * pTrigger)
 {
-	Table *pTable MAYBE_UNUSED;
 	Vdbe *v;
-	sqlite3 *db = pParse->db;
-
-	assert(sqlite3SchemaToIndex(pParse->db, pTrigger->pSchema) == 0);
-	pTable = tableOfTrigger(pTrigger);
-	assert(pTable);
-	assert(pTable->pSchema == pTrigger->pSchema);
-#ifndef SQLITE_OMIT_AUTHORIZATION
-	{
-		int code = SQLITE_DROP_TRIGGER;
-		const char *zDb = db->mdb.zDbSName;
-		const char *zTab = MASTER_NAME;
-		if (sqlite3AuthCheck
-		    (pParse, code, pTrigger->zName, pTable->zName, zDb)
-		    || sqlite3AuthCheck(pParse, SQLITE_DELETE, zTab, 0, zDb)) {
-			return;
-		}
-	}
-#endif
-
-	/* Generate code to destroy the database record of the trigger.
+	/* Generate code to delete entry from _trigger and
+	 * internal SQL structures.
 	 */
-	assert(pTable != 0);
 	if ((v = sqlite3GetVdbe(pParse)) != 0) {
-		const char *column = "name";
-		Expr *value = sqlite3Expr(db, TK_STRING, pTrigger->zName);
-		sqlite3DeleteByKey(pParse, TARANTOOL_SYS_TRIGGER_NAME,
-				   &column, &value, 1);
+		int trig_name_reg = ++pParse->nMem;
+		int record_to_delete = ++pParse->nMem;
+		sqlite3VdbeAddOp4(v, OP_String8, 0, trig_name_reg, 0,
+				  pTrigger->zName, P4_STATIC);
+		sqlite3VdbeAddOp3(v, OP_MakeRecord, trig_name_reg, 1,
+				  record_to_delete);
+		sqlite3VdbeAddOp2(v, OP_SDelete, BOX_TRIGGER_ID,
+				  record_to_delete);
+		if (!pParse->nested)
+			sqlite3VdbeChangeP5(v, OPFLAG_NCHANGE);
+
 		sqlite3ChangeCookie(pParse);
 		sqlite3VdbeAddOp4(v, OP_DropTrigger, 0, 0, 0, pTrigger->zName,
 				  0);
@@ -617,7 +583,7 @@ sqlite3UnlinkAndDeleteTrigger(sqlite3 * db, const char *zName)
 	Hash *pHash;
 	struct session *user_session = current_session();
 
-	pHash = &(db->mdb.pSchema->trigHash);
+	pHash = &(db->pSchema->trigHash);
 	pTrigger = sqlite3HashInsert(pHash, zName, 0);
 	if (ALWAYS(pTrigger)) {
 		if (pTrigger->pSchema == pTrigger->pTabSchema) {
@@ -703,7 +669,6 @@ targetSrcList(Parse * pParse,	/* The parsing context */
 		assert(pSrc->nSrc > 0);
 		pSrc->a[pSrc->nSrc - 1].zName =
 		    sqlite3DbStrDup(db, pStep->zTarget);
-		assert(sqlite3SchemaToIndex(db, pStep->pTrig->pSchema) == 0);
 	}
 	return pSrc;
 }
@@ -906,7 +871,6 @@ codeRowTrigger(Parse * pParse,	/* Current parse context */
 	pSubParse->db = db;
 	pSubParse->pTriggerTab = pTab;
 	pSubParse->pToplevel = pTop;
-	pSubParse->zAuthContext = pTrigger->zName;
 	pSubParse->eTriggerOp = pTrigger->op;
 	pSubParse->nQueryLoop = pParse->nQueryLoop;
 
@@ -940,7 +904,7 @@ codeRowTrigger(Parse * pParse,	/* Current parse context */
 						   iEndTrigger,
 						   SQLITE_JUMPIFNULL);
 			}
-			sqlite3ExprDelete(db, pWhen);
+			sql_expr_free(db, pWhen, false);
 		}
 
 		/* Code the trigger program into the sub-vdbe. */
@@ -968,7 +932,7 @@ codeRowTrigger(Parse * pParse,	/* Current parse context */
 		sqlite3VdbeDelete(v);
 	}
 
-	assert(!pSubParse->pAinc && !pSubParse->pZombieTab);
+	assert(!pSubParse->pZombieTab);
 	assert(!pSubParse->pTriggerPrg && !pSubParse->nMaxArg);
 	sqlite3ParserReset(pSubParse);
 	sqlite3StackFree(db, pSubParse);

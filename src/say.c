@@ -30,6 +30,7 @@
  */
 #include "say.h"
 #include "fiber.h"
+#include "errinj.h"
 
 #include <errno.h>
 #include <stdarg.h>
@@ -42,6 +43,7 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <arpa/inet.h>
+#include <coio_task.h>
 
 pid_t log_pid = 0;
 int log_level = S_INFO;
@@ -190,16 +192,17 @@ say_set_log_level(int new_level)
 void
 say_set_log_format(enum say_format format)
 {
-
+	/*
+	 * For syslog, default or boot log type the log format can
+	 * not be changed.
+	 */
+	bool allowed_to_change = log_default->type == SAY_LOGGER_STDERR ||
+				 log_default->type == SAY_LOGGER_PIPE ||
+				 log_default->type == SAY_LOGGER_FILE;
 	switch (format) {
 	case SF_JSON:
-		/*
-		 * For syslog, default or boot log type the log format can
-		 * not be changed.
-		 */
-		if (log_default->type != SAY_LOGGER_STDERR &&
-		    log_default->type != SAY_LOGGER_PIPE &&
-		    log_default->type != SAY_LOGGER_FILE) {
+
+		if (!allowed_to_change) {
 			say_error("json log format is not supported when output is '%s'",
 				  say_logger_type_strs[log_default->type]);
 			return;
@@ -207,6 +210,9 @@ say_set_log_format(enum say_format format)
 		log_set_format(log_default, say_format_json);
 		break;
 	case SF_PLAIN:
+		if (!allowed_to_change) {
+			return;
+		}
 		log_set_format(log_default, say_format_plain);
 		break;
 	default:
@@ -236,11 +242,13 @@ write_to_syslog(struct log *log, int total);
  * Rotate logs on SIGHUP
  */
 static int
-log_rotate(const struct log *log)
+log_rotate(struct log *log)
 {
-	if (log->type != SAY_LOGGER_FILE) {
+	if (pm_atomic_load(&log->type) != SAY_LOGGER_FILE)
 		return 0;
-	}
+
+	ERROR_INJECT(ERRINJ_LOG_ROTATE, { usleep(10); });
+
 	int fd = open(log->path, O_WRONLY | O_APPEND | O_CREAT,
 		      S_IRUSR | S_IWUSR | S_IRGRP);
 	if (fd < 0) {
@@ -261,30 +269,82 @@ log_rotate(const struct log *log)
 			say_syserror("fcntl, fd=%i", log->fd);
 		}
 	}
-	char logrotate_message[] = "log file has been reopened\n";
-	ssize_t r = write(log->fd,
-			  logrotate_message, (sizeof logrotate_message) - 1);
-	(void) r;
-	return 0;
-}
-
-void
-say_logrotate(int signo)
-{
-	(void) signo;
-	int saved_errno = errno;
-	struct log *log;
-	rlist_foreach_entry(log, &log_rotate_list, in_log_list) {
-		if (log_rotate(log) < 0) {
-			diag_log();
-		}
-	}
+	/* We are in ev signal handler
+	 * so we don't have to be worry about async signal safety
+	 */
+	log_say(log, S_INFO, __FILE__, __LINE__, NULL,
+		"log file has been reopened");
 	/*
 	 * log_background applies only to log_default logger
 	 */
-	if (log_background && log_default->type == SAY_LOGGER_FILE) {
+	if (log == log_default && log_background &&
+		log->type == SAY_LOGGER_FILE) {
 		dup2(log_default->fd, STDOUT_FILENO);
 		dup2(log_default->fd, STDERR_FILENO);
+	}
+
+	return 0;
+}
+
+struct rotate_task {
+	struct coio_task base;
+	struct log *log;
+	struct ev_loop *loop;
+};
+
+static int
+logrotate_cb(struct coio_task *ptr)
+{
+	struct rotate_task *task = (struct rotate_task *) ptr;
+	if (log_rotate(task->log) < 0) {
+		diag_log();
+	}
+	ev_async_send(task->loop, &task->log->log_async);
+	return 0;
+}
+
+static int
+logrotate_cleanup_cb(struct coio_task *ptr)
+{
+	struct rotate_task *task = (struct rotate_task *) ptr;
+	coio_task_destroy(&task->base);
+	free(task);
+	return 0;
+}
+
+static void
+log_rotate_async_cb(struct ev_loop *loop, struct ev_async *watcher, int events)
+{
+	(void)loop;
+	(void)events;
+	struct log *log = container_of(watcher, struct log, log_async);
+	log->rotating_threads--;
+	fiber_cond_signal(&log->rotate_cond);
+}
+
+void
+say_logrotate(struct ev_loop *loop, struct ev_signal *w, int revents)
+{
+	(void) loop;
+	(void) w;
+	(void) revents;
+	int saved_errno = errno;
+	struct log *log;
+	rlist_foreach_entry(log, &log_rotate_list, in_log_list) {
+		struct rotate_task *task =
+			(struct rotate_task *) calloc(1, sizeof(*task));
+		if (task == NULL) {
+			diag_set(OutOfMemory, sizeof(*task), "malloc",
+				 "say_logrotate");
+			diag_log();
+			continue;
+		}
+		ev_async_start(loop(), &log->log_async);
+		log->rotating_threads++;
+		coio_task_create(&task->base, logrotate_cb, logrotate_cleanup_cb);
+		task->log = log;
+		task->loop = loop();
+		coio_task_post(&task->base, 0);
 	}
 	errno = saved_errno;
 }
@@ -300,6 +360,8 @@ log_pipe_init(struct log *log, const char *init_str)
 	char cmd[] = { "/bin/sh" };
 	char args[] = { "-c" };
 	char *argv[] = { cmd, args, (char *) init_str, NULL };
+	log->type = SAY_LOGGER_PIPE;
+	log->format_func = say_format_plain;
 	sigset_t mask;
 	sigemptyset(&mask);
 	sigaddset(&mask, SIGCHLD);
@@ -360,8 +422,6 @@ log_pipe_init(struct log *log, const char *init_str)
 	sigprocmask(SIG_UNBLOCK, &mask, NULL);
 	close(pipefd[0]);
 	log->fd = pipefd[1];
-	log->type = SAY_LOGGER_PIPE;
-	log->format_func = say_format_plain;
 	return 0;
 }
 
@@ -374,6 +434,8 @@ log_file_init(struct log *log, const char *init_str)
 {
 	int fd;
 	log->path = abspath(init_str);
+	log->type = SAY_LOGGER_FILE;
+	log->format_func = say_format_plain;
 	if (log->path == NULL) {
 		diag_set(OutOfMemory, strlen(init_str), "malloc", "abspath");
 		return -1;
@@ -385,8 +447,6 @@ log_file_init(struct log *log, const char *init_str)
 		return -1;
 	}
 	log->fd = fd;
-	log->type = SAY_LOGGER_FILE;
-	log->format_func = say_format_plain;
 	return 0;
 }
 
@@ -431,6 +491,9 @@ static int
 log_syslog_init(struct log *log, const char *init_str)
 {
 	struct say_syslog_opts opts;
+	log->type = SAY_LOGGER_SYSLOG;
+	/* syslog supports only one formatting function */
+	log->format_func = say_format_syslog;
 
 	if (say_parse_syslog_opts(init_str, &opts) < 0)
 		return -1;
@@ -439,6 +502,11 @@ log_syslog_init(struct log *log, const char *init_str)
 		log->syslog_ident = strdup("tarantool");
 	else
 		log->syslog_ident = strdup(opts.identity);
+
+	if (opts.facility == syslog_facility_MAX)
+		log->syslog_facility = SYSLOG_LOCAL7;
+	else
+		log->syslog_facility = opts.facility;
 	say_free_syslog_opts(&opts);
 	log->fd = log_syslog_connect(log);
 	if (log->fd < 0) {
@@ -446,9 +514,6 @@ log_syslog_init(struct log *log, const char *init_str)
 		diag_set(SystemError, "syslog logger: %s", strerror(errno));
 		return -1;
 	}
-	log->type = SAY_LOGGER_SYSLOG;
-	/* syslog supports only one formatting function */
-	log->format_func = say_format_syslog;
 	return 0;
 }
 
@@ -456,14 +521,16 @@ log_syslog_init(struct log *log, const char *init_str)
  * Initialize logging subsystem to use in daemon mode.
  */
 int
-log_create(struct log *log, const char *init_str, bool nonblock)
+log_create(struct log *log, const char *init_str, int nonblock)
 {
 	log->pid = 0;
 	log->syslog_ident = NULL;
 	log->path = NULL;
 	log->format_func = NULL;
 	log->level = S_INFO;
-	log->nonblock = nonblock;
+	log->rotating_threads = 0;
+	fiber_cond_create(&log->rotate_cond);
+	ev_async_init(&log->log_async, log_rotate_async_cb);
 	setvbuf(stderr, NULL, _IONBF, 0);
 
 	if (init_str != NULL) {
@@ -475,13 +542,16 @@ log_create(struct log *log, const char *init_str, bool nonblock)
 		int rc;
 		switch (type) {
 		case SAY_LOGGER_PIPE:
+			log->nonblock = (nonblock >= 0)? nonblock: true;
 			rc = log_pipe_init(log, init_str);
 			break;
 		case SAY_LOGGER_SYSLOG:
+			log->nonblock = (nonblock >= 0)? nonblock: true;
 			rc = log_syslog_init(log, init_str);
 			break;
 		case SAY_LOGGER_FILE:
 		default:
+			log->nonblock = (nonblock >= 0)? nonblock: false;
 			rc = log_file_init(log, init_str);
 			break;
 		}
@@ -535,7 +605,6 @@ say_logger_init(const char *init_str, int level, int nonblock,
 	say_set_log_level(level);
 	log_background = background;
 	log_pid = log_default->pid;
-	signal(SIGHUP, say_logrotate);
 	say_set_log_format(say_format_by_name(format));
 
 	if (background) {
@@ -729,10 +798,10 @@ say_format_json(struct log *log, char *buf, int len, int level, const char *file
 	if (cord) {
 		SNPRINT(total, snprintf, buf, len, ", \"cord_name\": \"");
 		SNPRINT(total, json_escape, buf, len, cord->name);
-		SNPRINT(total, snprintf, buf, len, "\", ");
+		SNPRINT(total, snprintf, buf, len, "\"");
 		if (fiber() && fiber()->fid != 1) {
 			SNPRINT(total, snprintf, buf, len,
-				"\"fiber_id\": %i, ", fiber()->fid);
+				", \"fiber_id\": %i, ", fiber()->fid);
 			SNPRINT(total, snprintf, buf, len,
 				"\"fiber_name\": \"");
 			SNPRINT(total, json_escape, buf, len,
@@ -777,14 +846,14 @@ say_format_syslog(struct log *log, char *buf, int len, int level, const char *fi
 
 	/* Format syslog header according to RFC */
 	int prio = level_to_syslog_priority(level);
-	SNPRINT(total, snprintf, buf, len, "<%d>", LOG_MAKEPRI(1, prio));
+	SNPRINT(total, snprintf, buf, len, "<%d>",
+		LOG_MAKEPRI(8 * log->syslog_facility, prio));
 	SNPRINT(total, strftime, buf, len, "%h %e %T ", &tm);
 	SNPRINT(total, snprintf, buf, len, "%s[%d]:", log->syslog_ident, getpid());
 
 	/* Format message */
 	SNPRINT(total, say_format_plain_tail, buf, len, level, filename, line,
 		error, format, ap);
-
 	return total;
 }
 
@@ -805,6 +874,18 @@ say_format_syslog(struct log *log, char *buf, int len, int level, const char *fi
 enum { SAY_BUF_LEN_MAX = 16 * 1024 };
 static __thread char buf[SAY_BUF_LEN_MAX];
 
+/**
+ * Wrapper over write which ensures, that writes not more than buffer size.
+ */
+static ssize_t
+safe_write(int fd, const char *buf, int size)
+{
+	/* Writes at most SAY_BUF_LEN_MAX - 1
+	 * (1 byte was taken for 0 byte in vsnprintf).
+	 */
+	return write(fd, buf, MIN(size, SAY_BUF_LEN_MAX - 1));
+}
+
 static void
 say_default(int level, const char *filename, int line, const char *error,
 	    const char *format, ...)
@@ -815,7 +896,7 @@ say_default(int level, const char *filename, int line, const char *error,
 	int total = log_vsay(log_default, level, filename,
 			     line, error, format, ap);
 	if (level == S_FATAL && log_default->fd != STDERR_FILENO) {
-		ssize_t r = write(STDERR_FILENO, buf, total);
+		ssize_t r = safe_write(STDERR_FILENO, buf, total);
 		(void) r;                       /* silence gcc warning */
 	}
 
@@ -833,7 +914,7 @@ write_to_file(struct log *log, int total)
 	       log->type == SAY_LOGGER_PIPE ||
 	       log->type == SAY_LOGGER_STDERR);
 	assert(total >= 0);
-	ssize_t r = write(log->fd, buf, total);
+	ssize_t r = safe_write(log->fd, buf, total);
 	(void) r;                               /* silence gcc warning */
 }
 
@@ -845,7 +926,7 @@ write_to_syslog(struct log *log, int total)
 {
 	assert(log->type == SAY_LOGGER_SYSLOG);
 	assert(total >= 0);
-	if (log->fd < 0 || write(log->fd, buf, total) <= 0) {
+	if (log->fd < 0 || safe_write(log->fd, buf, total) <= 0) {
 		/*
 		 * Try to reconnect, if write to syslog has
 		 * failed. Syslog write can fail, if, for example,
@@ -862,7 +943,7 @@ write_to_syslog(struct log *log, int total)
 			 * it would block thread. Try to reconnect
 			 * on next vsay().
 			 */
-			ssize_t r = write(log->fd, buf, total);
+			ssize_t r = safe_write(log->fd, buf, total);
 			(void) r;               /* silence gcc warning */
 		}
 	}
@@ -926,11 +1007,45 @@ say_parse_logger_type(const char **str, enum say_logger_type *type)
 	return 0;
 }
 
+static const char *syslog_facility_strs[] = {
+	[SYSLOG_KERN] = "kern",
+	[SYSLOG_USER] = "user",
+	[SYSLOG_MAIL] = "mail",
+	[SYSLOG_DAEMON] = "daemon",
+	[SYSLOG_AUTH] = "auth",
+	[SYSLOG_INTERN] = "intern",
+	[SYSLOG_LPR] = "lpr",
+	[SYSLOG_NEWS] = "news",
+	[SYSLOG_UUCP] = "uucp",
+	[SYSLOG_CLOCK] = "clock",
+	[SYSLOG_AUTHPRIV] = "authpriv",
+	[SYSLOG_FTP] = "ftp",
+	[SYSLOG_NTP] = "ntp",
+	[SYSLOG_AUDIT] = "audit",
+	[SYSLOG_ALERT] = "alert",
+	[SYSLOG_CRON] = "cron",
+	[SYSLOG_LOCAL0] = "local0",
+	[SYSLOG_LOCAL1] = "local1",
+	[SYSLOG_LOCAL2] = "local2",
+	[SYSLOG_LOCAL3] = "local3",
+	[SYSLOG_LOCAL4] = "local4",
+	[SYSLOG_LOCAL5] = "local5",
+	[SYSLOG_LOCAL6] = "local6",
+	[SYSLOG_LOCAL7] = "local7",
+	[syslog_facility_MAX] = "unknown",
+};
+
+enum syslog_facility
+say_syslog_facility_by_name(const char *facility)
+{
+	return STR2ENUM(syslog_facility, facility);
+}
+
 int
 say_parse_syslog_opts(const char *init_str, struct say_syslog_opts *opts)
 {
 	opts->identity = NULL;
-	opts->facility = NULL;
+	opts->facility = syslog_facility_MAX;
 	opts->copy = strdup(init_str);
 	if (opts->copy == NULL) {
 		diag_set(OutOfMemory, strlen(init_str), "malloc", "opts->copy");
@@ -950,9 +1065,14 @@ say_parse_syslog_opts(const char *init_str, struct say_syslog_opts *opts)
 				goto duplicate;
 			opts->identity = value;
 		} else if (say_parse_prefix(&value, "facility=")) {
-			if (opts->facility != NULL)
+			if (opts->facility != syslog_facility_MAX)
 				goto duplicate;
-			opts->facility = value;
+			opts->facility = say_syslog_facility_by_name(value);
+			if (opts->facility == syslog_facility_MAX) {
+				diag_set(IllegalParams, "bad syslog facility option '%s'",
+					 value);
+				goto error;
+			}
 		} else {
 			diag_set(IllegalParams, "bad option '%s'", option);
 			goto error;
@@ -979,10 +1099,17 @@ void
 log_destroy(struct log *log)
 {
 	assert(log != NULL);
+	while(log->rotating_threads > 0)
+		fiber_cond_wait(&log->rotate_cond);
+	pm_atomic_store(&log->type, SAY_LOGGER_BOOT);
+
 	if (log->fd != -1)
 		close(log->fd);
 	free(log->syslog_ident);
+	free(log->path);
 	rlist_del_entry(log, in_log_list);
+	ev_async_stop(loop(), &log->log_async);
+	fiber_cond_destroy(&log->rotate_cond);
 }
 
 static inline int
@@ -1004,11 +1131,11 @@ log_vsay(struct log *log, int level, const char *filename, int line,
 	case SAY_LOGGER_SYSLOG:
 		write_to_syslog(log, total);
 		if (level == S_FATAL && log->fd != STDERR_FILENO)
-			(void) write(STDERR_FILENO, buf, total);
+			(void) safe_write(STDERR_FILENO, buf, total);
 		break;
 	case SAY_LOGGER_BOOT:
 	{
-		ssize_t r = write(STDERR_FILENO, buf, total);
+		ssize_t r = safe_write(STDERR_FILENO, buf, total);
 		(void) r;                       /* silence gcc warning */
 		break;
 	}
